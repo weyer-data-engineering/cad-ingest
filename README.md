@@ -186,11 +186,11 @@ the reference. A selection of the results (mean over 1 to 3 seeds per case):
 | Case | Linework found / correct (within 1 mm) | Texts exact | Symbols found / correct | Runtime |
 |---|---|---|---|---|
 | Floor plan A3, scan 300 dpi | 100 % / 100 % | 100 % | - | 8 s |
-| Floor plan A3, phone photo 12 MP | 99.9 % / 100 % | 100 % | - | 6 s |
-| P&ID A1, scan 200 dpi | 99.9 % / 99.4 % | 87 % | 94 % / 93 % | 35 s |
-| P&ID A1, phone photo 12 MP | 99.2 % / 96.7 % | 18 % | 78 % / 77 % | 38 s |
-| P&ID A0, scan 200 dpi | 100 % / 98.9 % | 84 % | 91 % / 91 % | 61 s |
-| P&ID A0, phone photo 48 MP | 99.1 % / 98.3 % | 34 % | 81 % / 84 % | 52 s |
+| Floor plan A3, phone photo 12 MP | 99.9 % / 100 % | 100 % | - | 5 s |
+| P&ID A1, scan 200 dpi | 99.9 % / 99.4 % | 87 % | 94 % / 93 % | 29 s |
+| P&ID A1, phone photo 12 MP | 99.2 % / 96.7 % | 18 % | 78 % / 77 % | 32 s |
+| P&ID A0, scan 200 dpi | 100 % / 98.9 % | 84 % | 91 % / 91 % | 56 s |
+| P&ID A0, phone photo 48 MP | 99.1 % / 98.3 % | 34 % | 81 % / 84 % | 45 s |
 
 Linework holds up down to about 3 pixels per millimetre of paper, but text needs about 8. Scan large sheets at 200 to
 300 dpi rather than photographing them. The [full table](docs/photos-and-scans.md#benchmark) also has the harder
