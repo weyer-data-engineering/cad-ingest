@@ -12,6 +12,8 @@ from app.plan2cad.model import Drawing, Line, Polyline, Text
 from app.plan2cad.pipeline import convert
 from app.plan2cad.render import render
 
+from .conftest import write_library
+
 LIBRARY = load()
 
 
@@ -61,6 +63,15 @@ def test_instrument_takes_its_texts_as_attributes():
     assert [s.name for s in d.symbols] == ["INSTRUMENT_DCS"]
     assert {k: t.text for k, t in d.symbols[0].attributes.items()} == {"FUNCTION": "FIC", "NUMBER": "101"}
     assert [t.text for t in d.texts] == ["Note"]
+
+
+def test_a_symmetric_symbol_takes_the_pose_with_its_tag_below_it(tmp_path):
+    valves = load(write_library(tmp_path / "acme"))  # a box with a bar: the same when turned half way
+    turned = place(valves["MY_VALVE"], 100, 50, angle=180)  # what the line ends alone may suggest
+    pipes = [Line(60, 50, 97, 50, 0.5), Line(103, 50, 140, 50, 0.5)]
+    d = drawn(turned, lines=pipes, texts=[Text(101, 56, 2.5, "V-101")])
+    symbols.recognise(d, valves)
+    assert [(s.name, s.attributes["TAG"].text) for s in d.symbols] == [("MY_VALVE", "V-101")] and not d.texts
 
 
 def test_lines_without_symbols_stay_lines():

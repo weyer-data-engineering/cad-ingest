@@ -39,9 +39,32 @@ both. All three live in the Redis database of `REDIS_URL`.
 | `MAX_MARKDOWN_CHARS` | `2000000` | the markdown is truncated beyond this (with a warning) |
 | `RETRY_DELAY_SECONDS` | `30` | first delay before a re-run (then x4: 30 s, 2 min) and before a callback retry (then x2) |
 | `OCR_LANGUAGES` | `deu` | Tesseract languages for the texts on photos and scans: `eng` for English drawings, `deu+eng` for both (the image has `deu` and `eng`; add other `tesseract-ocr-*` packages in your own image) |
+| `SYMBOL_LIBRARIES` | `/libraries` | folders (separated by `:`) with symbol libraries added to the built-in ones: library folders, ZIPs and DXF files (worker) |
+| `DEFAULT_SYMBOL_LIBRARIES` | `din-10628` | installed libraries (comma-separated ids) used when a job names none; earlier ones win on equal block names (worker) |
+| `MAX_LIBRARY_SIZE_BYTES` | `52428800` | limit for each library a job brings along in `library_urls` (50 MB) |
 
 The environment is read when a job starts, so settings are per container: the api needs `REDIS_URL`, `API_TOKEN`,
 `MAX_QUEUED_JOBS`; the worker everything else.
+
+## Symbol libraries
+
+A worker reads the built-in starter library and every library in `SYMBOL_LIBRARIES` when it starts, before it forks
+its work-horses, and publishes the list in Redis for `GET /libraries`. A broken library, two libraries with the same id
+or an unknown id in `DEFAULT_SYMBOL_LIBRARIES` stop the worker with a log message saying why, so a bad library never
+reaches a running service. The log lists every library with its version and number of symbols. Give all workers the
+same libraries: the last worker to start publishes the list, and a job that names a library its worker does not have
+fails with `invalid_library`. Libraries that are added or changed take effect when the workers restart.
+
+Install libraries by mounting a folder (`docker-compose.yml` has an example) or by building a small image of your own:
+
+```dockerfile
+FROM ghcr.io/weyer-data-engineering/cad-ingest:latest
+COPY acme-pid /libraries/acme-pid
+```
+
+Libraries that a job brings along (`library_urls`) are downloaded and read in its work-horse, under the same time and
+memory limits as the file, and never stored. Reading a library of 540 symbols takes about 0.4 s. How to write a
+library, check it and build one from existing CAD blocks is in [Symbol libraries](symbol-libraries.md).
 
 ## Execution, failures and restarts
 

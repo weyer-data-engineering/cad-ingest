@@ -1,15 +1,16 @@
 """The functions RQ runs in a work-horse: `run_job` (download, convert, upload the preview and result, store it) and
 `send_callback`. They are queued by name (see store.enqueue), so the API process never imports the heavy parsers.
 
-Failures that are the file's fault end the job at once. Transient ones (source, preview or result target unreachable)
-raise, which makes RQ run the job again with backoff until MAX_ATTEMPTS. Never log a full URL, it carries a signature."""
+Failures that are the file's fault end the job at once. Transient ones (source, symbol library, preview or result
+target unreachable) raise, which makes RQ run the job again with backoff until MAX_ATTEMPTS. Never log a full URL, it
+carries a signature."""
 import importlib
 import logging
 import os
 import shutil
 import tempfile
 from pathlib import PurePosixPath
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import httpx
 from rq import get_current_job
@@ -19,6 +20,7 @@ from . import store
 from .config import Settings
 from .errors import ConversionError, JobError
 from .formats import FORMATS, PREVIEW, RESULT_CONTENT_TYPE
+from .plan2cad import library
 
 log = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines carry the full URL, signature included
@@ -102,8 +104,9 @@ def _process(doc: dict, settings: Settings) -> dict:
         _download(doc["source_url"], path, settings)
         preview = os.path.join(directory, "preview." + suffix)
         vectorized = os.path.join(directory, "result.zip")
+        libraries = _libraries(doc.get("library_urls") or [], directory, settings)  # only with vectorize
         result = _convert(doc["operations"], ext, path, directory, doc["file_name"], preview, settings,
-                          doc.get("options") or {}, vectorized)
+                          doc.get("options") or {}, vectorized, libraries)
         if "vectorize" in doc["operations"]:
             _upload(doc["result_url"], vectorized, RESULT_CONTENT_TYPE, "result")
             result["result_content_type"] = RESULT_CONTENT_TYPE
@@ -119,37 +122,60 @@ def _http_error(code: str, what: str, host: str, status: int) -> JobError:
     return JobError(code, f"The {what} answered HTTP {status} ({host})", retryable=True, rerun=_transient(status))
 
 
-def _download(url: str, path: str, settings: Settings) -> None:
-    host, limit = _host(url), settings.max_file_size_bytes
+def _download(url: str, path: str, settings: Settings, symbol_library: bool = False) -> None:
+    host = _host(url)
+    if symbol_library:
+        limit, what, unavailable = settings.max_library_size_bytes, "symbol library", "library_unavailable"
+        large = JobError("invalid_library", f"A symbol library is larger than {limit} bytes")
+    else:
+        limit, what, unavailable = settings.max_file_size_bytes, "source", "source_unavailable"
+        large = JobError("too_large", f"File is larger than {limit} bytes")
     try:
         with httpx.stream("GET", url, timeout=HTTP_TIMEOUT, follow_redirects=True) as response:
             if response.status_code != 200:
-                raise _http_error("source_unavailable", "source download", host, response.status_code)
+                raise _http_error(unavailable, f"{what} download", host, response.status_code)
             length = int(response.headers.get("content-length") or 0)
             if length > limit:
-                raise JobError("too_large", f"File is larger than {limit} bytes")
+                raise large
             _check_disk(length, settings)
             size = 0
             with open(path, "wb") as out:
                 for chunk in response.iter_raw(CHUNK):  # raw: store exactly what the object holds
                     size += len(chunk)
                     if size > limit:
-                        raise JobError("too_large", f"File is larger than {limit} bytes")
+                        raise large
                     out.write(chunk)
     except httpx.HTTPError as e:
-        raise JobError("source_unavailable", f"Could not download the source from {host} ({type(e).__name__})",
+        raise JobError(unavailable, f"Could not download the {what} from {host} ({type(e).__name__})",
                        rerun=True) from None
 
 
+def _libraries(urls: list[str], directory: str, settings: Settings) -> list[library.Library]:
+    """Downloads and reads the symbol libraries a job brings along. A library's file name in its URL names it if it
+    has no library.toml; nothing of the URL is used as a path."""
+    out = []
+    for n, url in enumerate(urls, 1):
+        path = os.path.join(directory, f"library-{n}")
+        _download(url, path, settings, symbol_library=True)
+        with open(path, "rb") as f:
+            data = f.read()
+        try:
+            out.append(library.from_bytes(data, PurePosixPath(unquote(urlsplit(url).path)).name or f"library-{n}"))
+        except library.LibraryError as e:
+            raise JobError("invalid_library", f"Symbol library {n} of library_urls: {e}") from None
+    return out
+
+
 def _convert(operations: list[str], ext: str, path: str, directory: str, name: str, preview: str,
-             settings: Settings, options: dict | None = None, vectorized: str | None = None) -> dict:
+             settings: Settings, options: dict | None = None, vectorized: str | None = None,
+             libraries: list | tuple = ()) -> dict:
     result: dict = {"warnings": []}
     try:
         handler = importlib.import_module(f".{FORMATS[ext][1]}", __package__)
         markdown, warnings = "", []
         if "vectorize" in operations:  # photos and scans: one recognition run serves all operations
             markdown, warnings = handler.vectorize(path, name, options or {}, vectorized,
-                                                   preview if "preview" in operations else None)
+                                                   preview if "preview" in operations else None, libraries)
         elif "extract" in operations:
             markdown, warnings = handler.extract(ext, path, directory, name)
         if "extract" in operations:

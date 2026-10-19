@@ -16,7 +16,6 @@ from matplotlib.patches import Arc as MplArc
 from matplotlib.patches import Circle as MplCircle
 from matplotlib.patches import Polygon as MplPolygon
 
-from . import library
 from .model import Drawing
 from .render import CAP, DASH, GAP, dashes, render
 
@@ -90,20 +89,23 @@ def to_dxf(d: Drawing, underlay: tuple[str, tuple[int, int]] | None = None) -> e
 
 
 def _symbols(doc: ezdxf.document.Drawing, d: Drawing, pt, s: float) -> None:
-    """Symbols as references to the blocks of the symbol library (copied into the document), with their attributes
-    where their texts stood. Block units are paper millimetres, so the reference is scaled by the drawing scale."""
-    if not d.symbols:
-        return
-    source = library.document()
-    loader = xref.Loader(source, doc)
-    for name in sorted({sym.name for sym in d.symbols}):
-        loader.load_block_layout(source.blocks.get(name))
-    loader.execute()
+    """Symbols as references to the blocks of their symbol libraries, copied into the document unchanged (with their
+    layers, colours and text styles), with their attributes where their texts stood. A block is drawn in its
+    library's units at paper size, so the reference is scaled to paper millimetres and by the drawing scale."""
+    used: dict = {}  # library -> names of its blocks in the drawing
+    for sym in d.symbols:
+        used.setdefault(sym.template.library, set()).add(sym.name)
+    for lib, names in used.items():
+        loader = xref.Loader(lib.doc, doc)
+        for name in sorted(names):
+            loader.load_block_layout(lib.doc.blocks.get(name))
+        loader.execute()
     msp = doc.modelspace()
     for sym in d.symbols:  # y flips: clockwise on screen is a negative DXF rotation
+        size = sym.scale * s * sym.template.library.unit
         ref = msp.add_blockref(sym.name, pt(sym.x, sym.y), dxfattribs={
-            "layer": "P2C-SYMBOL", "rotation": -sym.angle % 360, "yscale": sym.scale * s,
-            "xscale": sym.scale * s * (-1 if sym.mirror else 1)})
+            "layer": "P2C-SYMBOL", "rotation": -sym.angle % 360, "yscale": size,
+            "xscale": size * (-1 if sym.mirror else 1)})
         for tag, t in sym.attributes.items():
             ref.add_attrib(tag, t.text, dxfattribs={"height": t.height * s, "layer": "P2C-TEXT"}).set_placement(
                 pt(t.x, t.y), align=TextEntityAlignment.MIDDLE_CENTER)

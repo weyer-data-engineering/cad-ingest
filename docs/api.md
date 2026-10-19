@@ -16,7 +16,8 @@ JSON. If `API_TOKEN` is set, every `/jobs` call needs `Authorization: Bearer <to
   "operations": ["extract", "preview"],
   "preview_url": "https://...",
   "result_url": "https://...",
-  "options": {"paper": "A3", "scale": 50, "dpi": 300, "drawing": "auto"},
+  "options": {"paper": "A3", "scale": 50, "dpi": 300, "drawing": "auto", "libraries": ["din-10628"]},
+  "library_urls": ["https://..."],
   "callback_url": "https://...",
   "priority": "interactive"
 }
@@ -30,12 +31,13 @@ JSON. If `API_TOKEN` is set, every `/jobs` call needs `Authorization: Bearer <to
 | `operations` | `extract`, `preview` and/or `vectorize`, at least one. `vectorize` is required for photos and scans and allowed only for them |
 | `preview_url` | presigned `PUT` target of the preview, required with `preview`. The converter sends `Content-Type` `application/pdf` (2D, photos and scans) or `model/gltf-binary` (3D) |
 | `result_url` | presigned `PUT` target of the ZIP of `vectorize` (`Content-Type` `application/zip`), required with `vectorize` |
-| `options` | optional, for `vectorize`: `paper` the drawing is printed on (`A0` ... `A4`, default `A3`), `scale` denominator (e.g. `50` for 1:50; read from the title block if not set), `dpi` of a scan without visible paper edges, `drawing`: `building` (floor plan), `pid` (P&ID) or `auto` (default, recognised from the texts) |
+| `options` | optional, for `vectorize`: `paper` the drawing is printed on (`A0` ... `A4`, default `A3`), `scale` denominator (e.g. `50` for 1:50; read from the title block if not set), `dpi` of a scan without visible paper edges, `drawing`: `building` (floor plan), `pid` (P&ID) or `auto` (default, recognised from the texts), `libraries`: ids of installed symbol libraries to recognise P&ID symbols from (see `GET /libraries`; at most 20, earlier ones win on equal block names; default: `DEFAULT_SYMBOL_LIBRARIES`) |
+| `library_urls` | optional, only with `vectorize`: presigned `GET`s of symbol libraries the job brings along, a library ZIP or a DXF (at most 10, each up to `MAX_LIBRARY_SIZE_BYTES`). They come before the installed `libraries`; the default libraries are only used when the job names none at all. See [Symbol libraries](symbol-libraries.md) |
 | `callback_url` | optional, see Callback |
 | `priority` | `interactive` (default) or `bulk` |
 
 Answers: `202 {"id","status":"queued"}`; `200` with the existing job for a repeated `external_id`; `400` invalid body
-(`{"detail": "..."}`); `401`; `415` unsupported extension, or `vectorize` missing for a photo or given for a CAD file; `503` with `Retry-After: 15` when Redis is unavailable or
+(`{"detail": "..."}`), also for a library in `options.libraries` that the workers do not have; `401`; `415` unsupported extension, or `vectorize` missing for a photo or given for a CAD file; `503` with `Retry-After: 15` when Redis is unavailable or
 `MAX_QUEUED_JOBS` jobs are waiting.
 
 `GET /jobs/{id}` -> `200`, `404` unknown or expired:
@@ -65,6 +67,8 @@ for `RESULT_TTL_SECONDS`. `attempts` counts the runs (re-runs after infrastructu
 | `source_unavailable` | the download failed (after `MAX_ATTEMPTS` runs, or at once for a 4xx such as an expired URL) | yes |
 | `preview_upload_failed` | the `PUT` failed (same rule) | yes |
 | `result_upload_failed` | the `PUT` of the `vectorize` result failed (same rule) | yes |
+| `library_unavailable` | the download of a library in `library_urls` failed (same rule as `source_unavailable`) | yes |
+| `invalid_library` | a library in `library_urls` is not a usable symbol library or larger than `MAX_LIBRARY_SIZE_BYTES`, or a library in `options.libraries` is not installed on the worker; the message says why | no |
 | `internal` | the worker was lost on the last attempt | yes |
 
 `retryable` tells the client that submitting again (with fresh URLs) may help.
@@ -83,6 +87,16 @@ can check thousands of open jobs with a few requests; `missing` are unknown or e
 (`running` counts running jobs, `workers` the registered RQ workers); `503` when Redis is unreachable.
 `GET /formats` -> `{"DRAWING_2D":[...],"MODEL_3D":[...],"SCAN_2D":[...]}` (`SCAN_2D`: photos and scans, `vectorize` only).
 
+`GET /libraries` (needs the API token like `/jobs`) -> the symbol libraries the workers have installed and the default
+ones; `503` before any worker has started:
+
+```json
+{"libraries": [{"id": "din-10628", "name": "P&ID symbols after DIN EN ISO 10628-2 (starter library)",
+                "version": "1.0.0", "licence": "Apache-2.0", "drawing": ["pid"],
+                "symbols": [{"name": "GATE_VALVE", "description": "Gate valve"}, ...]}],
+ "default": ["din-10628"]}
+```
+
 ```bash
 curl -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"external_id":"part-1",
   "file_name":"part.step","source_url":"https://storage/part.step?sig=...","operations":["extract"]}'
@@ -90,7 +104,14 @@ curl http://localhost:8080/jobs/<id>
 curl -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"external_id":"plan-1",
   "file_name":"plan.heic","source_url":"https://storage/plan.heic?sig=...","operations":["vectorize","extract"],
   "result_url":"https://storage/plan.zip?sig=...","options":{"paper":"A3"}}'
+curl -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"external_id":"pid-7",
+  "file_name":"pid.jpg","source_url":"https://storage/pid.jpg?sig=...","operations":["vectorize"],
+  "result_url":"https://storage/pid.zip?sig=...","library_urls":["https://storage/acme-pid.zip?sig=..."],
+  "options":{"paper":"A1","libraries":["din-10628"]}}'
 ```
+
+The `report.json` in the ZIP of `vectorize` lists the libraries that were used (`libraries`: id and version) and, for
+every placed symbol, the library it came from.
 
 ## Callback
 

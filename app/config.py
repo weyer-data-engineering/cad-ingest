@@ -30,7 +30,7 @@ def cgroup_memory_limit_bytes() -> int | None:
 @dataclass(frozen=True)
 class Settings:
     """Each field is overridden by the upper-case environment variable of the same name (REDIS_URL, API_TOKEN,
-    OCR_LANGUAGES: strings, all others: integers)."""
+    OCR_LANGUAGES, SYMBOL_LIBRARIES, DEFAULT_SYMBOL_LIBRARIES: strings, all others: integers)."""
 
     redis_url: str = "redis://localhost:6379/0"
     api_token: str = ""  # empty: no authentication
@@ -49,6 +49,12 @@ class Settings:
     retry_delay_seconds: int = 30
     # Tesseract languages for the texts on photos and scans, e.g. "deu+eng" (the image has deu and eng).
     ocr_languages: str = "deu"
+    # Folders with symbol libraries added to the built-in ones (separated by ':'), read when a worker starts.
+    symbol_libraries: str = "/libraries"
+    # Installed libraries (comma-separated ids) used when a job names none; earlier ones win on equal block names.
+    default_symbol_libraries: str = "din-10628"
+    # Largest library a job may bring along (library_urls), per library.
+    max_library_size_bytes: int = 52_428_800
 
     @classmethod
     def from_env(cls) -> "Settings":

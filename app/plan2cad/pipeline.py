@@ -36,12 +36,14 @@ class _Timer:
 
 
 def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: float | None = None,
-            ppm: float | None = None, drawing: str | None = None) -> Result:
+            ppm: float | None = None, drawing: str | None = None,
+            templates: dict[str, library.Template] | None = None) -> Result:
     """Converts a BGR photo or scan of a drawing printed on ``paper`` (A0 to A4).
 
     ``scale`` is the drawing scale denominator (read from the title block if omitted), ``dpi`` the
     scan resolution for scans without visible paper edges, ``ppm`` forces the working resolution,
-    ``drawing`` the kind of drawing ("building" or "pid", recognised from the texts if omitted).
+    ``drawing`` the kind of drawing ("building" or "pid", recognised from the texts if omitted),
+    ``templates`` the symbols to recognise (library.combine; the starter library if omitted).
     """
     timer = _Timer()
     bgr = img if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
@@ -82,8 +84,10 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
     d = Drawing(size[0], size[1], lines, arcs, circles, polygons, texts, scale, swings + polylines)
     objects.classify(d, drawing_type)
     timer.lap("objects")
-    if drawing_type != "building":  # the symbol library holds P&ID symbols
-        symbols.recognise(d, library.load(), symbols.ink_samples(linework, text_mask, out, straight))
+    if drawing_type != "building":  # symbol libraries hold P&ID symbols
+        templates = library.load() if templates is None else templates
+        if templates:
+            symbols.recognise(d, templates, symbols.ink_samples(linework, text_mask, out, straight))
         timer.lap("symbols")
     info = {
         "paper": paper,

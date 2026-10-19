@@ -1,11 +1,11 @@
-"""Writes the starter symbol library app/plan2cad/symbols.dxf: simplified P&ID symbols after DIN EN ISO 10628-2.
+"""Writes the DXF of the starter symbol library libraries/din-10628: simplified P&ID symbols after DIN EN ISO 10628-2.
 
     python bench/make_library.py
 
 Each block is one symbol in paper millimetres around its insertion point (y up, as in any DXF); POINTs on the layer
 PORT are its connection points, LINEs on the layer THROUGH a line that runs through the symbol (the pipe under a flow
-arrow), ATTDEFs its attributes, placed where their text stands. A company library in the same
-form can replace it: draw the blocks in a CAD program, add the ports and attributes, save as DXF.
+arrow), ATTDEFs its attributes, placed where their text stands. Company libraries in the same form are added next to
+it (docs/symbol-libraries.md).
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ HEAVY = {"PUMP", "COMPRESSOR", "HEAT_EXCHANGER"}  # drawn with the 0.5 mm pen li
 THROUGH = {"FLOW_ARROW": [(-1.2, 0), (1.2, 0)], "ORIFICE": [(-0.6, 0), (0.6, 0)]}  # symbols sitting on a pipe
 
 
-def main(path: Path = Path(__file__).parent.parent / "app" / "plan2cad" / "symbols.dxf") -> None:
+def main(path: Path = Path(__file__).parent.parent / "libraries" / "din-10628" / "symbols.dxf") -> None:
     doc = ezdxf.new("R2018", units=ezdxf.units.MM)
     for layer in ("PORT", "THROUGH"):  # helpers for recognition, not part of the drawing
         doc.layers.add(layer, color=1).dxf.plot = 0

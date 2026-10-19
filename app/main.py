@@ -4,7 +4,7 @@ import logging
 import os
 from contextlib import suppress
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Annotated, Literal
 
 import redis
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
@@ -50,6 +50,8 @@ def _authorized(authorization: str = Header(default="")) -> None:
 
 
 jobs = APIRouter(prefix="/jobs", dependencies=[Depends(_authorized)])
+LibraryId = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")]  # as plan2cad.library.ID
+Url = Annotated[str, Field(pattern=r"^https?://")]
 
 
 class VectorizeOptions(BaseModel):
@@ -59,6 +61,9 @@ class VectorizeOptions(BaseModel):
     scale: int | None = Field(default=None, ge=1, le=10_000)  # e.g. 50 for 1:50; read from the title block if not set
     dpi: float | None = Field(default=None, gt=50, le=1200)  # scan resolution, only needed without visible paper edges
     drawing: Literal["auto", "building", "pid"] = "auto"  # floor plan or P&ID; recognised from the texts if "auto"
+    # Installed symbol libraries (GET /libraries) to recognise symbols from, earlier ones first; the default ones if
+    # neither these nor library_urls are given
+    libraries: list[LibraryId] | None = Field(default=None, min_length=1, max_length=20)
 
 
 class JobRequest(BaseModel):
@@ -69,6 +74,9 @@ class JobRequest(BaseModel):
     preview_url: str | None = Field(default=None, pattern=r"^https?://")
     result_url: str | None = Field(default=None, pattern=r"^https?://")
     options: VectorizeOptions | None = None
+    # Presigned GETs of symbol libraries (a library ZIP or a DXF) that the job brings along; they take precedence over
+    # the installed ones
+    library_urls: list[Url] | None = Field(default=None, min_length=1, max_length=10)
     callback_url: str | None = Field(default=None, pattern=r"^https?://")
     priority: Literal["interactive", "bulk"] = "interactive"
 
@@ -78,6 +86,8 @@ class JobRequest(BaseModel):
             raise ValueError("preview_url is required for the operation 'preview'")
         if "vectorize" in self.operations and not self.result_url:
             raise ValueError("result_url is required for the operation 'vectorize'")
+        if self.library_urls and "vectorize" not in self.operations:
+            raise ValueError("library_urls are for the operation 'vectorize'")
         return self
 
 
@@ -92,13 +102,14 @@ def submit(body: JobRequest, response: Response) -> dict:
     if scan != ("vectorize" in body.operations):  # a photo is only read when asked for: it takes a while
         raise HTTPException(415, f"'{ext}' files need the operation 'vectorize'" if scan
                             else f"The operation 'vectorize' is for photos and scans, not for '{ext}' files")
+    _check_libraries(body.options.libraries if body.options else None)
     if sum(store.queued_count().values()) >= Settings.from_env().max_queued_jobs:
         raise _busy("Too many jobs are queued, please retry later")
     doc, created = store.create({
         "external_id": body.external_id, "file_name": name, "kind": FORMATS[ext][0], "format": ext,
         "operations": sorted(set(body.operations)), "source_url": body.source_url, "preview_url": body.preview_url,
         "result_url": body.result_url, "options": body.options.model_dump() if body.options else None,
-        "callback_url": body.callback_url, "priority": body.priority})
+        "library_urls": body.library_urls, "callback_url": body.callback_url, "priority": body.priority})
     if not created:
         response.status_code = 200
         return store.view(doc)
@@ -108,6 +119,15 @@ def submit(body: JobRequest, response: Response) -> dict:
         store.delete(doc["id"])  # no half-queued job that would answer this external_id forever
         raise
     return {"id": doc["id"], "status": "queued"}
+
+
+def _check_libraries(ids: list[str] | None) -> None:
+    """Rejects libraries that the workers do not have. Before any worker has started this is left to the worker."""
+    catalogue = store.libraries() if ids else None
+    if catalogue:
+        known = [lib["id"] for lib in catalogue["libraries"]]
+        if unknown := [i for i in ids if i not in known]:
+            raise HTTPException(400, f"Unknown symbol library: {', '.join(unknown)} (installed: {', '.join(known)})")
 
 
 class StatusRequest(BaseModel):
@@ -173,3 +193,12 @@ def health() -> JSONResponse:
 @app.get("/formats")
 def formats() -> dict:
     return formats_by_kind()
+
+
+@app.get("/libraries", dependencies=[Depends(_authorized)])
+def libraries() -> dict:
+    """The symbol libraries the workers have installed, with their symbols, and the ones used by default."""
+    catalogue = store.libraries()
+    if catalogue is None:
+        raise _busy("No worker has started yet")
+    return catalogue

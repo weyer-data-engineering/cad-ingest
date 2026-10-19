@@ -60,17 +60,10 @@ Recognised symbols become references (`INSERT`) to the blocks of a symbol librar
 their texts as attributes (the tag of a pump, the letters and number of an instrument), so the DXF holds a valve as a
 valve, not as six strokes. Pipe ends are snapped onto the ports of the symbols they lead to.
 
-The library is a DXF file (`app/plan2cad/symbols.dxf`, written by `bench/make_library.py`), so it can be replaced by a
-company's own block library drawn in any CAD program. Each block is one symbol in paper millimetres around its
-insertion point:
-
-| Element in the block | Meaning |
-|---|---|
-| lines, arcs, circles, polylines | the symbol |
-| `POINT` on the layer `PORT` | where a pipe connects |
-| `LINE` on the layer `THROUGH` | a line that runs through the symbol in the drawing (the pipe under a flow arrow); required for a match, not part of the symbol |
-| `ATTDEF` | an attribute, placed where its text stands (e.g. `TAG` below a pump) |
-| block description | the name shown in the markdown |
+The symbols come from symbol libraries: DXF files with one block per symbol, with points where pipes connect and the
+places of their attributes. The built-in starter library is in `libraries/din-10628` (written by
+`bench/make_library.py`). A company adds its own blocks as a library of its own, installed on the server or brought
+along by a job; [Symbol libraries](symbol-libraries.md) explains the format and the tools that check and build one.
 
 The starter library holds 18 simplified symbols after DIN EN ISO 10628-2: gate, ball, butterfly, check, angle,
 three-way, control and safety valve, centrifugal pump, compressor, heat exchanger, local and control-room instrument,
@@ -83,8 +76,9 @@ the ink, not the traced vectors, which round off arrowheads and springs): a poin
 ink runs close by in the same direction. A symbol needs 80 % of its outline and half of each of its parts (a ball valve
 needs its ball), a line leaving at least one port and, if it has one, a straight line through it. Ink inside the
 symbol that it does not explain counts against it, except for text at its attribute positions. Of overlapping
-candidates the one explaining the most ink wins. Nothing is placed in the title block in the bottom right corner of
-the frame, whose small text would otherwise look like symbols.
+candidates the one explaining the most ink wins. A symmetric symbol fits as well turned half way or mirrored; it takes
+the pose in which most of its attribute positions have a text. Nothing is placed in the title block in the bottom right
+corner of the frame, whose small text would otherwise look like symbols.
 
 ## Benchmark
 
@@ -102,14 +96,14 @@ one piece, symbols placed as the right block within 1.5 mm, attributes read, run
 
 | Case | px/mm | Lines found / correct (<= 1 mm) | Mean deviation | Circles found | Texts exact | Symbols found / correct | Attributes read | Runtime |
 |---|---|---|---|---|---|---|---|---|
-| Floor plan A3, scan 300 dpi | 11.8 | 100 % / 100 % | 0.08 mm | - | 100 % | - | - | 7.7 s |
-| Floor plan A3, phone photo 12 MP | 7.8 | 99.9 % / 100 % | 0.21 mm | - | 100 % | - | - | 5.7 s |
-| Floor plan A3, phone photo 12 MP, hard | 6.7 | 77 % / 83 % | 0.44 mm | - | 30 % | - | - | 18.1 s |
-| P&ID A1, scan 200 dpi | 7.9 | 99.9 % / 99.4 % | 0.12 mm | 100 % | 87 % | 94 % / 93 % | 85 % | 34.7 s |
-| P&ID A1, phone photo 12 MP | 3.9 | 99.2 % / 96.7 % | 0.23 mm | 89 % | 18 % | 78 % / 77 % | 10 % | 38.0 s |
-| P&ID A0, scan 200 dpi | 7.9 | 100 % / 98.9 % | 0.12 mm | 100 % | 84 % | 91 % / 91 % | 81 % | 60.7 s |
-| P&ID A0, phone photo 12 MP | 2.8 | 90.6 % / 94.9 % | 0.33 mm | 82 % | 1 % | 62 % / 61 % | 0 % | 68.1 s |
-| P&ID A0, phone photo 48 MP | 5.6 | 99.1 % / 98.3 % | 0.23 mm | 85 % | 34 % | 81 % / 84 % | 23 % | 52.2 s |
+| Floor plan A3, scan 300 dpi | 11.8 | 100 % / 100 % | 0.08 mm | - | 100 % | - | - | 7.5 s |
+| Floor plan A3, phone photo 12 MP | 7.8 | 99.9 % / 100 % | 0.21 mm | - | 100 % | - | - | 5.2 s |
+| Floor plan A3, phone photo 12 MP, hard | 6.7 | 77 % / 83 % | 0.44 mm | - | 30 % | - | - | 16.6 s |
+| P&ID A1, scan 200 dpi | 7.9 | 99.9 % / 99.4 % | 0.12 mm | 100 % | 87 % | 94 % / 93 % | 87 % | 28.8 s |
+| P&ID A1, phone photo 12 MP | 3.9 | 99.2 % / 96.7 % | 0.23 mm | 89 % | 18 % | 78 % / 77 % | 10 % | 32.0 s |
+| P&ID A0, scan 200 dpi | 7.9 | 100 % / 98.9 % | 0.12 mm | 100 % | 84 % | 91 % / 91 % | 81 % | 56.0 s |
+| P&ID A0, phone photo 12 MP | 2.8 | 90.6 % / 94.9 % | 0.33 mm | 82 % | 1 % | 62 % / 61 % | 0 % | 65.2 s |
+| P&ID A0, phone photo 48 MP | 5.6 | 99.1 % / 98.3 % | 0.23 mm | 85 % | 34 % | 81 % / 84 % | 23 % | 45.2 s |
 
 Linework and circles hold up down to 3 px per mm of paper, text does not: on the A0 P&ID, exact texts (2 mm high, many
 of them inside instrument bubbles) rise from 14 % at 3 px/mm to 58 % at 6 and about 82 % from 8 px/mm. 82-99 % of the
@@ -126,6 +120,8 @@ stay linework.
 - Measured line widths are too close to tell main pipes from thinner lines, so P&ID lines are classified by geometry,
   not by pen width.
 - Non-flat paper (waves, folds) shifts lines by up to a millimetre; there is no dewarping yet.
-- Only symbols in the library are recognised; anything else stays linework. Fine details need resolution: below about
-  6 px per mm of paper a ball valve's ball is lost and it comes out as a gate valve.
-- Symbol recognition adds about 20 s to an A1 sheet and 35 s to an A0 sheet.
+- Only symbols in the selected libraries are recognised; anything else stays linework. Fine details need resolution:
+  below about 6 px per mm of paper a ball valve's ball is lost and it comes out as a gate valve. The orifice plate of
+  the starter library (two short bars across a pipe) is not found yet.
+- Symbol recognition adds about 20 s to an A1 sheet and 35 s to an A0 sheet with the starter library; larger
+  libraries take longer.

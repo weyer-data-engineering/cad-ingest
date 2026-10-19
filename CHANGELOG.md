@@ -3,6 +3,30 @@
 All notable changes to cad-ingest are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/): the job API stays compatible within a major version.
 
+## [Unreleased]
+
+### Added
+
+- Symbol libraries as add-ons (see `docs/symbol-libraries.md`). A library is a folder with a `library.toml` and a
+  DXF, the same folder as a ZIP, or a bare DXF; units come from `$INSUNITS`, blocks are read around their base point,
+  and splines, ellipses and nested blocks count towards a symbol's outline. The result DXF holds the library's
+  original blocks.
+  - Workers read the built-in starter library and those in `SYMBOL_LIBRARIES` when they start and stop on a broken
+    one; `DEFAULT_SYMBOL_LIBRARIES` sets the libraries a job gets when it names none.
+  - Job API: `options.libraries` chooses installed libraries (`400` for unknown ones), `library_urls` brings libraries
+    along with a job, `GET /libraries` lists the installed ones. New error codes `invalid_library` and
+    `library_unavailable`; new setting `MAX_LIBRARY_SIZE_BYTES`.
+  - `report.json` lists the libraries used and, for every symbol, its library.
+  - Command line: `--library` (an installed id or a path, repeatable), `cad-ingest library check` (format, notes and
+    a self-test on simulated scans and photos) and `cad-ingest library build` (from DWG and DXF files).
+
+### Changed
+
+- The starter library moved from `app/plan2cad/symbols.dxf` to `libraries/din-10628`.
+- A symmetric symbol (one that looks the same turned half way or mirrored) takes the pose in which most of its
+  attribute positions have a text, so a tag below a symmetric valve is no longer missed.
+- The simulated scans and photos of the benchmark moved to `app/plan2cad/simulate.py`.
+
 ## [1.1.0] - unreleased
 
 First public release under the name cad-ingest.

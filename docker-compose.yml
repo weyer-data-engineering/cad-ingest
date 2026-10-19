@@ -38,6 +38,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       MAX_CONCURRENT_CONVERSIONS: "2"
       OCR_LANGUAGES: deu+eng
+      # DEFAULT_SYMBOL_LIBRARIES: acme-pid,din-10628
+    # Your own symbol libraries (docs/symbol-libraries.md), one folder, ZIP or DXF each, read when the worker starts.
+    # volumes:
+    #   - ./symbol-libraries:/libraries:ro
     depends_on:
       redis:
         condition: service_healthy
