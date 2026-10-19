@@ -8,7 +8,8 @@ an oriented chamfer match: a point of the symbol's outline counts as found if in
 The score rewards the ink explained and penalises the outline missing and the ink inside the symbol it does not
 explain; lines leaving through a port, such as pipes, are expected there. Of overlapping hits the best one wins. The
 linework a symbol explains is removed, line ends are snapped onto its ports and the texts at its attribute positions
-become its attributes."""
+become its attributes; a symmetric symbol (a valve that looks the same turned half way) takes the pose in which most of
+them stand there."""
 
 from __future__ import annotations
 
@@ -40,6 +41,7 @@ STUB = 4.0  # mm: straight lines of the drawing longer than this are pipes, not 
 SNAP = 1.5  # mm: line ends this close to a port are moved onto it
 BLOCK = (200.0, 120.0)  # mm: largest title block (width, height)
 REACH = 4.0  # mm: a text this close to an attribute position becomes the attribute
+SAME = 0.2  # mm: a symbol turned or mirrored with its outline points this close to the original looks the same
 TAKEN = 0.3  # a hit is dropped if this share of the linework it explains belongs to a better one
 GONE = 0.6  # a piece is removed if this share of it is explained by symbols
 
@@ -607,12 +609,36 @@ def _attributes(d: Drawing, placed: list[Symbol], library: dict[str, Template]) 
     if not readable:
         return
     tree, taken = cKDTree([(t.x, t.y) for t in readable]), set()
-    for sym in placed:
-        f = transform(sym.x, sym.y, sym.angle, sym.mirror, sym.scale)
-        for tag, at in library[sym.name].tags.items():
+
+    def texts(sym: Symbol, t: Template, angle: float, mirror: bool) -> dict[str, int]:
+        f, found = transform(sym.x, sym.y, angle, mirror, sym.scale), {}
+        for tag, at in t.tags.items():
             dist, i = tree.query(f(*at), distance_upper_bound=REACH * sym.scale)
-            if dist < np.inf and i not in taken:
-                taken.add(i)
-                sym.attributes[tag] = readable[i]
+            if dist < np.inf and i not in taken and i not in found.values():
+                found[tag] = i
+        return found
+
+    for sym in placed:
+        t = library[sym.name]
+        if not t.tags:
+            continue
+        # A symmetric symbol fits the linework as well in its symmetric poses: the one with texts at its attributes
+        poses = [(sym.angle, sym.mirror)] + [((sym.angle + turn) % 360, sym.mirror != flip) for turn, flip in
+                                              _symmetries(t)]
+        found, angle, mirror = max(((texts(sym, t, a, m), a, m) for a, m in poses), key=lambda o: len(o[0]))
+        if (angle, mirror) != (sym.angle, sym.mirror):
+            turned = place(t, sym.x, sym.y, angle, mirror, sym.scale)
+            sym.angle, sym.mirror, sym.parts, sym.ports = turned.angle, turned.mirror, turned.parts, turned.ports
+        taken.update(found.values())
+        sym.attributes.update({tag: readable[i] for tag, i in found.items()})
     gone = {id(readable[i]) for i in taken}
     d.texts = [t for t in d.texts if id(t) not in gone]
+
+
+def _symmetries(t: Template) -> list[tuple[float, bool]]:
+    """The turns (degrees added) and mirror flips about the insertion point that leave the symbol looking the same:
+    a half turn, a mirror across its vertical and one across its horizontal axis."""
+    pts = np.vstack([_sample(q)[0] for q in t.parts])
+    tree = cKDTree(pts)
+    return [(turn, flip) for turn, flip, m in ((180.0, False, (-1, -1)), (0.0, True, (-1, 1)), (180.0, True, (1, -1)))
+            if tree.query(pts * m)[0].max() < SAME]

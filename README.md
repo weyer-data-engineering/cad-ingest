@@ -21,7 +21,8 @@ service, no AutoCAD licence and no GPU.
   three.js or `<model-viewer>`.
 - **Photo or scan to CAD.** A phone photo or a scan of a paper drawing becomes a DXF in real-world millimetres. It
   contains lines, arcs, circles, dashed lines, walls, doors, pipes, OCR text and the scale from the title block. P&ID
-  symbols such as valves, pumps and instruments become CAD blocks.
+  symbols such as valves, pumps and instruments become CAD blocks, from the starter library or from your own company
+  library.
 - **Ready for production.** An HTTP job API on Redis and RQ with queues, priorities, retries, callbacks and
   cancellation. Every file is converted in its own process with a time and memory limit. Release images for amd64
   and arm64 come with an SBOM and build provenance.
@@ -156,16 +157,21 @@ the title block.*
 The pipeline in `app/plan2cad` finds the sheet in the photo and removes the perspective. It evens out shadows and
 glare and traces the linework into lines, arcs, circles, dashed lines and filled areas. Pieces that belong together
 are joined into walls, pipes and equipment outlines. Texts are read with Tesseract OCR, and the scale is taken from
-the title block. On P&IDs, symbols are matched against a DXF symbol library and placed as its blocks, with their tags
-as attributes. The starter library has 18 symbols after DIN EN ISO 10628-2, and you can replace it with your own
-company library drawn in any CAD program.
+the title block. On P&IDs, symbols are matched against DXF symbol libraries and placed as their blocks, with their
+tags as attributes. The starter library has 18 symbols after DIN EN ISO 10628-2.
+
+Your own symbols plug in as a library: a folder with your CAD blocks and a short `library.toml`. The DXF then holds
+your original blocks, with your layers and attribute names. Install libraries on the server, or let each job bring
+its own (one per tenant, say). `cad-ingest library build` collects existing DWG or DXF blocks into a library, and
+`cad-ingest library check` tests it on simulated scans and photos. [Symbol libraries](docs/symbol-libraries.md)
+explains the format.
 
 The result is a ZIP with:
 
 - `plan.dxf`: real-world millimetres, one layer per kind of object, the straightened photo as an underlay;
 - `plan.pdf`: the drawing as vectors on its paper size;
 - `overlay.png`: the recognised vectors in colour on the faded photo, for checking;
-- `report.json`: sheet, resolution, drawing type, scale, counts, all texts, the symbols with their ports.
+- `report.json`: sheet, resolution, drawing type, scale, counts, all texts, the symbols with their library and ports.
 
 There is no DWG output. Every CAD program opens DXF, and the free ways to write DWG are either not licensed for
 commercial use or experimental. [Photos and scans](docs/photos-and-scans.md) explains each step, the symbol library
@@ -198,7 +204,7 @@ cases. Run it yourself with `python bench/run.py --out bench/out --quick`.
   from synthetic drawings that anyone can regenerate.
 - **Ground truth.** The benchmark scores every result against an exact reference, so improvements are measured
   rather than judged by eye. Every change to the pipeline is benchmarked before and after.
-- **Tests in the image.** More than 110 tests run inside the container image, with the same native libraries as in
+- **Tests in the image.** More than 130 tests run inside the container image, with the same native libraries as in
   production. They cover every CAD format and the photo pipeline. The job tests use a real Redis and real worker
   processes. They include broken files, conversions killed by the kernel, cancellation, retries, callbacks, a full
   queue, a Redis outage and jobs left behind by a dying worker.
@@ -243,7 +249,7 @@ assistant.
 
 - Small text on photos and scans needs about 8 pixels per millimetre of paper. A single 12 MP photo of an A0 sheet has
   2.8, so use a 200 to 300 dpi scan for A0 and A1. Unread text is kept as a guess on its own layer for review.
-- Only symbols in the library are recognised. Everything else stays linework.
+- Only symbols in the selected libraries are recognised. Everything else stays linework.
 - Paper that is not flat (waves, folds) shifts lines by up to a millimetre.
 - DWG is read through LibreDWG, which does not support every object of every AutoCAD version. Files that it cannot
   read fail with `unreadable` rather than producing a wrong preview.
@@ -266,6 +272,9 @@ directly.
 **Does it need a GPU, an internet connection or a cloud account?** No. Everything runs on the CPU inside the
 container. Apart from Redis, it only connects to the URLs that you put into a job.
 
+**Can it recognise our own P&ID symbols?** Yes. Put your CAD blocks into a symbol library, add the points where
+pipes connect, and check it with `cad-ingest library check`. See [Symbol libraries](docs/symbol-libraries.md).
+
 **Which OCR languages are included?** German and English. The default is `deu`. Set `OCR_LANGUAGES=eng` or
 `deu+eng` for your drawings.
 
@@ -277,7 +286,8 @@ container. Apart from Redis, it only connects to the URLs that you put into a jo
 
 - [Job API](docs/api.md): endpoints, fields, errors and callbacks
 - [Operations](docs/operations.md): processes, configuration, restarts, scaling and isolation
-- [Photos and scans](docs/photos-and-scans.md): the vectorisation pipeline, symbol library, benchmark and limits
+- [Photos and scans](docs/photos-and-scans.md): the vectorisation pipeline, benchmark and limits
+- [Symbol libraries](docs/symbol-libraries.md): your own P&ID symbols, the library format, `library check` and `build`
 - [Changelog](CHANGELOG.md)
 
 ## Contributing
@@ -314,4 +324,5 @@ Keywords: open-source CAD converter, self-hosted CAD conversion API, DWG to PDF,
 Markdown, STEP to glTF, STEP to GLB, IFC to glTF, IFC property sets, STL to GLB, CAD file preview, CAD metadata
 extraction, title block extraction, CAD search, RAG for engineering documents, LLM document ingestion, image to DXF,
 photo to CAD, scan to CAD, raster to vector, drawing vectorization, P&ID digitization, P&ID symbol recognition,
+custom CAD block library,
 floor plan digitization, engineering drawing OCR, Docker, FastAPI, Redis, RQ.

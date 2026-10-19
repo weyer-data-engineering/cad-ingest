@@ -60,17 +60,10 @@ Recognised symbols become references (`INSERT`) to the blocks of a symbol librar
 their texts as attributes (the tag of a pump, the letters and number of an instrument), so the DXF holds a valve as a
 valve, not as six strokes. Pipe ends are snapped onto the ports of the symbols they lead to.
 
-The library is a DXF file (`app/plan2cad/symbols.dxf`, written by `bench/make_library.py`), so it can be replaced by a
-company's own block library drawn in any CAD program. Each block is one symbol in paper millimetres around its
-insertion point:
-
-| Element in the block | Meaning |
-|---|---|
-| lines, arcs, circles, polylines | the symbol |
-| `POINT` on the layer `PORT` | where a pipe connects |
-| `LINE` on the layer `THROUGH` | a line that runs through the symbol in the drawing (the pipe under a flow arrow); required for a match, not part of the symbol |
-| `ATTDEF` | an attribute, placed where its text stands (e.g. `TAG` below a pump) |
-| block description | the name shown in the markdown |
+The symbols come from symbol libraries: DXF files with one block per symbol, with points where pipes connect and the
+places of their attributes. The built-in starter library is in `libraries/din-10628` (written by
+`bench/make_library.py`). A company adds its own blocks as a library of its own, installed on the server or brought
+along by a job; [Symbol libraries](symbol-libraries.md) explains the format and the tools that check and build one.
 
 The starter library holds 18 simplified symbols after DIN EN ISO 10628-2: gate, ball, butterfly, check, angle,
 three-way, control and safety valve, centrifugal pump, compressor, heat exchanger, local and control-room instrument,
@@ -83,8 +76,9 @@ the ink, not the traced vectors, which round off arrowheads and springs): a poin
 ink runs close by in the same direction. A symbol needs 80 % of its outline and half of each of its parts (a ball valve
 needs its ball), a line leaving at least one port and, if it has one, a straight line through it. Ink inside the
 symbol that it does not explain counts against it, except for text at its attribute positions. Of overlapping
-candidates the one explaining the most ink wins. Nothing is placed in the title block in the bottom right corner of
-the frame, whose small text would otherwise look like symbols.
+candidates the one explaining the most ink wins. A symmetric symbol fits as well turned half way or mirrored; it takes
+the pose in which most of its attribute positions have a text. Nothing is placed in the title block in the bottom right
+corner of the frame, whose small text would otherwise look like symbols.
 
 ## Benchmark
 
@@ -126,6 +120,8 @@ stay linework.
 - Measured line widths are too close to tell main pipes from thinner lines, so P&ID lines are classified by geometry,
   not by pen width.
 - Non-flat paper (waves, folds) shifts lines by up to a millimetre; there is no dewarping yet.
-- Only symbols in the library are recognised; anything else stays linework. Fine details need resolution: below about
-  6 px per mm of paper a ball valve's ball is lost and it comes out as a gate valve.
-- Symbol recognition adds about 20 s to an A1 sheet and 35 s to an A0 sheet.
+- Only symbols in the selected libraries are recognised; anything else stays linework. Fine details need resolution:
+  below about 6 px per mm of paper a ball valve's ball is lost and it comes out as a gate valve. The orifice plate of
+  the starter library (two short bars across a pipe) is not found yet.
+- Symbol recognition adds about 20 s to an A1 sheet and 35 s to an A0 sheet with the starter library; larger
+  libraries take longer.

@@ -26,6 +26,9 @@ from rq.worker_pool import WorkerPool
 from . import jobs, store
 from .config import Settings
 from .errors import JobError
+from .plan2cad import library
+
+log = logging.getLogger(__name__)
 
 
 def limit_process() -> None:
@@ -91,6 +94,22 @@ def registered() -> bool:
         return False
 
 
+def load_libraries(settings: Settings) -> None:
+    """Reads and checks the installed symbol libraries before the workers fork, so that every work-horse finds them
+    parsed, and publishes them for the API. A broken library or an unknown default stops the worker."""
+    try:
+        available = library.installed(settings.symbol_libraries)
+        defaults = library.select(folders=settings.symbol_libraries, defaults=settings.default_symbol_libraries)
+    except library.LibraryError as e:
+        log.error("Symbol libraries: %s", e)
+        sys.exit(1)
+    for lib in available.values():
+        log.info("Symbol library %s %s: %s symbols from %s%s", lib.id, lib.version or "(no version)", len(lib.symbols),
+                 lib.path, f", {len(lib.warnings)} notes (see `cad-ingest library check`)" if lib.warnings else "")
+    store.publish_libraries({"libraries": [lib.summary() for lib in available.values()],
+                             "default": [lib.id for lib in defaults]})
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if sys.argv[1:] == ["check"]:
@@ -98,6 +117,7 @@ def main() -> None:
     settings = Settings.from_env()
     for stale in glob.glob(os.path.join(tempfile.gettempdir(), "cad-*")):  # left by horses that were killed
         shutil.rmtree(stale, ignore_errors=True)
+    load_libraries(settings)
     # A connection of its own: RQ raises the socket timeout of the one it gets, for its blocking reads.
     WorkerPool([store.CALLBACKS, store.INTERACTIVE, store.BULK], redis.Redis.from_url(settings.redis_url),
                num_workers=settings.max_concurrent_conversions, worker_class=CadWorker,

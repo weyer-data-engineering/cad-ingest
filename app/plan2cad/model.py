@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 PAPER = {"A0": (1189, 841), "A1": (841, 594), "A2": (594, 420), "A3": (420, 297), "A4": (297, 210)}  # landscape mm
 
@@ -102,6 +103,7 @@ class Symbol:
     parts: list[Line | Arc | Circle] = field(default_factory=list)
     ports: list[tuple[float, float]] = field(default_factory=list)
     attributes: dict[str, Text] = field(default_factory=dict)  # attribute tag -> its text on the sheet
+    template: Any = field(default=None, repr=False, compare=False)  # the library.Template it was placed from
 
 
 @dataclass

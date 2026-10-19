@@ -9,8 +9,9 @@ from dataclasses import asdict
 
 import cv2
 
+from .config import Settings
 from .drawing import _count_lines
-from .errors import ConversionError
+from .errors import ConversionError, JobError
 from .plan2cad import library, symbols
 from .plan2cad.export import overlay, to_dxf, to_figure
 from .plan2cad.imageio import load_image
@@ -20,16 +21,20 @@ KINDS = {"building": "floor plan", "pid": "P&ID"}
 SHEETS = {"paper": "paper edges", "frame": "drawing frame", "image": "whole image, no sheet edge found"}
 
 
-def vectorize(path: str, name: str, options: dict, result: str, preview: str | None) -> tuple[str, list[str]]:
+def vectorize(path: str, name: str, options: dict, result: str, preview: str | None,
+              own_libraries: list[library.Library] | tuple = ()) -> tuple[str, list[str]]:
     """Recognises the drawing in the photo or scan at `path`, writes the ZIP to `result` and the PDF to `preview`.
-    Returns the markdown and the warnings."""
+    `own_libraries` are symbol libraries the job brought along. Returns the markdown and the warnings."""
+    libraries = _libraries(options, own_libraries)
     with open(path, "rb") as f:
         try:
             img, dpi = load_image(f.read())
         except ValueError as e:
             raise ConversionError(str(e)) from None
     r = convert(img, paper=options.get("paper", "A3"), scale=options.get("scale"), dpi=options.get("dpi") or dpi,
-                drawing=None if options.get("drawing", "auto") == "auto" else options["drawing"])
+                drawing=None if options.get("drawing", "auto") == "auto" else options["drawing"],
+                templates=library.combine(libraries))
+    r.info["libraries"] = [{"id": lib.id, "version": lib.version} for lib in libraries]
     d, counts = r.drawing, r.info["counts"]
     if not any(counts[k] for k in ("lines", "arcs", "circles", "polylines")):
         raise ConversionError("No drawing was recognised in the image")
@@ -55,10 +60,20 @@ def vectorize(path: str, name: str, options: dict, result: str, preview: str | N
     return _markdown(name, r.info, d), warnings
 
 
+def _libraries(options: dict, own: list[library.Library] | tuple) -> list[library.Library]:
+    """The symbol libraries of the job: its own, then the installed ones it names, else the default ones."""
+    s = Settings.from_env()
+    try:
+        return library.select(options.get("libraries"), own, s.symbol_libraries, s.default_symbol_libraries)
+    except library.LibraryError as e:
+        raise JobError("invalid_library", str(e)) from None
+
+
 def _report(d) -> dict:
-    """Texts, symbols with their attributes and ports, and the lines joining two symbol ports (by index)."""
-    placed = [{"name": s.name, "x": s.x, "y": s.y, "angle": s.angle, "mirror": s.mirror, "scale": s.scale,
-               "attributes": {tag: t.text for tag, t in s.attributes.items()}, "ports": s.ports} for s in d.symbols]
+    """Texts, symbols with their library, attributes and ports, and the lines joining two symbol ports (by index)."""
+    placed = [{"name": s.name, "library": s.template.library.id, "x": s.x, "y": s.y, "angle": s.angle,
+               "mirror": s.mirror, "scale": s.scale, "attributes": {tag: t.text for tag, t in s.attributes.items()},
+               "ports": s.ports} for s in d.symbols]
     return {"texts": [asdict(t) for t in d.texts], "symbols": placed, "connections": symbols.connections(d)}
 
 
@@ -74,8 +89,7 @@ def _markdown(name: str, info: dict, d) -> str:
         found = Counter(t.text for t in reading_order if t.uncertain == unsure)
         if found:
             lines += ["", f"## {title}", ""] + _count_lines(found)
-    names = {n: t.description for n, t in library.load().items()}
-    found = Counter(" ".join([names.get(s.name, s.name)] + [t.text for t in s.attributes.values()])
+    found = Counter(" ".join([s.template.description] + [t.text for t in s.attributes.values()])
                     for s in sorted(d.symbols, key=lambda s: (round(s.y / 5), s.x)))
     if found:
         lines += ["", "## Symbols", ""] + _count_lines(found)

@@ -14,6 +14,7 @@ from rq import Queue, Retry
 from .config import Settings
 
 INTERACTIVE, BULK, CALLBACKS = "cad-interactive", "cad-bulk", "cad-callbacks"
+LIBRARIES = "cad:libraries"  # the symbol libraries the workers have installed (JSON), written when a worker starts
 QUEUES = {"interactive": INTERACTIVE, "bulk": BULK}
 ACTIVE = ("queued", "running")
 # A job that waits in the queue for longer than this loses its document (and is dropped by the worker).
@@ -137,3 +138,15 @@ def queued_count() -> dict[str, int]:
 def running_count() -> int:
     r = connection()
     return sum(r.zcard(f"rq:wip:{queue}") for queue in QUEUES.values())
+
+
+def publish_libraries(catalogue: dict) -> None:
+    """Stores the installed symbol libraries for GET /libraries and for checking the libraries a job names. All
+    workers are expected to have the same libraries; the last one to start writes the list."""
+    connection().set(LIBRARIES, json.dumps(catalogue))
+
+
+def libraries() -> dict | None:
+    """The catalogue of publish_libraries; None before any worker started."""
+    raw = connection().get(LIBRARIES)
+    return json.loads(raw) if raw else None
