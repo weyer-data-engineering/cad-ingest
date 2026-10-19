@@ -75,7 +75,7 @@ def test_build_makes_a_library_from_one_drawing_per_symbol(tmp_path, capsys, fil
                          "--licence", "CC0-1.0"]) == 0
     lib = library.read(out)
     assert (lib.id, lib.version, lib.licence) == ("acme", "0.1.0", "CC0-1.0")
-    assert sorted(lib.symbols) == ["MY_GATE"] + (["BRACKET"] if "dwg" in files else [])
+    assert sorted(lib.symbols) == (["BRACKET"] if "dwg" in files else []) + ["MY_GATE"]
     gate = lib.symbols["MY_GATE"].parts[0]
     assert (gate.x1, gate.y1) == pytest.approx((-2.54, 1.6), abs=0.01)  # millimetres around the base point
     assert "EMPTY.dxf: skipped, the drawing is empty" in capsys.readouterr().out

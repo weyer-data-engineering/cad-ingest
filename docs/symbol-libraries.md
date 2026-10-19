@@ -122,7 +122,7 @@ Self-test: 18 symbols, each as drawn and turned and mirrored, on 1 A3 sheet, as 
   ORIFICE             0/2   0/2
 
 Found: scan 94% (34/36), photo 94% (34/36). Found where no symbol was drawn: scan 0, photo 0.
-Time per sheet: scan 9.2 s, photo 19.4 s, of which symbol recognition 2.4 s and 3.0 s.
+Time per sheet: scan 9.5 s, photo 18.7 s, of which symbol recognition 2.9 s and 2.7 s.
 ```
 
 `--out folder` writes the review overlay of every sheet, with the symbols that were found in teal. `--no-self-test`
