@@ -1,0 +1,213 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Optional repository settings:
+#   vars.RUNNER_AMD64 / vars.RUNNER_ARM64  runner labels (default: GitHub-hosted ubuntu-24.04 / ubuntu-24.04-arm)
+#   vars.EXTRA_IMAGE                       a second registry to publish to, e.g. registry.example.com/team/cad-ingest,
+#                                          with secrets.EXTRA_REGISTRY_USERNAME and secrets.EXTRA_REGISTRY_PASSWORD
+#   vars.SBOM_ORG_NAME / vars.SBOM_ORG_URL manufacturer and supplier in the SBOM (default: the repository owner)
+jobs:
+  test:
+    name: Test (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ${{ vars.RUNNER_AMD64 || 'ubuntu-24.04' }}
+          - arch: arm64
+            runner: ${{ vars.RUNNER_ARM64 || 'ubuntu-24.04-arm' }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      # The pytest suite runs inside the image build, so it uses the same libraries and LibreDWG as the image, natively
+      # on each architecture.
+      - name: Run pytest in the test image stage
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          target: test
+          push: false
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: test
+    if: github.event_name != 'pull_request'
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ${{ vars.RUNNER_AMD64 || 'ubuntu-24.04' }}
+          - arch: arm64
+            runner: ${{ vars.RUNNER_ARM64 || 'ubuntu-24.04-arm' }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract metadata (labels, version)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern=v{{version}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      # Pushed by digest only; the publish job joins both architectures into one multi-arch image and tags it.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          target: runtime
+          platforms: linux/${{ matrix.arch }}
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.arch }}
+      - name: Export digest
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+      - name: Upload digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ${{ vars.RUNNER_AMD64 || 'ubuntu-24.04' }}
+    permissions:
+      contents: write # attach the SBOM to the GitHub release
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      EXTRA_IMAGE: ${{ vars.EXTRA_IMAGE }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Image names
+        run: |
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "EXTRA_REGISTRY=${EXTRA_IMAGE%%/*}" >> "$GITHUB_ENV"
+          { echo "images<<EOF"; echo "ghcr.io/${GITHUB_REPOSITORY,,}"; [ -z "$EXTRA_IMAGE" ] || echo "$EXTRA_IMAGE"; echo EOF; } >> "$GITHUB_OUTPUT"
+        id: names
+      - name: Download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to the extra registry
+        if: env.EXTRA_IMAGE != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.EXTRA_REGISTRY }}
+          username: ${{ secrets.EXTRA_REGISTRY_USERNAME }}
+          password: ${{ secrets.EXTRA_REGISTRY_PASSWORD }}
+      # main -> :main; a tag v1.2.3 -> :v1.2.3, :1.2.3, :1.2 and :latest
+      - name: Extract metadata (tags)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ steps.names.outputs.images }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern=v{{version}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: Create the multi-arch image
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "$IMAGE@sha256:%s " *)
+          digest=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "DIGEST=$digest" >> "$GITHUB_ENV"
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: true
+      - name: Set up Syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+      # CycloneDX 1.6 is pinned, since sbomqs cannot read Syft's default 1.7 yet.
+      - name: Create and check the image SBOM
+        run: |
+          ${{ steps.syft.outputs.cmd }} "$IMAGE@$DIGEST" -o cyclonedx-json@1.6=image.cdx.json
+          mkdir -p sbom
+          .github/scripts/sbom-finalize.sh image.cdx.json \
+            "sbom/${{ github.event.repository.name }}-image-${{ steps.meta.outputs.version }}.cdx.json"
+        env:
+          SBOM_ORG_NAME: ${{ vars.SBOM_ORG_NAME || github.repository_owner }}
+          SBOM_ORG_URL: ${{ vars.SBOM_ORG_URL || format('{0}/{1}', github.server_url, github.repository_owner) }}
+      - name: Set up ORAS
+        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+      # Stores the SBOM next to the image (OCI referrers), so it can be looked up by digest: oras discover <image>@<digest>
+      - name: Attach the SBOM to the image
+        working-directory: sbom
+        run: |
+          for image in "$IMAGE" ${EXTRA_IMAGE:+"$EXTRA_IMAGE"}; do
+            for f in *.cdx.json; do
+              oras attach --artifact-type application/vnd.cyclonedx+json "$image@$DIGEST" "$f:application/vnd.cyclonedx+json"
+            done
+          done
+      - name: Attach the SBOM to the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: sbom/*.cdx.json

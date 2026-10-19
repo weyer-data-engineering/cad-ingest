@@ -1,0 +1,13 @@
+cad-ingest
+Copyright 2026 weyer data engineering gmbh
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+All source code, tests and documentation of this product were written by Claude Code, Anthropic's AI coding
+agent, under the direction and review of weyer data engineering gmbh. cad-ingest was originally built as the
+CAD conversion service of AITEZA, an AI knowledge platform.
+
+The container image bundles third-party software under its own licences, among them LibreDWG (GPL-3.0, run as a
+separate program and not linked), OpenCascade / OCP (LGPL-2.1 with exception), IfcOpenShell (LGPL-3.0),
+Tesseract OCR (Apache-2.0) and libheif / libde265 (LGPL-3.0). See "Licences of the bundled software" in
+README.md for the full list.

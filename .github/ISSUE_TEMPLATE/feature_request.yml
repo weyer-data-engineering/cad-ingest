@@ -1,0 +1,21 @@
+name: Feature request
+description: A new format, symbol, option or improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What do you want to do?
+      description: Describe the task you have, not only the solution you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How cad-ingest could support it. For new formats, name a library under a permissive or LGPL licence if you know one.
+  - type: textarea
+    id: samples
+    attributes:
+      label: Sample files
+      description: Example files help a lot, especially for formats and symbols.

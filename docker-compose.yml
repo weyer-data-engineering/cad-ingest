@@ -1,0 +1,58 @@
+# cad-ingest with Redis, the job API on http://localhost:8080 and one worker.
+#   docker compose pull && docker compose up -d   # published image from ghcr.io
+#   docker compose up -d --build                  # built from this checkout
+services:
+  redis:
+    image: redis:7-alpine
+    # Persistence keeps queued jobs and results across Redis restarts.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+
+  api:
+    image: ghcr.io/weyer-data-engineering/cad-ingest:latest
+    build: .
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      # API_TOKEN: change-me     # requires "Authorization: Bearer <token>" on /jobs
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  worker:
+    image: ghcr.io/weyer-data-engineering/cad-ingest:latest
+    build: .
+    command: ["worker"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      MAX_CONCURRENT_CONVERSIONS: "2"
+      OCR_LANGUAGES: deu+eng
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "worker", "check"]
+      interval: 30s
+      start_period: 30s
+    # Reaps the helper processes of killed conversions; running jobs get time to finish on shutdown.
+    init: true
+    stop_grace_period: 60s
+    # Each conversion may reserve 85 % of this; an A0 scan at 300 dpi needs about 8 GB of address space.
+    mem_limit: 10g
+    read_only: true
+    tmpfs:
+      - /tmp:size=4g
+
+volumes:
+  redis-data:

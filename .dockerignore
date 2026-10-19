@@ -1,0 +1,10 @@
+**/__pycache__
+.pytest_cache
+.venv
+.git
+.github
+bench/out
+docs
+*.md
+Dockerfile
+docker-compose.yml

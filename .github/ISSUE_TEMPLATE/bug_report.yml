@@ -1,0 +1,50 @@
+name: Bug report
+description: A file converts badly, a job fails, or the service misbehaves
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems go through private reporting instead (Security tab, "Report a vulnerability").
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CAD file (extract or preview)
+        - Photo or scan to DXF (vectorize)
+        - Job API, worker, queue or callbacks
+        - Docker image or deployment
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: Include the job status JSON or the command line output if you have it.
+    validations:
+      required: true
+  - type: textarea
+    id: file
+    attributes:
+      label: The file
+      description: >-
+        Attach the file or a minimal version of it that shows the problem. If you cannot share it, describe it (format and
+        the program that wrote it; for photos and scans: paper size, camera or scan resolution) and attach overlay.png and
+        report.json from the result ZIP.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Image tag or digest, or the commit you built from
+      placeholder: ghcr.io/weyer-data-engineering/cad-ingest:v1.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - amd64
+        - arm64
