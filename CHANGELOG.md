@@ -19,6 +19,13 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   - `report.json` lists the libraries used and, for every symbol, its library.
   - Command line: `--library` (an installed id or a path, repeatable), `cad-ingest library check` (format, notes and
     a self-test on simulated scans and photos) and `cad-ingest library build` (from DWG and DXF files).
+- Every page of a PDF or multi-page TIFF scan is converted, not only the first one. The first page with a drawing stays
+  at the root of the ZIP, every further page n goes to `page-n/` with the same files; each `report.json` names its
+  `page` and all `pages` converted, the preview holds every page and the markdown has a section per page. Pages
+  without a drawing are skipped with a warning.
+  - Job API: `options.pages` chooses pages; new setting `MAX_SCAN_PAGES` (default 20). A job leaves out the pages
+    it would not finish within `CONVERSION_TIMEOUT_SECONDS` and says so in a warning, rather than failing.
+  - Command line: `--pages 1-3,5`.
 
 ### Changed
 

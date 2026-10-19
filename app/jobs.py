@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from pathlib import PurePosixPath
 from urllib.parse import unquote, urlsplit
 
@@ -27,6 +28,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines carry the
 HTTP_TIMEOUT = httpx.Timeout(30.0, read=120.0)
 CALLBACK_TIMEOUT = httpx.Timeout(30.0)  # connect and read; the client may need a moment to store the markdown
 CHUNK = 1 << 20
+# Further pages of a scan are left out where they would end after this share of the time limit: time for the uploads
+PAGES_UNTIL = 0.9
 
 
 class Requeue(Exception):
@@ -91,6 +94,7 @@ def run_job(job_id: str) -> None:
 
 
 def _process(doc: dict, settings: Settings) -> dict:
+    deadline = time.monotonic() + PAGES_UNTIL * settings.conversion_timeout_seconds
     ext = PurePosixPath(doc["file_name"]).suffix.lstrip(".").lower()
     if ext not in FORMATS:
         raise JobError("unsupported", f"Unsupported file extension '{ext}'")
@@ -106,7 +110,7 @@ def _process(doc: dict, settings: Settings) -> dict:
         vectorized = os.path.join(directory, "result.zip")
         libraries = _libraries(doc.get("library_urls") or [], directory, settings)  # only with vectorize
         result = _convert(doc["operations"], ext, path, directory, doc["file_name"], preview, settings,
-                          doc.get("options") or {}, vectorized, libraries)
+                          doc.get("options") or {}, vectorized, libraries, deadline)
         if "vectorize" in doc["operations"]:
             _upload(doc["result_url"], vectorized, RESULT_CONTENT_TYPE, "result")
             result["result_content_type"] = RESULT_CONTENT_TYPE
@@ -168,14 +172,14 @@ def _libraries(urls: list[str], directory: str, settings: Settings) -> list[libr
 
 def _convert(operations: list[str], ext: str, path: str, directory: str, name: str, preview: str,
              settings: Settings, options: dict | None = None, vectorized: str | None = None,
-             libraries: list | tuple = ()) -> dict:
+             libraries: list | tuple = (), deadline: float | None = None) -> dict:
     result: dict = {"warnings": []}
     try:
         handler = importlib.import_module(f".{FORMATS[ext][1]}", __package__)
         markdown, warnings = "", []
         if "vectorize" in operations:  # photos and scans: one recognition run serves all operations
             markdown, warnings = handler.vectorize(path, name, options or {}, vectorized,
-                                                   preview if "preview" in operations else None, libraries)
+                                                   preview if "preview" in operations else None, libraries, deadline)
         elif "extract" in operations:
             markdown, warnings = handler.extract(ext, path, directory, name)
         if "extract" in operations:

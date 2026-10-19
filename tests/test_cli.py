@@ -29,3 +29,10 @@ def test_broken_file_fails_with_the_error_code(tmp_path, capsys):
 def test_unsupported_extension_is_rejected(tmp_path):
     with pytest.raises(SystemExit):
         convert.main([str(tmp_path / "notes.txt"), str(tmp_path)])
+
+
+def test_pages_are_given_as_a_list_with_ranges(tmp_path, capsys):
+    assert convert._pages("1-3,5") == [1, 2, 3, 5]
+    with pytest.raises(SystemExit):
+        convert.main(["plan.pdf", str(tmp_path), "--pages", "0"])
+    assert "--pages: invalid _pages value: '0'" in capsys.readouterr().err

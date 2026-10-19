@@ -55,6 +55,8 @@ class Settings:
     default_symbol_libraries: str = "din-10628"
     # Largest library a job may bring along (library_urls), per library.
     max_library_size_bytes: int = 52_428_800
+    # Pages of a PDF or TIFF scan converted per job at most (each takes 5 to 60 seconds).
+    max_scan_pages: int = 20
 
     @classmethod
     def from_env(cls) -> "Settings":

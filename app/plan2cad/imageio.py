@@ -1,4 +1,4 @@
-"""Decodes uploads: photos (JPEG, PNG, TIFF, HEIC from iPhones) and the first page of a PDF scan."""
+"""Decodes uploads: photos (JPEG, PNG, TIFF, HEIC from iPhones) and the pages of PDF and TIFF scans."""
 
 from __future__ import annotations
 
@@ -17,18 +17,33 @@ PDF_DPI = 300
 PDF_MAX_SIDE = 14000  # pixels; keeps A0 pages at about 300 dpi
 
 
-def load_image(data: bytes) -> tuple[np.ndarray, float | None]:
-    """Returns the image as BGR and its resolution in dpi if known (scans, PDF pages).
+def page_count(data: bytes) -> int:
+    """The pages of a PDF or a multi-page TIFF; 1 for other images (a HEIC may hold more, but they are not pages).
+
+    Raises ValueError for anything that is not a supported image or PDF."""
+    try:
+        if data[:5] == b"%PDF-":
+            return len(pypdfium2.PdfDocument(data))
+        pil = Image.open(io.BytesIO(data))
+        return pil.n_frames if pil.format == "TIFF" else 1
+    except Exception as e:  # PIL and PDFium raise many different error types for broken or unknown files
+        raise ValueError("Unsupported or damaged image file") from e
+
+
+def load_image(data: bytes, page: int = 0) -> tuple[np.ndarray, float | None]:
+    """Returns the image (of a PDF or TIFF: the page, counted from 0) as BGR and its resolution in dpi if known
+    (scans, PDF pages).
 
     Raises ValueError for anything that is not a supported image or PDF."""
     if data[:5] == b"%PDF-":
-        page = pypdfium2.PdfDocument(data)[0]
-        w, h = page.get_size()  # points
+        sheet = pypdfium2.PdfDocument(data)[page]
+        w, h = sheet.get_size()  # points
         dpi = min(PDF_DPI, PDF_MAX_SIDE * 72 / max(w, h))
-        pil = page.render(scale=dpi / 72).to_pil().convert("RGB")
+        pil = sheet.render(scale=dpi / 72).to_pil().convert("RGB")
         return cv2.cvtColor(np.asarray(pil), cv2.COLOR_RGB2BGR), dpi
     try:
         pil = Image.open(io.BytesIO(data))
+        pil.seek(page)
         pil = ImageOps.exif_transpose(pil).convert("RGB")
     except Exception as e:  # PIL raises many different error types for broken or unknown files
         raise ValueError("Unsupported or damaged image file") from e
