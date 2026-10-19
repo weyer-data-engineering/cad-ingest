@@ -90,8 +90,9 @@ def to_dxf(d: Drawing, underlay: tuple[str, tuple[int, int]] | None = None) -> e
 
 def _symbols(doc: ezdxf.document.Drawing, d: Drawing, pt, s: float) -> None:
     """Symbols as references to the blocks of their symbol libraries, copied into the document unchanged (with their
-    layers, colours and text styles), with their attributes where their texts stood. A block is drawn in its
-    library's units at paper size, so the reference is scaled to paper millimetres and by the drawing scale."""
+    layers, colours and text styles), with their attributes where their texts stood. The reference scales the block
+    from its library's units to sheet millimetres (and real-size blocks by the drawing scale), then by the drawing
+    scale to real-world millimetres."""
     used: dict = {}  # library -> names of its blocks in the drawing
     for sym in d.symbols:
         used.setdefault(sym.template.library, set()).add(sym.name)
@@ -102,7 +103,7 @@ def _symbols(doc: ezdxf.document.Drawing, d: Drawing, pt, s: float) -> None:
         loader.execute()
     msp = doc.modelspace()
     for sym in d.symbols:  # y flips: clockwise on screen is a negative DXF rotation
-        size = sym.scale * s * sym.template.library.unit
+        size = sym.scale * s * sym.template.unit
         ref = msp.add_blockref(sym.name, pt(sym.x, sym.y), dxfattribs={
             "layer": "P2C-SYMBOL", "rotation": -sym.angle % 360, "yscale": size,
             "xscale": size * (-1 if sym.mirror else 1)})

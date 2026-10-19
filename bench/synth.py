@@ -11,12 +11,13 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from app.plan2cad.library import load, place, transform
+from app.plan2cad.library import FLOOR_PLAN, load, place, scaled, transform
 from app.plan2cad.model import PAPER, Arc, Circle, Drawing, Line, Polygon, Text
 from app.plan2cad.render import text_length
 from app.plan2cad.simulate import photo, scan  # noqa: F401 (part of the benchmark's API)
 
 LIBRARY = load()
+FIXTURES = load(FLOOR_PLAN)  # real size in mm
 
 ROOMS = ["Wohnen", "Küche", "Bad", "Schlafen", "Kind", "Flur", "Büro", "Essen", "Gäste-WC", "Abstellraum", "Hobby"]
 
@@ -82,22 +83,23 @@ def de(v: float) -> str:
 
 # --------------------------------------------------------------------------- building plan
 
-CM = 0.2  # paper mm per real cm at 1:50
-
-
-def building_plan(seed: int) -> Drawing:
-    """Ground floor plan of a house on A3 at 1:50 with walls, doors, windows, stairs and dimensions."""
+def building_plan(seed: int, fixtures: bool = False, scale: int = 50) -> Drawing:
+    """Ground floor plan of a house on A3 at 1:50 (or 1:100) with walls, doors, windows, stairs and dimensions. With
+    ``fixtures``, kitchen, bathroom and toilet get their fixtures from the floor plan library (the plan is otherwise
+    the same)."""
     rng = np.random.default_rng(seed)
-    d = Drawing(*PAPER["A3"], scale=50)
+    blocked = []  # cm: door swings and stairs, where no fixture may stand
+    cm = 10 / scale  # paper mm per real cm
+    d = Drawing(*PAPER["A3"], scale=scale)
     p = Pen(d)
     frame(p, [[("Muster GmbH Architekten", 3.0)], [("Neubau Einfamilienhaus", 3.0)],
               [("Grundriss Erdgeschoss", 5.0)],
-              [("Maßstab 1:50", 2.5), ("Plan-Nr. A-1%02d" % (seed % 100), 2.5), ("16.10.2026", 2.5)]])
+              [(f"Maßstab 1:{scale}", 2.5), ("Plan-Nr. A-1%02d" % (seed % 100), 2.5), ("16.10.2026", 2.5)]])
     bw, bh, to = int(rng.integers(1000, 1300)), int(rng.integers(780, 980)), 36  # cm
     ox, oy = 62.0, 42.0
 
     def mm(cx, cy):
-        return ox + cx * CM, oy + cy * CM
+        return ox + cx * cm, oy + cy * cm
 
     grid = np.ones((bh, bw), np.uint8)
     grid[to:bh - to, to:bw - to] = 0
@@ -125,18 +127,20 @@ def building_plan(seed: int) -> Drawing:
         grid[y0:y0 + w, x - 6:x + 6] = 0
         top = bool(rng.integers(2))
         xf, yhg = x + 6 * side, (y0 if top else y0 + w)
+        blocked.append((min(xf, xf + side * w), y0, max(xf, xf + side * w), y0 + w))
         p.line(*mm(xf, yhg), *mm(xf + side * w, yhg), 0.35)
         start = {(1, True): 0, (1, False): 270, (-1, True): 90, (-1, False): 180}[(side, top)]
-        p.arc(*mm(xf, yhg), w * CM, start, start + 90, 0.18)
+        p.arc(*mm(xf, yhg), w * cm, start, start + 90, 0.18)
 
     def door_h(y, half, xa, xb, side, w=88):  # door in a horizontal wall, swinging down (+1) or up (-1)
         x0 = int(rng.integers(xa + 25, xb - w - 25))
         grid[y - half:y + half, x0:x0 + w] = 0
         left = bool(rng.integers(2))
         yf, xhg = y + half * side, (x0 if left else x0 + w)
+        blocked.append((x0, min(yf, yf + side * w), x0 + w, max(yf, yf + side * w)))
         p.line(*mm(xhg, yf), *mm(xhg, yf + side * w), 0.35)
         start = {(1, True): 0, (1, False): 90, (-1, True): 270, (-1, False): 180}[(side, left)]
-        p.arc(*mm(xhg, yf), w * CM, start, start + 90, 0.18)
+        p.arc(*mm(xhg, yf), w * cm, start, start + 90, 0.18)
         return x0, x0 + w
 
     for x in top_x:
@@ -178,7 +182,8 @@ def building_plan(seed: int) -> Drawing:
     top_band = ry0 == to
     n = max(3, min(12, (rx1 - rx0 - 200) // 26))
     sx, sy = (rx0 + rx1) // 2 - 13 * n, (ry0 + 10 if top_band else ry1 - 110)
-    p.rect(*mm(sx, sy), 26 * n * CM, 100 * CM, 0.35)
+    p.rect(*mm(sx, sy), 26 * n * cm, 100 * cm, 0.35)
+    blocked.append((sx, sy, sx + 26 * n, sy + 100))
     for k in range(1, n):
         p.line(*mm(sx + 26 * k, sy), *mm(sx + 26 * k, sy + 100), 0.25)
     p.line(*mm(sx + 13, sy + 50), *mm(sx + 26 * n - 13, sy + 50), 0.25)
@@ -195,6 +200,11 @@ def building_plan(seed: int) -> Drawing:
         p.poly([mm(float(x), float(y)) for x, y in c[:, 0, :]], 0.5, closed=True)
 
     names = list(rng.permutation(ROOMS))
+    if fixtures:  # rooms that get fixtures, after the largest one (which holds the stairs)
+        others = [i for i in range(len(rooms)) if i != big]
+        for i, name in zip(others, ["Küche", "Bad", "Gäste-WC", "Abstellraum"]):
+            names[names.index(name)], names[i] = names[i], name
+        furnish(p, rooms, names, blocked, mm, cm, np.random.default_rng(seed + 7919))
     for i, (x0, y0, x1, y1) in enumerate(rooms):
         shift = (60 if top_band else -60) if i == big else 0
         x, y = mm((x0 + x1) / 2, (y0 + y1) / 2 + shift)
@@ -228,6 +238,46 @@ def building_plan(seed: int) -> Drawing:
     vchain([0, yh - 12, yh + 12, bh], -60)
     vchain([0, bh], -100)
     return d
+
+
+FURNITURE = {"Küche": ["KITCHEN_SINK", "HOB"], "Bad": ["BATHTUB", "WC", "WASHBASIN", "SHOWER"],
+             "Gäste-WC": ["WC", "WASHBASIN"], "Abstellraum": ["WASHING_MACHINE"]}
+
+
+def furnish(p: Pen, rooms: list, names: list, blocked: list, mm, cm: float, rng: np.random.Generator):
+    """Puts the fixtures of each room against its walls, clear of doors, stairs, the room name and each other. Each
+    stands with its back on the wall face, as in a real plan."""
+    taken = list(blocked)
+    for (x0, y0, x1, y1), name in zip(rooms, names):
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        taken.append((cx - 110, cy - 100, cx + 110, cy + 100))  # room name and area
+        for fixture in FURNITURE.get(name, []):
+            t = FIXTURES[fixture]
+            w, depth = (max(q) - min(q) for q in ([v / 10 for q in t.parts for v in (_xs(q))],
+                                                  [v / 10 for q in t.parts for v in (_ys(q))]))
+            for _ in range(300):
+                side = rng.choice(["top", "bottom", "left", "right"])
+                along = (x0, x1) if side in ("top", "bottom") else (y0, y1)
+                if along[1] - along[0] < w:
+                    continue
+                a = float(rng.uniform(along[0], along[1] - w))
+                box, at, angle = {"top": ((a, y0, a + w, y0 + depth), (a + w / 2, y0), 0),
+                                  "bottom": ((a, y1 - depth, a + w, y1), (a + w / 2, y1), 180),
+                                  "left": ((x0, a, x0 + depth, a + w), (x0, a + w / 2), 270),
+                                  "right": ((x1 - depth, a, x1, a + w), (x1, a + w / 2), 90)}[side]
+                if all(box[2] + 5 <= b[0] or b[2] + 5 <= box[0] or box[3] + 5 <= b[1] or b[3] + 5 <= box[1]
+                       for b in taken):
+                    taken.append(box)
+                    p.d.symbols.append(place(scaled(t, cm / 10), *mm(*at), angle, bool(rng.integers(2))))
+                    break
+
+
+def _xs(q) -> list[float]:
+    return [q.x1, q.x2] if hasattr(q, "x1") else [q.cx - q.r, q.cx + q.r]
+
+
+def _ys(q) -> list[float]:
+    return [q.y1, q.y2] if hasattr(q, "y1") else [q.cy - q.r, q.cy + q.r]
 
 
 # --------------------------------------------------------------------------- P&ID

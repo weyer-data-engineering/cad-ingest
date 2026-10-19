@@ -1,11 +1,15 @@
-"""Writes the DXF of the starter symbol library libraries/din-10628: simplified P&ID symbols after DIN EN ISO 10628-2.
+"""Writes the DXFs of the built-in symbol libraries:
+
+- libraries/din-10628: simplified P&ID symbols after DIN EN ISO 10628-2, at their printed size;
+- libraries/floor-plan: fixtures of floor plans (sanitary objects, kitchen), at their real size in millimetres.
 
     python bench/make_library.py
 
-Each block is one symbol in paper millimetres around its insertion point (y up, as in any DXF); POINTs on the layer
-PORT are its connection points, LINEs on the layer THROUGH a line that runs through the symbol (the pipe under a flow
-arrow), ATTDEFs its attributes, placed where their text stands. Company libraries in the same form are added next to
-it (docs/symbol-libraries.md).
+Each block is one symbol around its insertion point (y up, as in any DXF); POINTs on the layer PORT are its
+connection points, LINEs on the layer THROUGH a line that runs through the symbol (the pipe under a flow arrow),
+ATTDEFs its attributes, placed where their text stands. A fixture has its insertion point in the middle of its back,
+the side that stands against the wall, and reaches forward (down). Company libraries in the same form are added next
+to them (docs/symbol-libraries.md).
 """
 
 from __future__ import annotations
@@ -56,7 +60,55 @@ HEAVY = {"PUMP", "COMPRESSOR", "HEAT_EXCHANGER"}  # drawn with the 0.5 mm pen li
 THROUGH = {"FLOW_ARROW": [(-1.2, 0), (1.2, 0)], "ORIFICE": [(-0.6, 0), (0.6, 0)]}  # symbols sitting on a pipe
 
 
-def main(path: Path = Path(__file__).parent.parent / "libraries" / "din-10628" / "symbols.dxf") -> None:
+LIBRARIES = Path(__file__).parent.parent / "libraries"
+BULGE = 0.4142135623730951  # tan(22.5 degrees): a quarter arc, counter-clockwise
+
+
+def rounded(x0: float, y0: float, x1: float, y1: float, r: float) -> list[tuple[float, float, float]]:
+    """A rectangle with rounded corners as LWPOLYLINE points (x, y, bulge), counter-clockwise."""
+    return [(x0 + r, y0, 0), (x1 - r, y0, BULGE), (x1, y0 + r, 0), (x1, y1 - r, BULGE), (x1 - r, y1, 0),
+            (x0 + r, y1, BULGE), (x0, y1 - r, 0), (x0, y0 + r, BULGE)]
+
+
+def box(w: float, depth: float) -> list[tuple[float, float]]:
+    """The outline of a fixture w wide and depth deep, its back on the wall (y = 0)."""
+    return [(-w / 2, 0), (w / 2, 0), (w / 2, -depth), (-w / 2, -depth)]
+
+
+# name: description, closed outlines (points, or points with bulges), lines, circles (x, y, r), ellipses (x, y, half
+# width, half depth); millimetres, the back of the fixture on y = 0
+FIXTURES = {
+    "WC": ("Toilet", [box(400, 180)], [], [], [(0, -410, 180, 230)]),
+    "WASHBASIN": ("Washbasin", [box(600, 450)], [], [], [(0, -240, 220, 150)]),
+    "BATHTUB": ("Bathtub", [box(1700, 750), rounded(-775, -675, 775, -75, 150)], [], [], []),
+    "SHOWER": ("Shower tray", [box(900, 900)], [[(-450, 0), (450, -900)], [(450, 0), (-450, -900)]], [], []),
+    "KITCHEN_SINK": ("Kitchen sink", [box(860, 500), rounded(-360, -430, 40, -70, 60),
+                                      rounded(100, -430, 360, -70, 40)], [], [], []),
+    "HOB": ("Hob", [box(600, 600)], [], [(-150, -150, 90), (150, -150, 70), (-150, -450, 70), (150, -450, 90)], []),
+    # No line for the control panel: next to a side, it would look like the second face of a wall at 1:100
+    "WASHING_MACHINE": ("Washing machine", [box(600, 600)], [], [(0, -300, 200)], []),
+}
+
+
+def floor_plan(path: Path = LIBRARIES / "floor-plan" / "symbols.dxf") -> None:
+    doc = ezdxf.new("R2018", units=ezdxf.units.MM)
+    pen = {"lineweight": 25}
+    for name, (description, outlines, lines, circles, ellipses) in FIXTURES.items():
+        block = doc.blocks.new(name, dxfattribs={"description": description})
+        for points in outlines:
+            block.add_lwpolyline(points, format="xyb" if len(points[0]) == 3 else "xy", close=True, dxfattribs=pen)
+        for points in lines:
+            block.add_lwpolyline(points, dxfattribs=pen)
+        for x, y, r in circles:
+            block.add_circle((x, y), r, dxfattribs=pen)
+        for x, y, half_width, half_depth in ellipses:  # the major axis is the longer one
+            major, ratio = ((half_width, 0), half_depth / half_width) if half_width > half_depth else \
+                ((0, half_depth), half_width / half_depth)
+            block.add_ellipse((x, y), major_axis=major, ratio=ratio, dxfattribs=pen)
+    doc.saveas(path)
+
+
+def pid(path: Path = LIBRARIES / "din-10628" / "symbols.dxf") -> None:
     doc = ezdxf.new("R2018", units=ezdxf.units.MM)
     for layer in ("PORT", "THROUGH"):  # helpers for recognition, not part of the drawing
         doc.layers.add(layer, color=1).dxf.plot = 0
@@ -81,4 +133,5 @@ def main(path: Path = Path(__file__).parent.parent / "libraries" / "din-10628" /
 
 
 if __name__ == "__main__":
-    main()
+    pid()
+    floor_plan()

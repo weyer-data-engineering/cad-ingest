@@ -2,12 +2,13 @@ import io
 
 import cv2
 import ezdxf
+import numpy as np
 import pytest
 from synth import Pen
 
 from app.plan2cad import symbols
 from app.plan2cad.export import to_dxf
-from app.plan2cad.library import load, place
+from app.plan2cad.library import FLOOR_PLAN, combine, load, place, read
 from app.plan2cad.model import Drawing, Line, Polyline, Text
 from app.plan2cad.pipeline import convert
 from app.plan2cad.render import render
@@ -15,6 +16,8 @@ from app.plan2cad.render import render
 from .conftest import write_library
 
 LIBRARY = load()
+FIXTURES = combine([read(FLOOR_PLAN)], "building", 50)  # floor plan fixtures on a 1:50 sheet
+WALL = Polyline([(40, 80), (160, 80), (160, 82.4), (40, 82.4)], [0.0] * 4, closed=True, width=0.5, kind="wall")  # 24 cm at 1:100
 
 
 def drawn(*placed, lines=(), texts=()) -> Drawing:
@@ -72,6 +75,47 @@ def test_a_symmetric_symbol_takes_the_pose_with_its_tag_below_it(tmp_path):
     d = drawn(turned, lines=pipes, texts=[Text(101, 56, 2.5, "V-101")])
     symbols.recognise(d, valves)
     assert [(s.name, s.attributes["TAG"].text) for s in d.symbols] == [("MY_VALVE", "V-101")] and not d.texts
+
+
+def fixture(name: str):
+    return next(t for t in FIXTURES.values() if t.name == name)
+
+
+def on_wall(*placed) -> Drawing:
+    """The strokes of the placed fixtures in a room whose bottom wall has its face along y = 80."""
+    wall = Polyline([(40, 80), (160, 80), (160, 87), (40, 87)], [0.0] * 4, closed=True, width=0.5, kind="wall")
+    strokes = drawn(*placed)
+    return Drawing(200, 100, lines=strokes.lines, arcs=strokes.arcs, circles=strokes.circles, polylines=[wall])
+
+
+def test_a_washbasin_on_a_wall_is_found_and_the_wall_stays():
+    d = on_wall(place(fixture("WASHBASIN"), 100, 80, angle=180))  # its back on the wall face
+    wall = list(d.polylines)
+    symbols.recognise(d, FIXTURES)
+    assert [(s.name, round(s.x), round(s.y), s.angle) for s in d.symbols] == [("WASHBASIN", 100, 80, 180)]
+    assert d.polylines == wall and not d.lines and not d.arcs
+
+
+def test_a_symmetric_fixture_takes_the_pose_with_its_back_on_the_wall():
+    d = on_wall(place(fixture("HOB"), 100, 80, angle=180), place(fixture("SHOWER"), 140, 80, angle=180))
+    symbols.recognise(d, FIXTURES)  # both look the same turned half way; the wall tells which side is the back
+    assert sorted((s.name, round(s.x), round(s.y)) for s in d.symbols) == [("HOB", 100, 80), ("SHOWER", 140, 80)]
+
+
+def test_two_opposite_sides_make_a_rectangle_where_ocr_took_the_others():
+    wall_face, front = (40, 80, 160, 80), (97, 75.5, 103, 75.5)  # a washbasin at 1:100, its sides read as letters
+    segments = np.array([wall_face, front], float)
+    assert symbols._rectangles(segments, 1, 10, pairs=True).tolist() == [[100, 77.75, 6, 4.5]]
+    assert not len(symbols._rectangles(segments, 1, 10))  # otherwise all four sides must be there
+
+
+def test_a_small_washbasin_read_as_letters_is_found_and_the_letters_dropped():
+    basin = combine([read(FLOOR_PLAN)], "building", 100)["WASHBASIN 1:100"]  # 6 x 4.5 mm on the sheet
+    d = Drawing(297, 210, scale=100, polylines=[WALL], symbols=[place(basin, 100, 80, angle=180)])
+    r = convert(cv2.cvtColor(render(d, 200 / 25.4), cv2.COLOR_GRAY2BGR), paper="A4", dpi=200, drawing="building",
+                scale=100)
+    assert [(s.name, round(s.x), round(s.y), s.angle) for s in r.drawing.symbols] == [("WASHBASIN", 100, 80, 180)]
+    assert not r.drawing.texts  # its bowl and sides, read as "Ol"
 
 
 def test_lines_without_symbols_stay_lines():

@@ -22,12 +22,11 @@ from ezdxf import units, xref
 from .config import Settings
 from .drawing import _load_dxf
 from .errors import ConversionError
-from .plan2cad import library, simulate
+from .plan2cad import library, simulate, symbols
 from .plan2cad.export import overlay
 from .plan2cad.library import ID, Library, LibraryError, Template
 from .plan2cad.model import PAPER, Circle, Drawing, Line, Text
 from .plan2cad.pipeline import convert
-from .plan2cad.symbols import SMALL
 
 PIPE = 10.0  # mm of pipe drawn at each port in the self-test
 POSES = ((0.0, False), (90.0, True))  # each symbol as drawn, and turned and mirrored
@@ -46,6 +45,8 @@ def main(argv: list[str]) -> int:
     c.add_argument("library", help="installed library id, library folder, ZIP or DXF")
     c.add_argument("--no-self-test", action="store_true", help="only check the format (takes a second)")
     c.add_argument("--out", type=Path, help="folder for the review overlays of the self-test sheets")
+    c.add_argument("--scale", type=int, default=50,
+                   help="drawing scale of the self-test sheets for real-size symbols, e.g. 50 for 1:50 (default)")
     b = sub.add_parser("build", help="make a library from DXF or DWG files")
     b.add_argument("sources", nargs="+", help="DXF or DWG files, or folders of them")
     b.add_argument("--out", type=Path, required=True, help="new folder for library.toml and symbols.dxf")
@@ -62,7 +63,7 @@ def main(argv: list[str]) -> int:
             lib = library.resolve(args.library, Settings.from_env().symbol_libraries)
             print("\n".join(describe(lib)))
             if not args.no_self_test:
-                print("\n" + "\n".join(self_test(lib, args.out)))
+                print("\n" + "\n".join(self_test(lib, args.out, args.scale)))
             return 0
         return build(args)
     except LibraryError as e:
@@ -75,13 +76,13 @@ def main(argv: list[str]) -> int:
 def describe(lib: Library) -> list[str]:
     """The library, its symbols and notes on what may keep a symbol from being found."""
     lines = [f"{lib.id} {lib.version or '(no version)'}: {lib.name}",
-             f"Licence: {lib.licence or 'not stated'}. Drawing types: {', '.join(lib.drawing)}. "
-             f"One drawing unit is {lib.unit:g} mm.", "", f"{_count(len(lib.symbols), 'symbol')}:"]
+             f"Licence: {lib.licence or 'not stated'}. Drawing types: {', '.join(lib.drawing)}. Blocks drawn at "
+             f"{lib.size} size; one drawing unit is {lib.unit:g} mm.", "", f"{_count(len(lib.symbols), 'symbol')}:"]
     width = max(len(name) for name in lib.symbols)
     for t in lib.symbols.values():
         w, h = _size(t)
         tags = f", attributes {', '.join(t.tags)}" if t.tags else ""
-        lines.append(f"  {t.name:<{width}}  {w:5.1f} x {h:5.1f} mm, {len(t.ports)} ports{tags}  {t.description}")
+        lines.append(f"  {t.name:<{width}}  {w:6.1f} x {h:6.1f} mm, {len(t.ports)} ports{tags}  {t.description}")
     notes = lib.warnings + [note for t in lib.symbols.values() for note in advice(t)]
     if notes:
         lines += ["", "Notes:"] + [f"  - {note}" for note in notes]
@@ -91,26 +92,29 @@ def describe(lib: Library) -> list[str]:
 def advice(t: Template) -> list[str]:
     """What the matcher needs that the symbol lacks (see symbols.py for how candidates are found)."""
     w, h = _size(t)
+    real = t.library is not None and t.library.size == "real"
+    lo, hi = (50, 10_000) if real else (2, 100)  # mm: a fixture or a piece of furniture, a symbol on paper
     out = []
-    if not 2 <= max(w, h) <= 100:
-        out.append(f"{t.name}: {w:.1f} x {h:.1f} mm; blocks are drawn at their printed size, check the units "
-                   "($INSUNITS) or the scale of the block")
+    if not lo <= max(w, h) <= hi:
+        out.append(f"{t.name}: {w:.1f} x {h:.1f} mm; blocks are drawn at their {'real' if real else 'printed'} "
+                   "size, check the units ($INSUNITS), the scale of the block or 'size' in library.toml")
     if any(math.hypot(*p) < 0.5 for p in t.ports):
         out.append(f"{t.name}: the insertion point lies on a port; put it in the middle of the symbol, because a "
                    "port is recognised by its direction from there")
-    if not t.ports and not any(isinstance(q, Circle) for q in t.parts):
-        out.append(f"{t.name}: no PORT points and no circle, " + (
-            f"and larger than {SMALL:g} mm: it cannot be found" if math.hypot(w, h) > SMALL else
-            "so it is only found where its strokes stand on their own, not on a pipe") + "; add PORT points where "
-            "pipes connect")
+    if not t.ports and not any(isinstance(q, Circle) for q in t.parts) and not len(symbols.rectangles(t)):
+        out.append(f"{t.name}: no PORT points, circle or rectangle, so it is only found where its strokes stand "
+                   "apart from other linework; add PORT points where pipes connect")
     return out
 
 
-def self_test(lib: Library, out: Path | None = None) -> list[str]:
+def self_test(lib: Library, out: Path | None = None, scale: int = 50) -> list[str]:
     """Draws every symbol in two poses on synthetic sheets with pipes at its ports and text at its attributes,
-    simulates a scan and a phone photo of each sheet and recognises them with this library alone."""
-    placements = [(t, angle, mirror) for t in lib.symbols.values() for angle, mirror in POSES]
-    cell = max(30.0, max(max(_size(t)) for t in lib.symbols.values()) + 2 * PIPE + 8)
+    simulates a scan and a phone photo of each sheet and recognises them with this library alone, on a drawing of
+    the library's first type; real-size symbols at the drawing ``scale``."""
+    drawing, scale = lib.drawing[0], scale if lib.size == "real" else None
+    templates = list(library.combine([lib], drawing, scale).values())
+    placements = [(t, angle, mirror) for t in templates for angle, mirror in POSES]
+    cell = max(30.0, max(max(_size(t)) for t in templates) + 2 * PIPE + 8)
     W, H = PAPER[SHEET]
     cols, rows = int((W - 2 * MARGIN) // cell), int((H - 2 * MARGIN) // cell)
     if not cols or not rows:
@@ -122,7 +126,7 @@ def self_test(lib: Library, out: Path | None = None) -> list[str]:
         d, drawn = _sheet(batch, cols, cell, [f"Library {lib.id}", f"Self-test sheet {n}", "cad-ingest library check"])
         for kind, _, image in RUNS:
             started = time.perf_counter()
-            r = convert(image(d, n), paper=SHEET, drawing="pid", templates=lib.symbols)
+            r = convert(image(d, n), paper=SHEET, drawing=drawing, scale=scale, libraries=[lib])
             seconds[kind] += time.perf_counter() - started
             symbol_seconds[kind] += r.info["timings_s"].get("symbols", 0)
             names = _match(drawn, r.drawing.symbols)
@@ -134,8 +138,9 @@ def self_test(lib: Library, out: Path | None = None) -> list[str]:
                 cv2.imwrite(str(out / f"sheet-{n}-{kind}.png"), overlay(r.image, r.drawing, r.ppm))
     total = len(placements)
     width = max(len(name) for name in lib.symbols)
+    at = f" at 1:{scale}" if scale else ""
     lines = [f"Self-test: {_count(len(lib.symbols), 'symbol')}, each as drawn and turned and mirrored, on "
-             f"{_count(len(sheets), SHEET + ' sheet')}, " + " and ".join(f"as a {label}" for _, label, _ in RUNS)
+             f"{_count(len(sheets), SHEET + ' sheet')}{at}, " + " and ".join(f"as a {label}" for _, label, _ in RUNS)
              + ":", "",
              f"  {'symbol':<{width}}  scan  photo  mistaken for"]
     for t in lib.symbols.values():

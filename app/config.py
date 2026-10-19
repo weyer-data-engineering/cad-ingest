@@ -52,7 +52,7 @@ class Settings:
     # Folders with symbol libraries added to the built-in ones (separated by ':'), read when a worker starts.
     symbol_libraries: str = "/libraries"
     # Installed libraries (comma-separated ids) used when a job names none; earlier ones win on equal block names.
-    default_symbol_libraries: str = "din-10628"
+    default_symbol_libraries: str = "din-10628,floor-plan"
     # Largest library a job may bring along (library_urls), per library.
     max_library_size_bytes: int = 52_428_800
 

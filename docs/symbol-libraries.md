@@ -1,9 +1,11 @@
 # Symbol libraries
 
-When cad-ingest turns a photo or scan of a P&ID into DXF (`vectorize`), it replaces recognised symbols with blocks of
-a symbol library: a valve becomes a valve block with its tag as an attribute, not six loose strokes. cad-ingest ships
-a starter library with 18 symbols after DIN EN ISO 10628-2. You can add your own company library next to it, so that
-the DXF contains your blocks, with your layers, colours and attribute names.
+When cad-ingest turns a photo or scan of a P&ID or a floor plan into DXF (`vectorize`), it replaces recognised
+symbols with blocks of a symbol library: a valve becomes a valve block with its tag as an attribute, a washbasin a
+washbasin block, not loose strokes. cad-ingest ships two starter libraries: `din-10628` with 18 P&ID symbols after
+DIN EN ISO 10628-2, and `floor-plan` with seven fixtures of floor plans (toilet, washbasin, bathtub, shower tray,
+kitchen sink, hob, washing machine). You can add your own company libraries next to them, so that the DXF contains
+your blocks, with your layers, colours and attribute names.
 
 A library is data, not code: nothing in a library is ever run. A library that a job brings along is read like the
 job's own file, in its work-horse under the same time and memory limits.
@@ -29,18 +31,26 @@ name = "ACME P&ID symbols"
 version = "2.1.0"
 format = 1                               # the library format; this version of cad-ingest reads format 1
 licence = "LicenseRef-ACME-internal"     # SPDX identifier, e.g. CC-BY-4.0
-drawing = ["pid"]                        # the drawing types the library is for; symbols are found on P&IDs so far
+drawing = ["pid"]                        # the drawings it is for: "pid" (P&IDs), "building" (floor plans) or both
+size = "printed"                         # blocks drawn at their size on the sheet ("printed") or of the object ("real")
 file = "symbols.dxf"
 ```
 
 Every field is optional. Without one, `id` comes from the folder or file name, `name` is the id, `format` is 1,
-`drawing` is `["pid"]` and `file` is `symbols.dxf`. Unknown fields are ignored, and `cad-ingest library check`
-points them out.
+`drawing` is `["pid"]`, `size` is `printed` and `file` is `symbols.dxf`. Unknown fields are ignored, and
+`cad-ingest library check` points them out.
+
+**P&ID symbols and floor plan fixtures.** A library is used on the kind of drawing it is for: a P&ID gets the
+libraries with `"pid"`, a floor plan those with `"building"`. P&ID symbols are drawn at the size they have on the
+sheet (`size = "printed"`, a valve about 5 mm long). Fixtures and furniture in architectural CAD libraries are drawn at
+the size of the real object (`size = "real"`, a bathtub 1700 mm long). cad-ingest shrinks real-size blocks by the
+drawing scale, which it reads from the title block or takes from the job's `scale` option; while the scale is
+unknown, it tries 1:50 and 1:100. The DXF holds the blocks at real size either way.
 
 ## The blocks
 
-Each block of the DXF is one symbol, drawn at the size it has on the printed sheet, around its insertion point (the
-block's base point):
+Each block of the DXF is one symbol around its insertion point (the block's base point), at its printed or its real
+size (see `size` above):
 
 | Element in the block | Meaning |
 |---|---|
@@ -59,10 +69,19 @@ are assumed. Blocks whose names start with `*` or `_` (anonymous blocks and dime
 
 What makes a symbol easy to find:
 
-- **Ports.** Most symbols are found where pipe ends meet their ports. A symbol without ports and without a circle
-  is only found where its strokes stand on their own, and not at all if it is larger than 25 mm.
-- **Insertion point in the middle.** A port is recognised by its direction from the insertion point. Put the
-  insertion point in the middle of the symbol, not on a port.
+- **Ports.** Most P&ID symbols are found where pipe ends meet their ports. Put the insertion point of a P&ID symbol
+  in the middle, not on a port: a port is recognised by its direction from the insertion point.
+- **Rectangles.** Fixtures and furniture are found from a rectangle of their outline: the box of a washbasin, the
+  cistern of a toilet. A side may be part of a longer line, such as the wall face behind a washbasin or the front edge
+  of a counter, and two opposite sides are enough where OCR read the others as letters. Circles (pumps, instruments,
+  hotplates) are anchors too. A symbol with neither ports, rectangle nor circle is only found where its strokes stand
+  apart from other linework.
+- **No lines close along a side.** At 1:100, a line a few centimetres inside the edge of a fixture looks like the
+  second face of a wall: a washing machine with a line for its control panel may be found where a washbasin hangs on
+  a thin wall. Leave such lines out of the outline, or draw them well inside.
+- **Fixtures with their back on the wall.** Put the insertion point of a fixture in the middle of its back, the side
+  against the wall, as the `floor-plan` library does. When a fixture looks the same turned or mirrored (a hob, a
+  shower tray), cad-ingest places it so that its insertion point lies on the wall.
 - **Distinct shapes.** Two symbols that differ only by a fill or a letter inside cannot be told apart yet. The
   self-test of `cad-ingest library check` shows such mix-ups.
 - **Attributes where the text stands.** A text within about 4 mm of an attribute position becomes that attribute.
@@ -99,11 +118,11 @@ docker run --rm --user "$(id -u)" -v "$PWD:/data" -w /data ghcr.io/weyer-data-en
 ```
 $ cad-ingest library check acme-pid --no-self-test
 acme-pid 2.1.0: ACME P&ID symbols
-Licence: LicenseRef-ACME-internal. Drawing types: pid. One drawing unit is 1 mm.
+Licence: LicenseRef-ACME-internal. Drawing types: pid. Blocks drawn at printed size; one drawing unit is 1 mm.
 
 2 symbols:
-  MY_VALVE         6.0 x   3.0 mm, 2 ports, attributes TAG  Box valve
-  VALVE_AT_PORT    5.0 x   3.2 mm, 2 ports  Gate valve, inserted at a port
+  MY_VALVE          6.0 x    3.0 mm, 2 ports, attributes TAG  Box valve
+  VALVE_AT_PORT     5.0 x    3.2 mm, 2 ports  Gate valve, inserted at a port
 
 Notes:
   - VALVE_AT_PORT: the insertion point lies on a port; put it in the middle of the symbol, because a port is recognised by its direction from there
@@ -125,6 +144,7 @@ Found: scan 94% (34/36), photo 94% (34/36). Found where no symbol was drawn: sca
 Time per sheet: scan 9.5 s, photo 18.7 s, of which symbol recognition 2.9 s and 2.7 s.
 ```
 
+A library for floor plans is tested on floor plan sheets, a real-size library at 1:50 (`--scale 100` for 1:100).
 `--out folder` writes the review overlay of every sheet, with the symbols that were found in teal. `--no-self-test`
 only checks the format, which takes a second; the self-test takes about half a minute per sheet. The command exits
 with 1 if the library cannot be read.
@@ -142,19 +162,19 @@ cad-ingest plan.jpg out/ --paper A1 --library ./acme-pid --library din-10628
 ```
 
 **Service, installed libraries.** Workers read the libraries in `SYMBOL_LIBRARIES` (default `/libraries`) when they
-start, in addition to the built-in starter library. Mount a folder there or build an image of your own (see
-[Operations](operations.md#symbol-libraries)). `DEFAULT_SYMBOL_LIBRARIES` (default `din-10628`) names the libraries a
-job gets when it names none. A job chooses others with `"options": {"libraries": ["acme-pid", "din-10628"]}`, and
-`GET /libraries` lists what is installed.
+start, in addition to the built-in starter libraries. Mount a folder there or build an image of your own (see
+[Operations](operations.md#symbol-libraries)). `DEFAULT_SYMBOL_LIBRARIES` (default `din-10628,floor-plan`) names the
+libraries a job gets when it names none. A job chooses others with `"options": {"libraries": ["acme-pid",
+"din-10628"]}`, and `GET /libraries` lists what is installed. Each library is used on the kind of drawing it is for.
 
 **Service, libraries a job brings along.** `"library_urls": ["https://storage/acme-pid.zip?sig=..."]` downloads one or
 more libraries (a ZIP or a DXF) with the job, for example a library that each tenant of a platform keeps in its own
 storage. They come first, then the installed ones the job names. The default libraries are only used when the job
-names no library at all, so add `"libraries": ["din-10628"]` to keep the starter symbols. A library a job brings
-along is read in its work-horse under the same limits as the file, and never stored.
+names no library at all, so add `"libraries": ["din-10628", "floor-plan"]` to keep the starter symbols. A library a
+job brings along is read in its work-horse under the same limits as the file, and never stored.
 
-The `report.json` of every result lists the libraries that were used, with their versions, and for every symbol the
-library it came from.
+The `report.json` of every result lists the libraries that were used for the kind of drawing, with their versions,
+and for every symbol the library it came from.
 
 ## Sharing a library
 
