@@ -223,19 +223,24 @@ def _text(cc: Components, g: list[int], vertical: bool, s: str, conf: float, ppm
 
 
 def _rotation(cc: Components, h_groups: list, v_groups: list) -> int | None:
-    """Clockwise rotation that makes the text upright: the orientation (of four) in which clearly
-    more text lines are read with high confidence wins. None if the text is too poor to decide."""
-    found = []
+    """Clockwise rotation that makes the text upright, of four. Each text line is read both ways round, which gives
+    the number of lines read with high confidence as horizontal text the right way up (0) or upside down (180) and
+    as vertical text reading bottom to top (90) or top to bottom (270). An upright sheet shows horizontal text the
+    right way up and vertical text bottom to top, as drawing standards have it; a sheet that needs turning by r
+    shows both turned by r. So each rotation is scored by its pair, and a sheet full of vertical pipe labels is no
+    longer taken for a sideways one. Ties go to the rotation with more horizontal text, None if the text is too
+    poor to decide."""
+    good = {}
     for vertical, groups in ((False, h_groups), (True, v_groups)):
         groups = sorted(groups, key=len, reverse=True)[:60]
-        if len(groups) < 3:
-            continue
         for turn in (0, 1):
-            res = _read([_crop(cc, g, vertical, turn) for g in groups])
-            good = sum(c >= 80 and sum(ch.isalnum() for ch in s) >= 3 for s, c in res)
+            res = _read([_crop(cc, g, vertical, turn) for g in groups]) if len(groups) >= 3 else []
             # vertical text reading bottom-to-top is upright after a 90 degree clockwise turn
-            found.append((good, (90 if turn == 0 else 270) if vertical else (0 if turn == 0 else 180)))
-    found.sort(reverse=True)
-    if not found or found[0][0] < 2 or (len(found) > 1 and found[0][0] - found[1][0] < 2):
+            good[(90 if turn == 0 else 270) if vertical else (0 if turn == 0 else 180)] = sum(
+                c >= 80 and sum(ch.isalnum() for ch in s) >= 3 for s, c in res)
+    score = {r: (good[r] + good[(r + 90) % 360], good[r]) for r in (0, 90, 180, 270)}
+    ranked = sorted(score, key=score.get, reverse=True)
+    best, second = score[ranked[0]], score[ranked[1]]
+    if best[0] < 2 or best == second or best[0] - second[0] < 2 and best[1] - second[1] < 2:
         return None
-    return found[0][1]
+    return ranked[0]

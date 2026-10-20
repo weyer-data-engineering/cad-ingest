@@ -124,6 +124,12 @@ def test_lines_without_symbols_stay_lines():
     assert not d.symbols and len(d.lines) == 3
 
 
+def test_a_symbol_at_one_port_is_tried_at_pipe_ends_only():
+    pipe, letter = Line(10, 10, 60, 10), Line(80, 10, 82, 13)  # a stroke of a letter ends like a pipe does
+    ends = symbols._ends(Drawing(200, 100, lines=[pipe, letter]), bend=45, shortest=symbols.STUB)
+    assert sorted(tuple(p) for p, _ in ends) == [(10, 10), (60, 10)]
+
+
 def test_nothing_is_placed_in_the_title_block():
     frame = Polyline([(10, 10), (287, 10), (287, 200), (10, 200)], [0] * 4, closed=True, kind="frame")
     block = [Line(207, 200, 207, 170), Line(207, 170, 287, 170)]

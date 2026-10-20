@@ -15,14 +15,15 @@ import pypdfium2
 from .config import Settings
 from .drawing import _count_lines
 from .errors import ConversionError, JobError
-from .plan2cad import library, symbols
+from .plan2cad import library, pdfvector, symbols
 from .plan2cad.export import overlay, to_dxf, to_figure
 from .plan2cad.imageio import load_image, page_count
 from .plan2cad.model import Drawing
-from .plan2cad.pipeline import Result, convert
+from .plan2cad.pipeline import Result, convert, convert_vectors
 
 KINDS = {"building": "floor plan", "pid": "P&ID"}
-SHEETS = {"paper": "paper edges", "frame": "drawing frame", "image": "whole image, no sheet edge found"}
+SHEETS = {"paper": "paper edges", "frame": "drawing frame", "image": "whole image, no sheet edge found",
+          "page": "vector PDF page, read as drawn"}
 
 
 def vectorize(path: str, name: str, options: dict, result: str, preview: str | None,
@@ -88,14 +89,20 @@ def _listed(numbers: list[int]) -> str:
 
 
 def _page(data: bytes, page: int, options: dict, libraries: list[library.Library]) -> Result | None:
-    """The recognised drawing of a page (counted from 0), or None if it holds no drawing."""
+    """The drawing of a page (counted from 0), or None if it holds no drawing: read from the vectors of a PDF page
+    made of them (a CAD export), else recognised on the image."""
+    drawing = None if options.get("drawing", "auto") == "auto" else options["drawing"]
+    if data[:5] == b"%PDF-":
+        pdf = pypdfium2.PdfDocument(data)
+        if pdfvector.is_vector(pdf[page]):
+            r = convert_vectors(pdf, pdf[page], options.get("scale"), drawing)
+            return r if any(r.info["counts"][k] for k in ("lines", "arcs", "circles", "polylines")) else None
     try:
         img, dpi = load_image(data, page)
     except ValueError as e:
         raise ConversionError(str(e)) from None
     r = convert(img, paper=options.get("paper", "A3"), scale=options.get("scale"), dpi=options.get("dpi") or dpi,
-                drawing=None if options.get("drawing", "auto") == "auto" else options["drawing"],
-                libraries=libraries)
+                drawing=drawing, libraries=libraries)
     return r if any(r.info["counts"][k] for k in ("lines", "arcs", "circles", "polylines")) else None
 
 
@@ -161,8 +168,8 @@ def _markdown(name: str, pages: list[tuple[int, dict, Drawing]], total: int) -> 
 
 def _page_markdown(info: dict, d: Drawing, heading: str) -> list[str]:
     lines = [f"- Recognised as: {KINDS.get(info['drawing_type'], 'technical drawing')}",
-             f"- Paper: {info['paper']}, sheet {info['sheet_size_mm'][0]:g} x {info['sheet_size_mm'][1]:g} mm "
-             f"(found by: {SHEETS[info['sheet']]})",
+             f"- Paper: {info['paper'] or 'custom'}, sheet {info['sheet_size_mm'][0]:g} x "
+             f"{info['sheet_size_mm'][1]:g} mm (found by: {SHEETS[info['sheet']]})",
              f"- Scale: {'1:' + str(info['scale']) if info['scale'] else 'unknown'}",
              f"- Elements: {', '.join(f'{n} {k}' for k, n in info['counts'].items() if n)}"]
     reading_order = sorted(d.texts, key=lambda t: (round(t.y / 5), t.x))
@@ -174,6 +181,9 @@ def _page_markdown(info: dict, d: Drawing, heading: str) -> list[str]:
                     for s in sorted(d.symbols, key=lambda s: (round(s.y / 5), s.x)))
     if found:
         lines += ["", f"{heading} Symbols", ""] + _count_lines(found)
+    layers = Counter(e.layer for e in d.lines + d.arcs + d.circles + d.polygons + d.polylines + d.texts if e.layer)
+    if layers:  # the CAD layers of a vector PDF, such as "Valves": what is drawn where
+        lines += ["", f"{heading} Layers (elements on each)", ""] + _count_lines(Counter(dict(layers.most_common())))
     return lines
 
 

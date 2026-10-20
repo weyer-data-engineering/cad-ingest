@@ -13,8 +13,10 @@ job handler in `app/scan.py`.
 1. **Sheet**: finds the paper in the photo (GrabCut, edges refined at full resolution) and removes the perspective. If
    the paper runs out of the picture, it uses the printed drawing frame instead (aspect ratio from the perspective,
    Zhang & He). Scans without visible paper edges are deskewed.
-2. **Light**: divides by the paper brightness (a closing that follows soft shadow edges) and binarises against the
-   darkest ink nearby, so glare and light toner keep their lines.
+2. **Light**: takes the darkest colour channel as grey value where the colour is strong (so yellow and orange lines
+   are ink as dark as black ones; colour casts of photos are too weak for this), divides by the paper brightness (a
+   closing that follows soft shadow edges) and binarises against the darkest ink nearby, so glare and light toner keep
+   their lines.
 3. **Vectors**: filled areas (thicker than 1.5 mm), horizontal and vertical lines (morphology), circles (Hough, verified
    on all ink; text found on a ring is dropped as misread symbol arcs), everything else by skeleton tracing with arc
    fitting. Collinear pieces are joined, regular pieces become dashed lines, corners are closed.
@@ -22,8 +24,11 @@ job handler in `app/scan.py`.
    with its heads); slivers and loose specks from the tracing are dropped. Floor plans get door swings (leaf and quarter
    arc) and walls, P&IDs equipment (large closed outlines), signal lines (dashed or ending at an instrument bubble) and
    pipes.
-5. **Text**: characters are grouped into lines and read by Tesseract in batches; the sheet is turned if most text is
-   upside down or sideways. The scale is read from the title block. Text that cannot be read reliably stays a text (a
+5. **Text**: characters are grouped into lines and read by Tesseract in batches. The sheet is turned if its text
+   reads better turned: each rotation counts horizontal text the right way up together with vertical text reading
+   bottom to top, so a P&ID full of vertical pipe labels is not taken for a sideways sheet. The scale is read from
+   the title block. The drawing type weighs room areas (m²) and a building scale against nominal sizes (DN),
+   instrument bubbles and a title such as "R&I". Text that cannot be read reliably stays a text (a
    guess on its own layer to check) instead of turning into a heap of short strokes.
 6. **Symbols**: valves, pumps and instruments on P&IDs (and on drawings of unknown kind), toilets, washbasins, bathtubs
    and other fixtures on floor plans are looked up in symbol libraries and placed as their CAD blocks instead of loose
@@ -43,7 +48,8 @@ Scans often arrive as PDFs or TIFFs with several pages. Every page is converted 
 stays that of one page): the first page with a drawing at the root of the ZIP, every further page n in `page-n/` with
 the same files. Pages without a drawing, such as a cover letter, are skipped with a warning. `options.pages` (command
 line `--pages 1-3,5`) picks pages; a job converts at most `MAX_SCAN_PAGES` (20) and leaves out the pages it would not
-finish within its time limit. PDF pages are rendered at 300 dpi.
+finish within its time limit. Scanned PDF pages are rendered at 300 dpi; pages drawn in vectors are read directly,
+see [Vector PDFs](#vector-pdfs).
 
 ![Review overlay: recognised lines, arcs, symbols and texts in colour on the faded photo](images/review-overlay.jpg)
 
@@ -60,6 +66,25 @@ docker run --rm --user "$(id -u)" -v "$PWD:/data" -w /data ghcr.io/weyer-data-en
 
 There is no DWG output: the ODA File Converter may be used by non-members for non-commercial applications only, and
 LibreDWG writes only old DWG versions, experimentally. AutoCAD and other CAD programs open the DXF directly.
+
+## Vector PDFs
+
+A PDF exported from CAD holds the drawing itself, not a picture of it. Such a page (at least 20 paths and no image
+covering 30 % of it) is read as it is, without image recognition (`app/plan2cad/pdfvector.py`):
+
+- Lines, arcs, circles, polylines and fills keep their exact geometry, colour and pen width (the DXF gets the nearest
+  of all DXF line weights). CAD programs write arcs and circles as Bézier curves; curves that follow a circle within
+  0.03 mm become arcs and circles again.
+- Every element keeps the CAD layer it was drawn on where the PDF names it (optional content), and the DXF gets the
+  same layers. The markdown lists the layers with the number of elements on each.
+- Texts keep their string, angle and colour. Height, length and slant are measured on the text as it is drawn, and
+  the DXF text is fitted between the ends of its baseline, so it covers the same place in any font.
+- The page is the sheet: `paper` and `dpi` do not apply. `report.json` has `sheet` `page`, the page size, and `paper`
+  `null` where that is no standard size. A page turned with /Rotate is read the way it is shown.
+- Nothing is classified or replaced by symbols: walls, pipes and valves stay the strokes they were drawn as, on their
+  layers, so the DXF shows exactly what the PDF shows. The drawing type and scale are still read from the texts.
+
+A PDF page that is a scan, or a drawing flattened to an image, takes the image route described above.
 
 ## Symbol library
 
@@ -85,7 +110,8 @@ libraries](symbol-libraries.md) explains the format and the tools that check and
 How a symbol is found: candidates come from two line ends that two ports of a symbol fit (a valve between two pipe ends;
 this fixes position, turn and size), from rectangles whose proportions fit a rectangle of the symbol (the box of a
 washbasin, whose back may be the face of the wall it hangs on), from circles (pumps, instruments, hotplates) and, where
-nothing was found yet, from single line ends and from groups of small strokes. Each candidate is matched against the
+nothing was found yet, from single pipe ends (straight lines from 4 mm; shorter strokes are mostly letters) and from
+groups of small strokes. Each candidate is matched against the
 image itself (the centre lines of the ink, not the traced vectors, which round off arrowheads and springs): a point of
 the symbol counts as found where ink runs close by in the same direction. A symbol needs 80 % of its outline and half
 of each of its parts (a ball valve needs its ball), a line leaving at least one port and, if it has one, a straight
@@ -154,3 +180,6 @@ stay linework. On floor plans, all fixtures are found at 1:50; at 1:100, where O
   `options` for other scales.
 - Symbol recognition adds about 20 s to an A1 sheet and 35 s to an A0 sheet with the starter library; larger
   libraries take longer.
+- Vector PDFs: symbols are not recognised on them yet, and a text is a single-line TEXT in the DXF's standard font,
+  stretched to the length it has in the PDF. White fills count as paper and are left out, so a white mask over lines
+  (such as a text background) does not hide them in the DXF.

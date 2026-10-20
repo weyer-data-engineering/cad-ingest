@@ -66,7 +66,8 @@ def classify(d: Drawing, kind: str) -> None:
     wall) and lines of the heavy pen; in a P&ID ("pid") equipment (large closed outlines), signal
     lines (dashed or ending at an instrument bubble) and pipes (all other solid lines from 5 mm).
     Single lines that get a kind become two-point polylines."""
-    singles = [Polyline([(ln.x1, ln.y1), (ln.x2, ln.y2)], [0.0], False, ln.width, ln.dashed) for ln in d.lines]
+    singles = [Polyline([(ln.x1, ln.y1), (ln.x2, ln.y2)], [0.0], False, ln.width, ln.dashed, color=ln.color)
+               for ln in d.lines]
     items = d.polylines + singles
     for pl in items:
         if _on_frame(pl, d.width, d.height):
@@ -104,12 +105,15 @@ def _on_frame(pl: Polyline, width: float, height: float, margin: float = 25.0) -
 
 def drawing_type(texts: list[Text], circles: list[Circle], scale: int | None) -> str:
     """"building" for floor plans (room areas, a building scale), "pid" for P&IDs (nominal sizes,
-    instrument bubbles), "" if neither."""
+    instrument bubbles, a title such as "R&I"), "" if neither. The evidence is weighed: a P&ID may list
+    the areas of its heat exchangers in m², a floor plan may name a pipe size."""
     read = " ".join(t.text for t in texts if not t.uncertain)
-    if re.search(r"\d m[²2]\b", read) or scale in (20, 25, 50, 75, 100, 200):
-        return "building"
+    rooms = len(re.findall(r"\d m[²2]\b", read)) + (3 if scale in (20, 25, 50, 75, 100, 200) else 0)
     bubbles = sum(any(math.hypot(t.x - c.cx, t.y - c.cy) < c.r for t in texts) for c in circles if 3 <= c.r <= 8)
-    if re.search(r"\bDN ?\d+|R&I|P&ID", read) or bubbles >= 2:
+    pid = len(re.findall(r"\bDN ?\d+", read)) + bubbles + (5 if re.search(r"R&I|R\+I|P&ID", read) else 0)
+    if rooms and rooms >= pid:
+        return "building"
+    if pid >= 2 or re.search(r"\bDN ?\d+|R&I|R\+I|P&ID", read):
         return "pid"
     return ""
 

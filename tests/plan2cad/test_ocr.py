@@ -24,6 +24,15 @@ def test_reads_horizontal_and_vertical_text():
     assert detect_scale(texts) == 50
 
 
+def test_sheet_of_vertical_pipe_labels_is_not_turned():
+    words = ["Zulauf Kessel", "Kühlwasser", "Rücklauf", "Abgas Kamin", "Heizung Vorlauf", "Speisewasser", "Kondensat",
+             "Abwasser"]  # more upright vertical text than horizontal text
+    labels = [Text(10 + 8 * i, 60, 2.5, w, 90) for i, w in enumerate(words)]
+    d = Drawing(140, 100, texts=labels + [Text(100, 10 + 6 * i, 2.5, f"Pumpe P-10{i}") for i in range(3)])
+    gray = render(d, 10)
+    assert find_texts((gray < 128).astype(np.uint8), gray, 10, True)[2] == 0
+
+
 @pytest.mark.parametrize("text, scale", [("Maßstab 1:50", 50), ("M 1:100", 100), ("Matstab 1 50", 50),
                                          ("Blatt 1/1", None), ("PID 1 50", None),
                                          ("12,50 m", None), ("15.62 m’", None)])

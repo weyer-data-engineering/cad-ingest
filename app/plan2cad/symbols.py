@@ -309,7 +309,7 @@ def _leftover(d: Drawing, shapes: list[_Shape], ink: _Ink, found: list[_Hit]):
     ports = [transform(*h.pose)(*q) for h in found for q in h.shape.t.ports]
     connected = cKDTree(ports) if ports else None
     shape, mirror, pa, _ = _port_choices(shapes, 1)
-    for p, e in _ends(d, bend=45):
+    for p, e in _ends(d, bend=45, shortest=STUB):  # pipe ends
         if connected and connected.query(p, distance_upper_bound=SNAP)[0] < np.inf:
             continue  # the line ends at a symbol found already
         if len(shape) and free(p):
@@ -412,26 +412,28 @@ def _unit(v: np.ndarray) -> np.ndarray:
     return v / np.maximum(np.hypot(v[:, 0], v[:, 1]), 1e-9)[:, None]
 
 
-def _ends(d: Drawing, bend: float) -> list[tuple[np.ndarray, np.ndarray]]:
+def _ends(d: Drawing, bend: float, shortest: float = 0.0) -> list[tuple[np.ndarray, np.ndarray]]:
     """Line ends with the unit vector pointing out of the line, also where a straight run of a polyline bends by more
-    than ``bend`` degrees or turns into an arc (a pipe that was joined with a stroke of a symbol)."""
+    than ``bend`` degrees or turns into an arc (a pipe that was joined with a stroke of a symbol); only of straight
+    pieces at least ``shortest`` mm long."""
     out = []
     for pl in d.polylines:
         if pl.kind == "frame" or pl.dashed:  # signal lines carry no symbols
             continue
         pts = np.array(pl.points + pl.points[:1] if pl.closed else pl.points, float)
         straight = np.array(pl.bulges) == 0
-        heading = _unit(np.diff(pts, axis=0))
+        step = np.diff(pts, axis=0)
+        heading, long = _unit(step), np.hypot(step[:, 0], step[:, 1]) >= shortest
         ends = np.ones(len(heading) + 1, bool)  # a run ends at point k
         ends[1:-1] = ~straight[1:] | ~straight[:-1] | (np.sum(heading[1:] * heading[:-1], 1) < math.cos(math.radians(bend)))
         for k in np.flatnonzero(ends):
-            if k > 0 and straight[k - 1]:
+            if k > 0 and straight[k - 1] and long[k - 1]:
                 out.append((pts[k], heading[k - 1]))
-            if k < len(heading) and straight[k]:
+            if k < len(heading) and straight[k] and long[k]:
                 out.append((pts[k], -heading[k]))
     for ln in d.lines:
         a, b = np.array([ln.x1, ln.y1]), np.array([ln.x2, ln.y2])
-        if not ln.dashed and (n := np.hypot(*(b - a))) > 0:
+        if not ln.dashed and (n := np.hypot(*(b - a))) > 0 and n >= shortest:
             out += [(b, (b - a) / n), (a, (a - b) / n)]
     return out
 
@@ -602,9 +604,10 @@ def _screened(hypotheses: list, ink: _Ink, chunk: int = 4000) -> list:
             outlines.append(_oriented(s.pts[::3] @ m.T + (x, y), s.heading[::3] @ m.T / scale))
         points, rim = np.vstack(outlines), np.concatenate([s.rim[::3] for _, (s, _, _) in batch])
         starts = np.cumsum([0] + [len(o) for o in outlines[:-1]])
-        loose = np.add.reduceat(_found(points, rim, ink, np.repeat([TOL + r for _, (_, _, r) in batch],
-                                                                    [len(o) for o in outlines])), starts)
-        exact = np.add.reduceat(_found(points, rim, ink, TOL), starts)  # to pick the size
+        dist = _distances(points, rim, ink, TOL + max(r for _, (_, _, r) in batch))
+        loose = np.add.reduceat(dist <= np.repeat([TOL + r for _, (_, _, r) in batch], [len(o) for o in outlines]),
+                                starts)
+        exact = np.add.reduceat(dist <= TOL, starts)  # to pick the size
         for (k, h), n, near, sharp in zip(batch, [len(o) for o in outlines], loose, exact):
             precise = h[2] <= 1  # anchored at line ends or a circle: most of the outline must lie on linework already
             if near >= 0.8 * n and (not precise or sharp >= 0.3 * n) and sharp / n > best.get(k, (-1, None))[0]:
@@ -620,15 +623,19 @@ def _screened(hypotheses: list, ink: _Ink, chunk: int = 4000) -> list:
 
 
 def _found(outline: np.ndarray, rim: np.ndarray, ink: _Ink, tol) -> np.ndarray:
-    """Which outline points (oriented) have linework within ``tol``; text counts only on the outer outline (a
-    misread arrow tip), on circles and on small closed shapes (two hotplates read as "00"), not elsewhere inside
-    (letters in a bubble do not make a bar across it)."""
-    tol = np.broadcast_to(tol, len(outline))
-    found = np.zeros(len(outline), bool)
+    """Which outline points (oriented) have linework within ``tol``."""
+    return _distances(outline, rim, ink, np.max(tol)) <= tol
+
+
+def _distances(outline: np.ndarray, rim: np.ndarray, ink: _Ink, upper: float) -> np.ndarray:
+    """The distance from each outline point (oriented) to the nearest linework, infinite beyond ``upper``. Text counts
+    only on the outer outline (a misread arrow tip), on circles and on small closed shapes (two hotplates read as
+    "00"), not elsewhere inside (letters in a bubble do not make a bar across it)."""
+    dist = np.full(len(outline), np.inf)
     for tree, which in ((ink.oriented_tree, rim), (ink.strokes, ~rim)):
         if which.any() and tree.n:
-            found[which] = tree.query(outline[which], distance_upper_bound=tol.max())[0] <= tol[which]
-    return found
+            dist[which] = tree.query(outline[which], distance_upper_bound=upper)[0]
+    return dist
 
 
 # --------------------------------------------------------------------------- replacing the linework

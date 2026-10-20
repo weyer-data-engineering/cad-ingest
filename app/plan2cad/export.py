@@ -25,11 +25,13 @@ LAYERS = {"P2C-LINE": 7, "P2C-DASH": 5, "P2C-CURVE": 3, "P2C-FILL": 8, "P2C-TEXT
 KIND_LAYERS = {"wall": "P2C-WALL", "door": "P2C-DOOR", "pipe": "P2C-PIPE", "equipment": "P2C-EQUIPMENT",
                "signal": "P2C-SIGNAL", "frame": "P2C-FRAME"}
 LINEWEIGHTS = (13, 18, 25, 35, 50, 70, 100, 140, 200)  # ISO pen widths in 1/100 mm
+DXF_LINEWEIGHTS = (0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211)
 PT_PER_MM = 72 / 25.4
 
 
-def lineweight(width_mm: float) -> int:
-    return min(LINEWEIGHTS, key=lambda lw: abs(lw - width_mm * 100))
+def lineweight(width_mm: float, exact: bool = False) -> int:
+    """The pen for a width: the nearest ISO pen for a measured width, the nearest DXF lineweight for an exact one."""
+    return min(DXF_LINEWEIGHTS if exact else LINEWEIGHTS, key=lambda lw: abs(lw - width_mm * 100))
 
 
 def to_dxf(d: Drawing, underlay: tuple[str, tuple[int, int]] | None = None) -> ezdxf.document.Drawing:
@@ -50,35 +52,53 @@ def to_dxf(d: Drawing, underlay: tuple[str, tuple[int, int]] | None = None) -> e
     def pt(x: float, y: float) -> tuple[float, float]:
         return x * s, (d.height - y) * s
 
+    def on(layer: str, item) -> dict:
+        """The layer (the item's own CAD layer, if it has one) and colour of an item."""
+        if item.layer and item.layer not in doc.layers:
+            doc.layers.add(item.layer)
+        attribs = {"layer": item.layer or layer}
+        if item.color:
+            attribs["true_color"] = ezdxf.colors.rgb2int(item.color)
+        return attribs
+
+    def pen(layer: str, item) -> dict:
+        return on(layer, item) | {"lineweight": lineweight(item.width, d.exact)}
+
     for ln in d.lines:
-        attribs = {"layer": "P2C-DASH" if ln.dashed else "P2C-LINE", "lineweight": lineweight(ln.width)}
+        attribs = pen("P2C-DASH" if ln.dashed else "P2C-LINE", ln)
         if ln.dashed:
             attribs["linetype"] = "P2C_DASH"
         msp.add_line(pt(ln.x1, ln.y1), pt(ln.x2, ln.y2), dxfattribs=attribs)
     for pl in d.polylines:  # y points up in DXF: an arc turning clockwise on screen has a negative bulge
-        layer = KIND_LAYERS.get(pl.kind) or ("P2C-DASH" if pl.dashed else "P2C-LINE")
-        attribs = {"layer": layer, "lineweight": lineweight(pl.width)}
+        attribs = pen(KIND_LAYERS.get(pl.kind) or ("P2C-DASH" if pl.dashed else "P2C-LINE"), pl)
         if pl.dashed:
             attribs["linetype"] = "P2C_DASH"
         e = msp.add_lwpolyline([(*pt(x, y), -b) for (x, y), b in zip(pl.points, pl.bulges + [0.0])], format="xyb",
                                close=pl.closed, dxfattribs=attribs)
         e.dxf.flags |= 128  # dash pattern runs on around corners
     for a in d.arcs:  # y flips, so clockwise screen angles become counter-clockwise DXF angles
-        msp.add_arc(pt(a.cx, a.cy), a.r * s, (-a.end) % 360, (-a.start) % 360,
-                    dxfattribs={"layer": "P2C-CURVE", "lineweight": lineweight(a.width)})
+        msp.add_arc(pt(a.cx, a.cy), a.r * s, (-a.end) % 360, (-a.start) % 360, dxfattribs=pen("P2C-CURVE", a))
     for c in d.circles:
-        msp.add_circle(pt(c.cx, c.cy), c.r * s, dxfattribs={"layer": "P2C-CURVE", "lineweight": lineweight(c.width)})
+        msp.add_circle(pt(c.cx, c.cy), c.r * s, dxfattribs=pen("P2C-CURVE", c))
     for g in d.polygons:
         points = [pt(x, y) for x, y in g.points]
         if g.filled:
-            hatch = msp.add_hatch(color=256, dxfattribs={"layer": "P2C-FILL"})
+            hatch = msp.add_hatch(color=256, dxfattribs=on("P2C-FILL", g))
             hatch.paths.add_polyline_path(points, is_closed=True)
         else:
-            msp.add_lwpolyline(points, close=True, dxfattribs={"layer": "P2C-LINE", "lineweight": lineweight(g.width)})
+            msp.add_lwpolyline(points, close=True, dxfattribs=pen("P2C-LINE", g))
     for t in d.texts:
-        layer = "P2C-TEXT-CHECK" if t.uncertain else "P2C-TEXT"
-        msp.add_text(t.text, height=t.height * s, rotation=t.angle, dxfattribs={"layer": layer}).set_placement(
-            pt(t.x, t.y), align=TextEntityAlignment.MIDDLE_CENTER)
+        attribs = on("P2C-TEXT-CHECK" if t.uncertain else "P2C-TEXT", t)
+        if t.oblique:
+            attribs["oblique"] = t.oblique
+        text = msp.add_text(t.text, height=t.height * s, rotation=t.angle, dxfattribs=attribs)
+        if t.length:  # stretched between the ends of its baseline, so it is as long as drawn in any font
+            a = math.radians(t.angle)
+            bx, by = t.x + math.sin(a) * t.height / 2, t.y + math.cos(a) * t.height / 2  # middle of the baseline
+            ux, uy = math.cos(a) * t.length / 2, -math.sin(a) * t.length / 2
+            text.set_placement(pt(bx - ux, by - uy), pt(bx + ux, by + uy), align=TextEntityAlignment.FIT)
+        else:
+            text.set_placement(pt(t.x, t.y), align=TextEntityAlignment.MIDDLE_CENTER)
     _symbols(doc, d, pt, s)
     if underlay:
         name, size = underlay

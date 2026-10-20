@@ -96,7 +96,7 @@ and error code. Interactive OpenAPI documentation is served at `/docs`.
 | B-rep models | `step` `stp` `iges` `igs` `brep` `brp` | header data, assembly tree with instance counts, size, volume and surface area per part | GLB, +Y up, metres |
 | BIM | `ifc` | project hierarchy, element counts, named elements, materials, `Pset_*Common` values | GLB, one node per building element |
 | Meshes | `stl` `obj` `ply` `off` `3mf` `dae` `gltf` `glb` | objects, sizes, watertightness | GLB |
-| Photos and scans of drawings | `jpg` `jpeg` `png` `tif` `tiff` `heic` `heif` `webp` `bmp` `pdf` (every page of a PDF or TIFF) | recognised texts and symbols with their tags | PDF of the recognised drawing, plus a ZIP with a DXF per page |
+| Photos and scans of drawings | `jpg` `jpeg` `png` `tif` `tiff` `heic` `heif` `webp` `bmp` `pdf` (every page of a PDF or TIFF; CAD exports in PDF are read as vectors) | recognised texts and symbols with their tags | PDF of the recognised drawing, plus a ZIP with a DXF per page |
 
 DWG files are read with LibreDWG, B-rep models with OpenCascade, IFC with IfcOpenShell, drawings with ezdxf and
 meshes with trimesh. Native formats of SolidWorks, Inventor, CATIA, Revit and similar programs are not supported;
@@ -166,6 +166,9 @@ your original blocks, with your layers and attribute names. Install libraries on
 its own (one per tenant, say). `cad-ingest library build` collects existing DWG or DXF blocks into a library, and
 `cad-ingest library check` tests it on simulated scans and photos. [Symbol libraries](docs/symbol-libraries.md)
 explains the format.
+
+A PDF exported from CAD needs no recognition: its pages are read as vectors, so the DXF has the exact lines, arcs,
+texts, colours and pen widths, on the CAD layers of the PDF.
 
 The result is a ZIP with:
 
