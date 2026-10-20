@@ -7,6 +7,8 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 PAPER = {"A0": (1189, 841), "A1": (841, 594), "A2": (594, 420), "A3": (420, 297), "A4": (297, 210)}  # landscape mm
+Color = tuple[int, int, int]  # RGB, 0 to 255; None draws in the colour of the layer
+# Entities read from a vector PDF keep the CAD layer they were drawn on (``layer``), where the PDF names it.
 
 
 @dataclass
@@ -17,6 +19,8 @@ class Line:
     y2: float
     width: float = 0.25  # pen width on paper in mm
     dashed: bool = False
+    color: Color | None = None
+    layer: str | None = None
 
 
 @dataclass
@@ -29,6 +33,8 @@ class Arc:
     start: float
     end: float
     width: float = 0.25
+    color: Color | None = None
+    layer: str | None = None
 
 
 @dataclass
@@ -37,6 +43,8 @@ class Circle:
     cy: float
     r: float
     width: float = 0.25
+    color: Color | None = None
+    layer: str | None = None
 
 
 @dataclass
@@ -44,6 +52,8 @@ class Polygon:
     points: list[tuple[float, float]]
     filled: bool = True
     width: float = 0.25
+    color: Color | None = None
+    layer: str | None = None
 
 
 @dataclass
@@ -58,6 +68,8 @@ class Polyline:
     width: float = 0.25
     dashed: bool = False
     kind: str = "line"  # what it stands for: "line", "wall" or "pipe"
+    color: Color | None = None
+    layer: str | None = None
 
     def parts(self) -> list[Line | Arc]:
         pts = self.points + self.points[:1] if self.closed else self.points
@@ -65,14 +77,14 @@ class Polyline:
         for (x1, y1), (x2, y2), b in zip(pts, pts[1:], self.bulges):
             chord = math.hypot(x2 - x1, y2 - y1)
             if b == 0 or chord == 0:
-                out.append(Line(x1, y1, x2, y2, self.width, self.dashed))
+                out.append(Line(x1, y1, x2, y2, self.width, self.dashed, self.color, self.layer))
                 continue
             sweep = 4 * math.atan(abs(b))
             r = chord / (2 * math.sin(sweep / 2))
             h = r * math.cos(sweep / 2) * (1 if b > 0 else -1) / chord  # centre offset along the left normal
             cx, cy = (x1 + x2) / 2 - (y2 - y1) * h, (y1 + y2) / 2 + (x2 - x1) * h
             a1, a2 = (math.degrees(math.atan2(y - cy, x - cx)) % 360 for x, y in ((x1, y1), (x2, y2)))
-            out.append(Arc(cx, cy, r, *((a1, a2) if b > 0 else (a2, a1)), self.width))
+            out.append(Arc(cx, cy, r, *((a1, a2) if b > 0 else (a2, a1)), self.width, self.color, self.layer))
         return out
 
 
@@ -87,6 +99,10 @@ class Text:
     angle: float = 0.0
     confidence: float = 100.0
     uncertain: bool = False  # looks like text but could not be read reliably: a guess to check
+    length: float | None = None  # mm along the reading direction, where known exactly (vector PDFs): DXF fits to it
+    oblique: float = 0.0  # degrees the letters lean forward (italics)
+    color: Color | None = None
+    layer: str | None = None
 
 
 @dataclass
@@ -118,6 +134,7 @@ class Drawing:
     scale: int | None = None  # denominator of the drawing scale, e.g. 100 for 1:100
     polylines: list[Polyline] = field(default_factory=list)
     symbols: list[Symbol] = field(default_factory=list)
+    exact: bool = False  # read from the vectors of a PDF, not recognised on an image: widths and colours are as drawn
 
     def counts(self) -> dict[str, int]:
         return {k: len(getattr(self, k))

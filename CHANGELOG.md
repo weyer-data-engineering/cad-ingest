@@ -38,6 +38,12 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   - Job API: `options.pages` chooses pages; new setting `MAX_SCAN_PAGES` (default 20). A job leaves out the pages
     it would not finish within `CONVERSION_TIMEOUT_SECONDS` and says so in a warning, rather than failing.
   - Command line: `--pages 1-3,5`.
+- Vector PDFs, such as CAD exports, are read as they are instead of being recognised on an image: lines, arcs,
+  circles, fills and texts keep their exact geometry, colour, pen width and CAD layer (from the PDF's optional
+  content), and texts their string, angle, slant, height and length. Nothing is classified or replaced by symbols,
+  so the DXF shows what the PDF shows. A PDF page that is a scan still takes the image route.
+  - `report.json`: `sheet` is `page` for such a page, and `paper` is `null` where the page is no standard size.
+  - The markdown lists the CAD layers with the number of elements on each.
 
 ### Changed
 
@@ -49,6 +55,19 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 - Text that is only strokes of a found symbol read as letters ("00" on a hob) is dropped, and text ink counts towards
   the circles and small closed shapes of a symbol.
 - The simulated scans and photos of the benchmark moved to `app/plan2cad/simulate.py`.
+- Lines in strong colour count as ink as dark as black ones (there the darkest colour channel is the grey value), so
+  yellow and orange lines of a CAD plot are no longer lost. Photos keep their plain brightness.
+- Symbol recognition is faster on dense sheets. A symbol with a single connected port is only looked for at pipe
+  ends (straight lines from 4 mm), not at the ends of the short strokes of letters, which also gives fewer false
+  symbols on text; and candidates are checked with one search for nearby ink instead of two. On a dense A1 P&ID
+  scanned at 300 dpi the symbols take 190 s instead of 320 s.
+
+### Fixed
+
+- A P&ID with more vertical pipe labels than horizontal text was turned by 90 degrees. The rotation check now scores
+  each rotation by horizontal text the right way up together with vertical text reading bottom to top.
+- A P&ID listing the areas of its heat exchangers in m² was taken for a floor plan. The drawing type now weighs the
+  room areas and the building scale against nominal sizes, instrument bubbles and a title such as "R&I" or "R+I".
 
 ## [1.1.0] - unreleased
 

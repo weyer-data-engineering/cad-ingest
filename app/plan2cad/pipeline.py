@@ -1,4 +1,4 @@
-"""End to end: photo or scan in, vector drawing in sheet millimetres out."""
+"""End to end: photo or scan in, vector drawing in sheet millimetres out; or a vector PDF page read as it is."""
 
 from __future__ import annotations
 
@@ -9,11 +9,14 @@ from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
+import pypdfium2 as pdfium
 
-from . import library, objects, ocr, sheet, symbols, topology, vectorize
+from . import library, objects, ocr, pdfvector, sheet, symbols, topology, vectorize
 from .model import PAPER, Drawing, Line, Text
 
 MAX_PIXELS = 80e6  # upper bound for the rectified sheet image
+PDF_PPM = 300 / 25.4  # resolution of the review image of a vector PDF page
+COLOURED = 64  # difference between the strongest and the weakest colour channel of ink in colour
 SCALES = {1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 200, 250, 500, 1000, 2000, 2500, 5000}
 
 
@@ -48,7 +51,7 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
     """
     timer = _Timer()
     bgr = img if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    gray = _gray(bgr)
     found = sheet.locate(bgr, PAPER[paper])
     if found:
         src = sheet.source_ppm(found)
@@ -105,6 +108,49 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
         "timings_s": timer.laps,
     }
     return Result(d, norm, out, info)
+
+
+def convert_vectors(pdf: pdfium.PdfDocument, page: pdfium.PdfPage, scale: int | None = None,
+                    drawing: str | None = None) -> Result:
+    """Reads a vector PDF page, such as a CAD export, as it is (see pdfvector): no image is recognised, so lines, arcs,
+    texts and colours are exact. The page is the sheet. ``scale`` and ``drawing`` as in convert. No symbols are
+    placed: they would replace strokes that are exact already."""
+    timer = _Timer()
+    d = pdfvector.read(pdf, page)
+    timer.lap("vectors")
+    ppm = _working_ppm(PDF_PPM, (d.width, d.height))
+    image = np.asarray(page.render(scale=ppm * 25.4 / 72, grayscale=True).to_pil().convert("L"))  # for the review
+    timer.lap("render")
+    d.scale = scale or detect_scale(d.texts)
+    drawing_type = drawing or objects.drawing_type(d.texts, d.circles, d.scale)
+    timer.lap("objects")  # no classification: the entities stay as drawn, on their CAD layers
+    paper = next((name for name, size in PAPER.items()
+                  if max(abs(a - b) for a, b in zip(sorted(size), sorted((d.width, d.height)))) <= 2), None)
+    info = {
+        "paper": paper,
+        "sheet": "page",
+        "sheet_size_mm": [round(d.width, 1), round(d.height, 1)],
+        "corners_px": None,
+        "source_ppm": None,
+        "working_ppm": round(ppm, 2),
+        "rotation_deg": page.get_rotation() % 360,
+        "drawing_type": drawing_type or None,
+        "scale": d.scale,
+        "libraries": [],
+        "counts": d.counts(),
+        "timings_s": timer.laps,
+    }
+    return Result(d, image, ppm, info)
+
+
+def _gray(bgr: np.ndarray) -> np.ndarray:
+    """Brightness, but the darkest channel where the colour is strong: a yellow or orange line of a CAD plot is ink as
+    dark as a black one. The colour casts and noise of photos stay below COLOURED and keep the plain brightness."""
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    b, g, r = cv2.split(bgr)  # OpenCV per channel: numpy's min over the last axis takes a second on a 20 MP scan
+    darkest = cv2.min(cv2.min(b, g), r)
+    np.copyto(gray, darkest, where=cv2.max(cv2.max(b, g), r) - darkest > COLOURED)
+    return gray
 
 
 def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, check_rotation: bool):

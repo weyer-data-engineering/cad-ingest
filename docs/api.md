@@ -124,6 +124,12 @@ most `MAX_SCAN_PAGES` pages and leaves out the pages it would not finish within 
 without a drawing, pages left out and pages asked for that the file does not have are named in `warnings`. A single
 image gives the same ZIP and markdown as before.
 
+A PDF page drawn in vectors, such as a CAD export, is read as it is instead of being recognised on an image (see
+[Vector PDFs](photos-and-scans.md#vector-pdfs)): the DXF keeps the exact geometry, colours, pen widths and CAD layers,
+and the markdown lists the layers. `paper` and `dpi` do not apply, and no symbols are placed (`libraries` is empty).
+Its `report.json` has `sheet` `page`, the page size in `sheet_size_mm` and `paper` (`null` where the page is no
+standard size).
+
 ## Callback
 
 When a job ends (`succeeded` or `failed`) the converter `POST`s the same JSON as `GET /jobs/{id}` to `callback_url`.

@@ -23,6 +23,8 @@ def test_pid_lines_become_equipment_pipes_and_signal_lines():
 @pytest.mark.parametrize("texts, scale, kind", [
     (["17,68 m²"], None, "building"), (["Blatt 1/1"], 50, "building"), (["DN80-P-1011"], None, "pid"),
     (["Blatt 1/1"], None, ""),
+    (["R+I-Schema", "DN50-W-1011", "WT 101 A = 12 m²"], None, "pid"),  # the area of a heat exchanger, not a room
+    (["Küche 12,40 m²", "Bad 6,10 m²", "DN 100"], None, "building"),
 ])
 def test_drawing_type(texts, scale, kind):
     assert drawing_type([Text(0, 0, 2.5, t) for t in texts], [], scale) == kind

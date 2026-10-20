@@ -46,6 +46,12 @@ def test_scan_without_paper_edge_uses_its_resolution(plan):
     assert evaluate(plan, r.drawing)["recall_1mm"] > 0.97
 
 
+def test_lines_in_colour_are_ink(plan):
+    img = cv2.cvtColor(render(plan, 200 / 25.4), cv2.COLOR_GRAY2BGR)
+    img[img[..., 0] < 128] = (0, 255, 255)  # yellow, as lines in CAD often are: pale grey in plain luminance
+    assert evaluate(plan, convert(img, paper="A3", dpi=200).drawing)["recall_1mm"] > 0.97
+
+
 def test_title_block_decides_orientation_when_text_is_unreadable(plan):
     from app.plan2cad.model import Line
     from app.plan2cad.pipeline import title_block_rotation
