@@ -147,9 +147,9 @@ def _gray(bgr: np.ndarray) -> np.ndarray:
     """Brightness, but the darkest channel where the colour is strong: a yellow or orange line of a CAD plot is ink as
     dark as a black one. The colour casts and noise of photos stay below COLOURED and keep the plain brightness."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    darkest = bgr.min(axis=2)
-    coloured = bgr.max(axis=2) - darkest > COLOURED
-    gray[coloured] = darkest[coloured]
+    b, g, r = cv2.split(bgr)  # OpenCV per channel: numpy's min over the last axis takes a second on a 20 MP scan
+    darkest = cv2.min(cv2.min(b, g), r)
+    np.copyto(gray, darkest, where=cv2.max(cv2.max(b, g), r) - darkest > COLOURED)
     return gray
 
 
