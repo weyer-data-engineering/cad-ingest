@@ -241,29 +241,30 @@ def source_ppm(sheet: Sheet) -> float:
     return math.sqrt(float(cv2.contourArea(sheet.corners.astype(np.float32))) / (w * h))
 
 
-def rectify(gray: np.ndarray, sheet: Sheet, ppm: float) -> np.ndarray:
+def rectify(gray: np.ndarray, sheet: Sheet, ppm: float, flags: int = cv2.INTER_CUBIC) -> np.ndarray:
     W, H = sheet.size
     i = sheet.inset
     dst = np.float32([[i, i], [W - i, i], [W - i, H - i], [i, H - i]]) * ppm
     M = cv2.getPerspectiveTransform(sheet.corners.astype(np.float32), dst)
-    return cv2.warpPerspective(gray, M, (round(W * ppm), round(H * ppm)), flags=cv2.INTER_CUBIC,
+    return cv2.warpPerspective(gray, M, (round(W * ppm), round(H * ppm)), flags=flags,
                                borderMode=cv2.BORDER_REPLICATE)
 
 
-def deskew(gray: np.ndarray) -> np.ndarray:
-    """Rotates a scan without visible paper edges so that its long lines are axis-parallel."""
+def deskew(gray: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+    """Rotates a scan without visible paper edges so that its long lines are axis-parallel; returns it with the
+    rotation matrix (None if it needs none)."""
     f = 1500 / max(gray.shape)
     small = cv2.resize(gray, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
     ink = cv2.adaptiveThreshold(small, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 31, 15)
     segs = cv2.HoughLinesP(ink, 1, np.pi / 720, 80, minLineLength=small.shape[1] // 8, maxLineGap=4)
     if segs is None:
-        return gray
+        return gray, None
     segs = segs.reshape(-1, 4)
     ang = np.degrees(np.arctan2(segs[:, 3] - segs[:, 1], segs[:, 2] - segs[:, 0]))
     ang = (ang + 45) % 90 - 45
     ang = ang[np.abs(ang) < 10]
     if not len(ang) or abs(np.median(ang)) < 0.05:
-        return gray
+        return gray, None
     h, w = gray.shape
     M = cv2.getRotationMatrix2D((w / 2, h / 2), float(np.median(ang)), 1.0)
-    return cv2.warpAffine(gray, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    return cv2.warpAffine(gray, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE), M

@@ -11,12 +11,12 @@ import cv2
 import numpy as np
 import pypdfium2 as pdfium
 
-from . import library, objects, ocr, pdfvector, sheet, symbols, topology, vectorize
+from . import library, markup, objects, ocr, pdfvector, sheet, symbols, topology, vectorize
 from .model import PAPER, Drawing, Line, Text
 
 MAX_PIXELS = 80e6  # upper bound for the rectified sheet image
 PDF_PPM = 300 / 25.4  # resolution of the review image of a vector PDF page
-COLOURED = 64  # difference between the strongest and the weakest colour channel of ink in colour
+TEXT = 2.0  # mm: text height the printed-size symbols of the libraries go with (their tags are this high)
 SCALES = {1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 200, 250, 500, 1000, 2000, 2500, 5000}
 
 
@@ -26,6 +26,7 @@ class Result:
     image: np.ndarray  # rectified, illumination-normalised sheet (grayscale)
     ppm: float  # pixels per mm of ``image``
     info: dict = field(default_factory=dict)
+    crops: list[np.ndarray] = field(default_factory=list)  # an image of each of drawing.markups (BGR)
 
 
 class _Timer:
@@ -51,21 +52,26 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
     """
     timer = _Timer()
     bgr = img if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    gray = _gray(bgr)
     found = sheet.locate(bgr, PAPER[paper])
+    src = sheet.source_ppm(found) if found else dpi / 25.4 if dpi else max(bgr.shape[:2]) / max(PAPER[paper])
+    gray, marks, colours = markup.split(bgr, src)  # markups (pen, highlighter) go their own way
     if found:
-        src = sheet.source_ppm(found)
         out = ppm or _working_ppm(src, found.size)
         if src > 1.3 * out:  # avoid aliasing when shrinking a very sharp image
             gray = cv2.GaussianBlur(gray, (0, 0), 0.4 * src / out)
         image, size = sheet.rectify(gray, found, out), found.size
+        if marks is not None:
+            marks = sheet.rectify(marks, found, out, cv2.INTER_NEAREST)
     else:
-        gray = sheet.deskew(gray)
-        src = dpi / 25.4 if dpi else max(gray.shape) / max(PAPER[paper])
+        gray, turn = sheet.deskew(gray)
         size = (gray.shape[1] / src, gray.shape[0] / src)
         out = ppm or _working_ppm(src, size)
         image = cv2.resize(gray, (round(size[0] * out), round(size[1] * out)),
                            interpolation=cv2.INTER_AREA if out < src else cv2.INTER_CUBIC)
+        if marks is not None:
+            if turn is not None:
+                marks = cv2.warpAffine(marks, turn, marks.shape[::-1], flags=cv2.INTER_NEAREST)
+            marks = cv2.resize(marks, image.shape[::-1], interpolation=cv2.INTER_NEAREST)
     timer.lap("sheet")
     norm = normalize(image, out)
     ink = binarize(norm, out)
@@ -76,10 +82,11 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
         rotation = parts
         k = -rotation // 90  # np.rot90 turns counter-clockwise
         norm, ink = np.ascontiguousarray(np.rot90(norm, k)), np.ascontiguousarray(np.rot90(ink, k))
+        marks = None if marks is None else np.ascontiguousarray(np.rot90(marks, k))
         if rotation in (90, 270):
             size = (size[1], size[0])
         parts = _vectorize(ink, norm, out, timer, check_rotation=False)
-    polygons, lines, arcs, circles, texts, (linework, text_mask, straight) = parts
+    polygons, lines, arcs, circles, texts, (linework, text_mask, straight, frame) = parts
     scale = scale or detect_scale([t for t in texts if not t.uncertain])
     drawing_type = drawing or objects.drawing_type(texts, circles, scale)
     swings, lines, arcs = objects.doors(lines, arcs) if drawing_type == "building" else ([], lines, arcs)
@@ -90,9 +97,17 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
     timer.lap("objects")
     libraries = library.select() if libraries is None else libraries
     used = [lib for lib in libraries if (drawing_type or "pid") in lib.drawing]
-    if templates := library.combine(used, drawing_type or "pid", d.scale):
-        symbols.recognise(d, templates, symbols.ink_samples(linework, text_mask, out, straight))
+    if templates := library.combine(used, drawing_type or "pid", d.scale, _printed(texts)):
+        symbols.recognise(d, templates, symbols.ink_samples(linework, text_mask, out, straight, frame))
         timer.lap("symbols")
+    crops = []
+    if marks is not None:  # after the recognition of the print, which they would only disturb
+        tags = [Text(s.x, s.y, TEXT, " ".join(t.text for t in s.attributes.values()))
+                for s in d.symbols if s.attributes]  # an instrument in a cloud is covered by it
+        strokes, fills, readings, d.markups = markup.extract(marks, colours, out, ocr.LANG, d.texts + tags)
+        d.polylines, d.polygons, d.texts = d.polylines + strokes, d.polygons + fills, d.texts + readings
+        crops = [markup.crop(norm, marks, colours, out, m) for m in d.markups]
+        timer.lap("markups")
     info = {
         "paper": paper,
         "sheet": found.method if found else "image",
@@ -107,7 +122,7 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
         "counts": d.counts(),
         "timings_s": timer.laps,
     }
-    return Result(d, norm, out, info)
+    return Result(d, norm, out, info, crops)
 
 
 def convert_vectors(pdf: pdfium.PdfDocument, page: pdfium.PdfPage, scale: int | None = None,
@@ -143,16 +158,6 @@ def convert_vectors(pdf: pdfium.PdfDocument, page: pdfium.PdfPage, scale: int | 
     return Result(d, image, ppm, info)
 
 
-def _gray(bgr: np.ndarray) -> np.ndarray:
-    """Brightness, but the darkest channel where the colour is strong: a yellow or orange line of a CAD plot is ink as
-    dark as a black one. The colour casts and noise of photos stay below COLOURED and keep the plain brightness."""
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    b, g, r = cv2.split(bgr)  # OpenCV per channel: numpy's min over the last axis takes a second on a 20 MP scan
-    darkest = cv2.min(cv2.min(b, g), r)
-    np.copyto(gray, darkest, where=cv2.max(cv2.max(b, g), r) - darkest > COLOURED)
-    return gray
-
-
 def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, check_rotation: bool):
     polygons, fill = vectorize.fills(ink, ppm)
     ink = ink & (1 - fill)
@@ -167,14 +172,26 @@ def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, che
         return rotation
     timer.lap("text")
     round_, rings = vectorize.circles(ink, ppm, (labels > 0).astype(np.uint8))
+    words = np.uint8([0] + [ocr.worded(t.text) for t in texts])[labels]
     texts, text_mask = _off_rings(texts, labels, rings)
+    frame = ocr.frames(ink, labels * text_mask * words, ppm)  # not around a symbol's circles read as "oo"
     hv = [ln for ln in hv if not vectorize.on_circle(ln, round_)]
     linework = rem | (ink & cv2.dilate(crossing, k))  # without the long straight lines
     lines, arcs, circles = vectorize.shapes(vectorize.trace(linework & (1 - text_mask) & (1 - rings), ppm), ppm)
     arcs, more = vectorize.merge_arcs(arcs)
     lines = vectorize.close_corners(vectorize.merge_lines(hv + lines))
     timer.lap("vectorize")
-    return polygons, lines, arcs, round_ + circles + more, texts, (linework, text_mask, hv)
+    return polygons, lines, arcs, round_ + circles + more, texts, (linework, text_mask * (1 + words), hv, frame)
+
+
+def _printed(texts: list[Text]) -> float:
+    """How large the symbols of the sheet are against their library: the sheet's text height against the TEXT the
+    library symbols are drawn for. 1 unless clearly different, as on a large drawing printed on a small sheet."""
+    heights = [t.height for t in texts if not t.uncertain]
+    if len(heights) < 20:
+        return 1.0
+    f = float(np.clip(np.median(heights) / TEXT, 0.5, 2.0))
+    return 1.0 if 0.8 <= f <= 1.25 else f
 
 
 def _off_rings(texts: list[Text], labels: np.ndarray, rings: np.ndarray) -> tuple[list[Text], np.ndarray]:
@@ -263,8 +280,10 @@ def detect_scale(texts: list[Text]) -> int | None:
     hits = []
     for t in texts:
         labelled = bool(re.search(r"(?i:ma.{1,2}stab|scale)|\bM\b", t.text))  # "m" alone is metres
-        # without a "Maßstab" label the colon is required; with it, OCR may have lost the colon
-        for m in re.finditer(r"\b1\s*:\s*(\d{1,4})\b" if not labelled else r"\b1\s*[:;.,]?\s*(\d{1,4})\b", t.text):
-            if int(m.group(1)) in SCALES:
-                hits.append((labelled, t.confidence, int(m.group(1))))
+        # without a "Maßstab" label the colon is required; with it, OCR may have lost the colon or read digits as
+        # letters ("Maßstab 1 SO")
+        number = r"\b1\s*:\s*(\d{1,4})\b" if not labelled else r"\b[1Il]\s*[:;.,]?\s*([\dOoSIlBZ]{1,4})\b"
+        for m in re.finditer(number, t.text):
+            if (scale := int(ocr.digits(m.group(1)))) in SCALES:
+                hits.append((labelled, t.confidence, scale))
     return max(hits)[2] if hits else None

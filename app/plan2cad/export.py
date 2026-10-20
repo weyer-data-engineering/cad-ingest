@@ -16,12 +16,13 @@ from matplotlib.patches import Arc as MplArc
 from matplotlib.patches import Circle as MplCircle
 from matplotlib.patches import Polygon as MplPolygon
 
+from .markup import HIGHLIGHT_LAYER, LAYER, READING_LAYER
 from .model import Drawing
 from .render import CAP, DASH, GAP, dashes, render
 
 LAYERS = {"P2C-LINE": 7, "P2C-DASH": 5, "P2C-CURVE": 3, "P2C-FILL": 8, "P2C-TEXT": 1, "P2C-UNDERLAY": 9,
           "P2C-WALL": 150, "P2C-DOOR": 30, "P2C-PIPE": 150, "P2C-EQUIPMENT": 94, "P2C-SIGNAL": 5, "P2C-FRAME": 8,
-          "P2C-TEXT-CHECK": 6, "P2C-SYMBOL": 4}
+          "P2C-TEXT-CHECK": 6, "P2C-SYMBOL": 4, LAYER: 1, HIGHLIGHT_LAYER: 3, READING_LAYER: 1}
 KIND_LAYERS = {"wall": "P2C-WALL", "door": "P2C-DOOR", "pipe": "P2C-PIPE", "equipment": "P2C-EQUIPMENT",
                "signal": "P2C-SIGNAL", "frame": "P2C-FRAME"}
 LINEWEIGHTS = (13, 18, 25, 35, 50, 70, 100, 140, 200)  # ISO pen widths in 1/100 mm
@@ -85,6 +86,8 @@ def to_dxf(d: Drawing, underlay: tuple[str, tuple[int, int]] | None = None) -> e
         if g.filled:
             hatch = msp.add_hatch(color=256, dxfattribs=on("P2C-FILL", g))
             hatch.paths.add_polyline_path(points, is_closed=True)
+            if g.layer == HIGHLIGHT_LAYER:  # the print shows through highlighter
+                hatch.transparency = 0.6
         else:
             msp.add_lwpolyline(points, close=True, dxfattribs=pen("P2C-LINE", g))
     for t in d.texts:
@@ -141,25 +144,33 @@ def to_figure(d: Drawing, path, fmt: str = "pdf", dpi: float | None = None) -> N
     ax.set_ylim(d.height, 0)
     ax.set_aspect("equal")
     ax.axis("off")
-    segments, widths = [], []
+    segments, widths, colors = [], [], []
     for ln in d.lines:
         parts = dashes(ln) if ln.dashed else [((ln.x1, ln.y1), (ln.x2, ln.y2))]
         segments += parts
         widths += [ln.width * PT_PER_MM] * len(parts)
-    ax.add_collection(LineCollection(segments, linewidths=widths, colors="k", capstyle="round"))
+        colors += [_rgb(ln.color)] * len(parts)
+    ax.add_collection(LineCollection(segments, linewidths=widths, colors=colors or "k", capstyle="round"))
     for a in d.arcs:
         end = a.end if a.end > a.start else a.end + 360
-        ax.add_patch(MplArc((a.cx, a.cy), 2 * a.r, 2 * a.r, theta1=a.start, theta2=end, lw=a.width * PT_PER_MM))
+        ax.add_patch(MplArc((a.cx, a.cy), 2 * a.r, 2 * a.r, theta1=a.start, theta2=end, lw=a.width * PT_PER_MM,
+                            color=_rgb(a.color)))
     for c in d.circles:
-        ax.add_patch(MplCircle((c.cx, c.cy), c.r, fill=False, lw=c.width * PT_PER_MM))
+        ax.add_patch(MplCircle((c.cx, c.cy), c.r, fill=False, lw=c.width * PT_PER_MM, color=_rgb(c.color)))
     for g in d.polygons:
-        ax.add_patch(MplPolygon(g.points, closed=True, fill=g.filled, color="k", lw=g.width * PT_PER_MM))
+        ax.add_patch(MplPolygon(g.points, closed=True, fill=g.filled, color=_rgb(g.color), lw=g.width * PT_PER_MM,
+                                alpha=0.4 if g.layer == HIGHLIGHT_LAYER else None))
     for t in d.texts:
         rad = math.radians(t.angle)  # anchor on the baseline, half a cap height below the centre
         ax.text(t.x + math.sin(rad) * t.height / 2, t.y + math.cos(rad) * t.height / 2, t.text,
                 fontsize=t.height / CAP * PT_PER_MM, rotation=t.angle, rotation_mode="anchor",
-                ha="center", va="baseline", color="0.55" if t.uncertain else "k")
+                ha="center", va="baseline",
+                color=_rgb(t.color) if t.color else "0.55" if t.uncertain else "k")
     fig.savefig(path, format=fmt, dpi=dpi, facecolor="white")
+
+
+def _rgb(color) -> tuple[float, float, float]:
+    return tuple(v / 255 for v in color) if color else (0.0, 0.0, 0.0)
 
 
 OVERLAY_COLORS = {"lines": (40, 40, 220), "dashed": (200, 90, 0), "curves": (0, 150, 0),
@@ -170,9 +181,23 @@ def overlay(gray: np.ndarray, d: Drawing, ppm: float, max_side: int = 4000) -> n
     """Faded rectified photo with the recognised vectors drawn on top in colour (BGR)."""
     symbols = Drawing(d.width, d.height, symbols=d.symbols).flat()
     d = replace(d, symbols=[]).flat()
+    marked = (LAYER, HIGHLIGHT_LAYER, READING_LAYER)
+    marks = Drawing(d.width, d.height, [ln for ln in d.lines if ln.layer in marked],
+                    polygons=[g for g in d.polygons if g.layer in marked],
+                    texts=[t for t in d.texts if t.layer in marked])
+    d = replace(d, lines=[ln for ln in d.lines if ln.layer not in marked],
+                polygons=[g for g in d.polygons if g.layer not in marked],
+                texts=[t for t in d.texts if t.layer not in marked])
     f = min(1.0, max_side / max(gray.shape))
     base = cv2.resize(gray, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
     img = cv2.cvtColor((base * 0.3 + 178).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    for color in {item.color for item in marks.lines + marks.polygons + marks.texts}:  # markups in their colour
+        r, g, b = color or (255, 0, 0)
+        part = Drawing(d.width, d.height, [ln for ln in marks.lines if ln.color == color],
+                       polygons=[p for p in marks.polygons if p.color == color],
+                       texts=[t for t in marks.texts if t.color == color])
+        layer = render(part, ppm * f, img.copy(), (b, g, r))
+        img = cv2.addWeighted(img, 0.5, layer, 0.5, 0) if part.polygons and not part.lines else layer
     parts = {
         "lines": Drawing(d.width, d.height, lines=[ln for ln in d.lines if not ln.dashed]),
         "dashed": Drawing(d.width, d.height, lines=[ln for ln in d.lines if ln.dashed]),

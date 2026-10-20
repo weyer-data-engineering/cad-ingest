@@ -22,7 +22,8 @@ service, no AutoCAD licence and no GPU.
 - **Photo or scan to CAD.** A phone photo or a scan of a paper drawing becomes a DXF in real-world millimetres. It
   contains lines, arcs, circles, dashed lines, walls, doors, pipes, OCR text and the scale from the title block. P&ID
   symbols such as valves, pumps and instruments and floor plan fixtures such as toilets, washbasins and bathtubs
-  become CAD blocks, from the starter libraries or from your own company library.
+  become CAD blocks, from the starter libraries or from your own company library. Notes and highlighter added by hand
+  in colour stay apart from the drawing, on layers of their own.
 - **Ready for production.** An HTTP job API on Redis and RQ with queues, priorities, retries, callbacks and
   cancellation. Every file is converted in its own process with a time and memory limit. Release images for amd64
   and arm64 come with an SBOM and build provenance.
@@ -170,12 +171,19 @@ explains the format.
 A PDF exported from CAD needs no recognition: its pages are read as vectors, so the DXF has the exact lines, arcs,
 texts, colours and pen widths, on the CAD layers of the PDF.
 
+Prints come back from site with notes on them. Pen strokes and highlighter in colour on a black and white print, such
+as a revision cloud with "removed" next to it or a struck-out pipe, are kept apart from the drawing, so they neither
+turn into stray lines nor garble the print under them. The DXF has them on layers of their own, and the report lists
+each one with the printed texts it covers, an attempt at reading the handwriting and an image of it.
+
 The result is a ZIP with:
 
 - `plan.dxf`: real-world millimetres, one layer per kind of object, the straightened photo as an underlay;
 - `plan.pdf`: the drawing as vectors on its paper size;
 - `overlay.png`: the recognised vectors in colour on the faded photo, for checking;
-- `report.json`: sheet, resolution, drawing type, scale, counts, all texts, the symbols with their library and ports.
+- `markup-k.png`: an image of each markup added by hand;
+- `report.json`: sheet, resolution, drawing type, scale, counts, all texts, the symbols with their library and ports,
+  the markups.
 
 There is no DWG output. Every CAD program opens DXF, and the free ways to write DWG are either not licensed for
 commercial use or experimental. [Photos and scans](docs/photos-and-scans.md) explains each step, the symbol library
@@ -204,10 +212,9 @@ cases. Run it yourself with `python bench/run.py --out bench/out --quick`.
 
 ## How it was validated
 
-- **Real drawings.** During development the photo and scan pipeline was checked again and again on a real
-  engineering document: a phone photo (HEIC) of a printed P&ID, on which cad-ingest places 57 symbols in about a
-  minute. Real documents belong to their owners and are not part of the repository, so the published numbers come
-  from synthetic drawings that anyone can regenerate.
+- **Real drawings.** During development the photo and scan pipeline was checked again and again on real
+  engineering documents. Real documents belong to their owners and are not part of the repository, so the published
+  numbers come from synthetic drawings that anyone can regenerate.
 - **Ground truth.** The benchmark scores every result against an exact reference, so improvements are measured
   rather than judged by eye. Every change to the pipeline is benchmarked before and after.
 - **Tests in the image.** More than 140 tests run inside the container image, with the same native libraries as in
@@ -320,6 +327,7 @@ The container image bundles third-party software under its own licences:
 | IfcOpenShell | LGPL 3 | Python extension |
 | pi-heif (libheif, libde265) | BSD 3-clause (LGPL 3 shared libraries) | HEIC decoding only, without the GPL x265 encoder |
 | Tesseract, pytesseract | Apache 2.0 | separate command-line process |
+| Tesseract models `tessdata_best` 4.1.0 (German, English) | Apache 2.0 | data files read by Tesseract |
 | OpenCV, pypdfium2 (PDFium) | Apache 2.0 / BSD 3-clause | Python extensions |
 | scikit-image, SciPy, RQ | BSD 3-clause / BSD 2-clause | libraries |
 | matplotlib | PSF-compatible (BSD-style) | PDF rendering |

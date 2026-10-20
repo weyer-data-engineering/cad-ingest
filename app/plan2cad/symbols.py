@@ -52,6 +52,10 @@ LEAN = 0.06  # or this share of its length: tracing may join a side with a wall 
 BEND = 0.5  # mm an arc may bend and still be a side of a rectangle (photos trace short sides with a slight bend)
 LETTER = 6.0  # mm: closed shapes up to this size may be read as a letter (a hotplate as "0", a small bowl as "O")
 CORNER = 0.75  # mm the sides of a rectangle may stop short of its corners (gaps in traced lines)
+LETTERS = 0.3  # share of a symbol's outline that may be found on words only (see ocr.worded)
+ONE_SIZE = 1.4  # symbols drawn at the printed size are at most this factor larger or smaller than most on the sheet
+ONE_SIZE_LEAST = 12  # symbols that must be found before their size counts as the sheet's
+FRAMED = 0.3  # a symbol not holding text may explain at most this share of its linework on a frame around a text
 ASPECT = 0.15  # a rectangle may be this much more stretched than the one of the symbol it fits (real objects vary)
 
 
@@ -73,6 +77,7 @@ class _Shape:
     variants: list[tuple[int, bool, np.ndarray, np.ndarray]]  # distinct (quarter turns, mirror, box low, box high)
     ring: tuple[np.ndarray, float] | None  # centre and radius of the largest circle
     rects: np.ndarray  # axis-parallel rectangles of the outline: centre x, y, width, height
+    holds_text: bool  # an attribute stands inside the outline, as the tag of an instrument bubble
 
 
 @dataclass
@@ -98,11 +103,15 @@ class _Ink:
     """The sampled linework of the drawing: positions, and positions with directions for oriented matching. Text
     points may complete a symbol's outline (a misread arrow tip) but never count against it (letters in a bubble)."""
 
-    def __init__(self, points: np.ndarray, heading: np.ndarray, text: np.ndarray, straight: np.ndarray):
+    def __init__(self, points: np.ndarray, heading: np.ndarray, text: np.ndarray, straight: np.ndarray,
+                 frame: np.ndarray | None = None):
         self.points, self.oriented = points, _oriented(points, heading)
-        self.text, self.straight = text, straight  # on text, on long straight lines (pipes)
+        self.text, self.straight = text > 0, straight  # on text, on long straight lines (pipes)
+        self.words = text > 1  # on text that reads as words or a code (see ocr.worded)
+        self.frame = np.zeros(len(points), bool) if frame is None else frame  # on the frame around a text
         self.tree, self.oriented_tree = cKDTree(points), cKDTree(self.oriented)
         self.strokes = cKDTree(self.oriented[~self.text]) if self.text.any() else self.oriented_tree  # without text
+        self.unworded = cKDTree(self.oriented[~self.words]) if self.words.any() else self.oriented_tree
         self.lines = cKDTree(self.oriented[self.straight])
 
 
@@ -124,6 +133,7 @@ def recognise(d: Drawing, library: dict[str, Template], ink: tuple | None = None
     # Symbols between line ends, at rectangles and at circles first, then the rest only where no symbol was found yet
     hits = _fitted(_anchored(d, shapes), ink)
     hits += _fitted(_leftover(d, shapes, ink, _select(hits, len(ink.points))), ink)
+    hits = _one_size(hits, len(ink.points))
     block = _title_block(d)  # small unread text there looks like symbols
     found = [h for h in _select(hits, len(ink.points)) if not (block and _within(h.pose[:2], block))]
     _remove(d, pieces, found)
@@ -134,11 +144,13 @@ def recognise(d: Drawing, library: dict[str, Template], ink: tuple | None = None
     d.texts = [t for t in d.texts if not any(_contains(h, (t.x, t.y)) and _misread(h, ink) for h in found)]
 
 
-def ink_samples(mask: np.ndarray, text: np.ndarray, ppm: float, lines: list[Line]) -> tuple:
+def ink_samples(mask: np.ndarray, text: np.ndarray, ppm: float, lines: list[Line],
+                frame: np.ndarray | None = None) -> tuple:
     """Points about every quarter millimetre along the centre lines of an ink mask (0/1, ``ppm`` pixels per mm), the
-    stroke direction there (from the neighbouring points) and whether they lie on text (``text`` mask), in sheet mm,
-    plus points along ``lines`` (flagged as straight). Symbols are matched on the image like this, not on the traced
-    vectors, which may have rounded off small shapes such as arrowheads and springs. The mask should not hold the long
+    stroke direction there (from the neighbouring points) and whether they lie on text (``text`` mask: 1, or 2 on text
+    that reads as words, see ocr.worded), in sheet mm, plus points along ``lines`` (flagged as straight), and whether
+    each lies on the frame around a text (``frame`` mask, see ocr.frames). Symbols are matched on the image like this,
+    not on the traced vectors, which may have rounded off small shapes such as arrowheads and springs. The mask should not hold the long
     straight lines (given as ``lines``): where a stroke meets a pipe at a sharp angle, as an arrowhead does, both would
     merge into one thick stroke with a bent centre line."""
     sampled = [_sample(q) for q in lines]
@@ -149,14 +161,23 @@ def ink_samples(mask: np.ndarray, text: np.ndarray, ppm: float, lines: list[Line
     xs, ys = xs[first], ys[first]
     points = (np.column_stack([xs, ys]) + 0.5) / ppm
     if len(points) < 5:
-        return *exact, np.zeros(len(exact[0]), bool), np.ones(len(exact[0]), bool)
+        return *exact, np.zeros(len(exact[0]), bool), np.ones(len(exact[0]), bool), _on(frame, exact[0], ppm)
     near = points[cKDTree(points).query(points, k=5)[1]]  # the point and its four neighbours
     off = near - near.mean(axis=1, keepdims=True)
     cxx, cyy, cxy = (off[..., 0] ** 2).sum(1), (off[..., 1] ** 2).sum(1), (off[..., 0] * off[..., 1]).sum(1)
     along = 0.5 * np.arctan2(2 * cxy, cxx - cyy)  # main axis of the neighbourhood
-    return (np.vstack([points, exact[0]]), np.vstack([np.column_stack([np.cos(along), np.sin(along)]), exact[1]]),
-            np.concatenate([text[ys, xs] > 0, np.zeros(len(exact[0]), bool)]),
-            np.concatenate([np.zeros(len(points), bool), np.ones(len(exact[0]), bool)]))
+    every = np.vstack([points, exact[0]])
+    return (every, np.vstack([np.column_stack([np.cos(along), np.sin(along)]), exact[1]]),
+            np.concatenate([text[ys, xs], np.zeros(len(exact[0]), np.uint8)]),
+            np.concatenate([np.zeros(len(points), bool), np.ones(len(exact[0]), bool)]), _on(frame, every, ppm))
+
+
+def _on(mask: np.ndarray | None, points: np.ndarray, ppm: float) -> np.ndarray:
+    """Whether points (sheet mm) lie on a mask (``ppm`` pixels per mm)."""
+    if mask is None or not len(points):
+        return np.zeros(len(points), bool)
+    xy = np.clip((points * ppm).astype(int), 0, [mask.shape[1] - 1, mask.shape[0] - 1])
+    return mask[xy[:, 1], xy[:, 0]] > 0
 
 
 def _fitted(hypotheses, ink: _Ink) -> list[_Hit]:
@@ -236,8 +257,9 @@ def _shape(t: Template) -> _Shape:
                default=None)
     gaps = [cKDTree(pts[group == a]).query(pts[group == b])[0].min() for a in set(group) for b in set(group) if a < b]
     smallest = TOL / min([g for g in gaps if g > STEP] or [np.inf])
+    holds_text = any((np.array(p, float) @ hull[:, :2].T + hull[:, 2]).max() <= 0 for p in t.tags.values())
     return _Shape(t, pts, heading, group, rim, through, hull, ports, units, float(np.linalg.norm(pts, axis=1).max()), smallest,
-                  variants, ring, rectangles(t))
+                  variants, ring, rectangles(t), holds_text)
 
 
 def _letters(t: Template, sampled: list) -> list[int]:
@@ -523,6 +545,8 @@ def _fit(s: _Shape, pose, radius: float, ink: _Ink) -> _Hit | None:
     coverage = found.mean()
     if coverage < COVERAGE or (np.bincount(s.group, found) / np.bincount(s.group)).min() < PART:
         return None
+    if np.mean(ink.unworded.query(outline, distance_upper_bound=TOL)[0] <= TOL) < coverage - LETTERS:
+        return None  # made of letters: words may stand in for a stroke or two (a misread arrow tip), not for a symbol
     if len(s.through):  # the straight line running through the symbol, e.g. the pipe under a flow arrow
         line = _oriented(s.through[:, :2] @ m.T + xy[:2], s.through[:, 2:] @ m.T / scale)
         if not ink.lines.n or np.mean(ink.lines.query(line, distance_upper_bound=TOL)[0] <= TOL) < COVERAGE:
@@ -540,9 +564,27 @@ def _fit(s: _Shape, pose, radius: float, ink: _Ink) -> _Hit | None:
     if clutter > CLUTTER * len(s.pts) * scale:
         return None
     claim = near[inside & explained & ~in_port]
+    if not s.holds_text and len(claim) and ink.frame[claim].mean() > FRAMED:
+        return None  # the frame around a text (a line number's box), which only a symbol holding text may be
     # linework explained, minus the outline missing and the linework inside left unexplained, in mm
     score = (len(claim) - MISSING * (1 - coverage) * len(s.pts) * scale - clutter) * STEP
     return _Hit(s, (float(xy[0]), float(xy[1]), angle % 360, mirror, scale), score, claim)
+
+
+def _one_size(hits: list[_Hit], n: int) -> list[_Hit]:
+    """Leaves out the hits far off the size of the sheet's symbols. A sheet draws its symbols at one size, so a symbol
+    much smaller or larger than the others is something else that fits it at that size, such as the x marks of a
+    capillary line taken for flow arrows. Only symbols drawn at the printed size: a fixture's size is the real one's."""
+    printed = [h for h in _select(hits, n) if _printed(h)]
+    if len(printed) < ONE_SIZE_LEAST:
+        return hits
+    size = float(np.median([h.pose[4] for h in printed]))
+    return [h for h in hits if not _printed(h) or abs(math.log(h.pose[4] / size)) <= math.log(ONE_SIZE)]
+
+
+def _printed(h: _Hit) -> bool:
+    library = h.shape.t.library
+    return library is None or library.size == "printed"
 
 
 def _attached(s: _Shape, q: np.ndarray, scale: float) -> bool:

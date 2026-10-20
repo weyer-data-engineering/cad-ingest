@@ -44,6 +44,13 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   so the DXF shows what the PDF shows. A PDF page that is a scan still takes the image route.
   - `report.json`: `sheet` is `page` for such a page, and `paper` is `null` where the page is no standard size.
   - The markdown lists the CAD layers with the number of elements on each.
+- Markups on scanned prints: pen strokes and highlighter in colour on a black and white print are kept apart from the
+  drawing instead of turning into stray lines and symbols and garbling the print under them (see
+  `docs/photos-and-scans.md#markups`).
+  - The DXF has pen strokes as polylines in their colour on `P2C-MARKUP`, highlighter as transparent fills on
+    `P2C-HIGHLIGHT` and what Tesseract reads of the handwriting, as a guess, on `P2C-MARKUP-TEXT`.
+  - `report.json` lists them under `markups` (kind, box, colour, reading and the printed texts and symbol tags they cover), the ZIP
+    holds an image `markup-k.png` of each one, and the markdown has a section on them.
 
 ### Changed
 
@@ -57,16 +64,29 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 - The simulated scans and photos of the benchmark moved to `app/plan2cad/simulate.py`.
 - Lines in strong colour count as ink as dark as black ones (there the darkest colour channel is the grey value), so
   yellow and orange lines of a CAD plot are no longer lost. Photos keep their plain brightness.
+- Text on scans is read with Tesseract's most accurate models (`tessdata_best` 4.1.0, German and English) instead of
+  the fast ones Ubuntu ships. Characters are grouped into lines by similar height first, so two text lines beside a
+  slanted stroke stay apart, and a character read unlike the glyphs most like it on the sheet is corrected by their
+  vote (the slashed zero of a plotter font misread as 8, 9 or B). An O or I next to a digit in a code is a 0 or 1,
+  and after "Maßstab" a scale read with letters ("1 SO") counts as 1:50. On the benchmark's P&ID scan, 93 % instead
+  of 87 % of the texts are read exactly. The best models are slower: that scan takes about a tenth longer, the hard
+  phone photo up to two thirds.
+- Symbols are not taken from letters or from the frame around a text: a symbol may find at most 30 % of its outline
+  on text that reads as words, and only a symbol that holds text (an instrument bubble) may be the box of a line
+  number, an interlock diamond or the end of a label.
+- Symbols drawn at the printed size keep to the size of most symbols on the sheet (at most 1.4 times larger or
+  smaller), so the x marks of a capillary line are no longer taken for flow arrows, nor note markers for instruments.
+- Symbols drawn at the printed size are looked for at the size of the sheet's text: on a sheet whose text is 3 mm
+  high instead of about 2 mm, at one and a half times the library's size.
 - Symbol recognition is faster on dense sheets. A symbol with a single connected port is only looked for at pipe
   ends (straight lines from 4 mm), not at the ends of the short strokes of letters, which also gives fewer false
-  symbols on text; and candidates are checked with one search for nearby ink instead of two. On a dense A1 P&ID
-  scanned at 300 dpi the symbols take 190 s instead of 320 s.
+  symbols on text; and candidates are checked with one search for nearby ink instead of two.
 
 ### Fixed
 
 - A P&ID with more vertical pipe labels than horizontal text was turned by 90 degrees. The rotation check now scores
   each rotation by horizontal text the right way up together with vertical text reading bottom to top.
-- A P&ID listing the areas of its heat exchangers in m² was taken for a floor plan. The drawing type now weighs the
+- A P&ID listing areas in m² was taken for a floor plan. The drawing type now weighs the
   room areas and the building scale against nominal sizes, instrument bubbles and a title such as "R&I" or "R+I".
 
 ## [1.1.0] - unreleased

@@ -106,7 +106,7 @@ def _on_frame(pl: Polyline, width: float, height: float, margin: float = 25.0) -
 def drawing_type(texts: list[Text], circles: list[Circle], scale: int | None) -> str:
     """"building" for floor plans (room areas, a building scale), "pid" for P&IDs (nominal sizes,
     instrument bubbles, a title such as "R&I"), "" if neither. The evidence is weighed: a P&ID may list
-    the areas of its heat exchangers in m², a floor plan may name a pipe size."""
+    areas in m², a floor plan may name a pipe size."""
     read = " ".join(t.text for t in texts if not t.uncertain)
     rooms = len(re.findall(r"\d m[²2]\b", read)) + (3 if scale in (20, 25, 50, 75, 100, 200) else 0)
     bubbles = sum(any(math.hypot(t.x - c.cx, t.y - c.cy) < c.r for t in texts) for c in circles if 3 <= c.r <= 8)

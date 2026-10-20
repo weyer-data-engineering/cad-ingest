@@ -123,6 +123,18 @@ class Symbol:
 
 
 @dataclass
+class Markup:
+    """Something added by hand in colour on a print (see markup): a pen note, cloud or strike-out ("note"), with
+    what could be read of its handwriting, or a highlighted area ("highlight"); with the printed texts it covers."""
+
+    kind: str
+    box: tuple[float, float, float, float]  # x0, y0, x1, y1 in sheet mm
+    color: Color
+    reading: str | None = None
+    texts: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Drawing:
     width: float  # sheet size in mm
     height: float
@@ -135,6 +147,7 @@ class Drawing:
     polylines: list[Polyline] = field(default_factory=list)
     symbols: list[Symbol] = field(default_factory=list)
     exact: bool = False  # read from the vectors of a PDF, not recognised on an image: widths and colours are as drawn
+    markups: list[Markup] = field(default_factory=list)  # their strokes, fills and readings are on their own layers
 
     def counts(self) -> dict[str, int]:
         return {k: len(getattr(self, k))

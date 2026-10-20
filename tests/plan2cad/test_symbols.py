@@ -118,6 +118,17 @@ def test_a_small_washbasin_read_as_letters_is_found_and_the_letters_dropped():
     assert not r.drawing.texts  # its bowl and sides, read as "Ol"
 
 
+def test_a_symbol_far_off_the_size_of_the_others_is_left_out():
+    sizes = [1.0] * 12 + [0.6]  # a sheet's symbols are drawn at one size; the small one is something else
+    at = [(25 + 50 * (k % 4), 15 + 20 * (k // 4)) for k in range(len(sizes))]
+    valves = [place(LIBRARY["GATE_VALVE"], x, y, scale=f) for (x, y), f in zip(at, sizes)]
+    pipes = [Line(x + side * 2.5 * f, y, x + side * (2.5 * f + 10), y, 0.5) for (x, y), f in zip(at, sizes)
+             for side in (-1, 1)]
+    d = drawn(*valves, lines=pipes)
+    symbols.recognise(d, LIBRARY)
+    assert sorted((round(s.x), round(s.y)) for s in d.symbols) == sorted(at[:12])
+
+
 def test_lines_without_symbols_stay_lines():
     d = Drawing(200, 100, lines=[Line(10, 10, 60, 10), Line(60, 10, 60, 40), Line(20, 30, 50, 30)])
     symbols.recognise(d, LIBRARY)

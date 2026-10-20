@@ -116,6 +116,13 @@ curl -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '
 The `report.json` in the ZIP of `vectorize` lists the libraries that were used for the kind of drawing (`libraries`:
 id and version) and, for every placed symbol, the library it came from.
 
+Markups added by hand in colour on a black and white print (pen notes, clouds, strike-outs, highlighter) are kept
+apart from the drawing (see [Markups](photos-and-scans.md#markups)): the DXF has them on the layers `P2C-MARKUP`,
+`P2C-HIGHLIGHT` and `P2C-MARKUP-TEXT`, `report.json` lists them under `markups` (`kind` `note` or `highlight`,
+`box_mm`, `color`, the handwriting `reading` or `null`, the printed `texts` and symbol tags they cover and their `image`), the ZIP
+holds an image `markup-k.png` of each one, and the markdown has a section `Markups (added by hand in colour)`. The
+fields and files are new; a client that does not know them can ignore them.
+
 PDF and TIFF scans may have several pages, and each page with a drawing is converted. The first one goes to the root
 of the ZIP (`plan.dxf`, `plan.pdf`, `overlay.png`, `underlay.png`, `report.json`), every further page n to the folder
 `page-n/` with the same files. Each `report.json` has its `page` and the `pages` converted (counted from 1). The

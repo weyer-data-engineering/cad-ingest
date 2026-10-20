@@ -10,18 +10,20 @@ from collections import Counter
 from dataclasses import asdict
 
 import cv2
+import numpy as np
 import pypdfium2
 
 from .config import Settings
 from .drawing import _count_lines
 from .errors import ConversionError, JobError
-from .plan2cad import library, pdfvector, symbols
+from .plan2cad import library, markup, pdfvector, symbols
 from .plan2cad.export import overlay, to_dxf, to_figure
 from .plan2cad.imageio import load_image, page_count
 from .plan2cad.model import Drawing
 from .plan2cad.pipeline import Result, convert, convert_vectors
 
 KINDS = {"building": "floor plan", "pid": "P&ID"}
+MAX_COVERED = 12  # printed texts named per markup
 SHEETS = {"paper": "paper edges", "frame": "drawing frame", "image": "whole image, no sheet edge found",
           "page": "vector PDF page, read as drawn"}
 
@@ -117,6 +119,8 @@ def _write(z: zipfile.ZipFile, folder: str, r: Result) -> bytes:
     z.writestr(folder + "plan.pdf", pdf.getvalue())
     z.writestr(folder + "overlay.png", cv2.imencode(".png", overlay(r.image, d, r.ppm))[1].tobytes())
     z.writestr(folder + "underlay.png", cv2.imencode(".png", r.image, [cv2.IMWRITE_PNG_COMPRESSION, 6])[1].tobytes())
+    for k, image in enumerate(r.crops, 1):  # each markup on its own, to read what the pen wrote
+        z.writestr(folder + f"markup-{k}.png", cv2.imencode(".png", image)[1].tobytes())
     return pdf.getvalue()
 
 
@@ -154,7 +158,10 @@ def _report(d) -> dict:
     placed = [{"name": s.name, "library": s.template.library.id, "x": s.x, "y": s.y, "angle": s.angle,
                "mirror": s.mirror, "scale": s.scale, "attributes": {tag: t.text for tag, t in s.attributes.items()},
                "ports": s.ports} for s in d.symbols]
-    return {"texts": [asdict(t) for t in d.texts], "symbols": placed, "connections": symbols.connections(d)}
+    marked = [{"kind": m.kind, "box_mm": [round(v, 1) for v in m.box], "color": list(m.color), "reading": m.reading,
+               "texts": m.texts, "image": f"markup-{k}.png"} for k, m in enumerate(d.markups, 1)]
+    return {"texts": [asdict(t) for t in d.texts], "symbols": placed, "connections": symbols.connections(d),
+            "markups": marked}
 
 
 def _markdown(name: str, pages: list[tuple[int, dict, Drawing]], total: int) -> str:
@@ -172,7 +179,7 @@ def _page_markdown(info: dict, d: Drawing, heading: str) -> list[str]:
              f"{info['sheet_size_mm'][1]:g} mm (found by: {SHEETS[info['sheet']]})",
              f"- Scale: {'1:' + str(info['scale']) if info['scale'] else 'unknown'}",
              f"- Elements: {', '.join(f'{n} {k}' for k, n in info['counts'].items() if n)}"]
-    reading_order = sorted(d.texts, key=lambda t: (round(t.y / 5), t.x))
+    reading_order = sorted((t for t in d.texts if t.layer != markup.READING_LAYER), key=lambda t: (round(t.y / 5), t.x))
     for title, unsure in (("Texts", False), ("Texts to check (uncertain reading)", True)):
         found = Counter(t.text for t in reading_order if t.uncertain == unsure)
         if found:
@@ -181,10 +188,26 @@ def _page_markdown(info: dict, d: Drawing, heading: str) -> list[str]:
                     for s in sorted(d.symbols, key=lambda s: (round(s.y / 5), s.x)))
     if found:
         lines += ["", f"{heading} Symbols", ""] + _count_lines(found)
+    notes = [_markup_line(m) for m in d.markups]
+    if notes:
+        lines += ["", f"{heading} Markups (added by hand in colour)", ""] + notes
     layers = Counter(e.layer for e in d.lines + d.arcs + d.circles + d.polygons + d.polylines + d.texts if e.layer)
-    if layers:  # the CAD layers of a vector PDF, such as "Valves": what is drawn where
+    if layers and d.exact:  # the CAD layers of a vector PDF, such as "Valves": what is drawn where
         lines += ["", f"{heading} Layers (elements on each)", ""] + _count_lines(Counter(dict(layers.most_common())))
     return lines
+
+
+def _markup_line(m) -> str:
+    what = (f"Note in {_colour_name(m.color)}" + (f": “{m.reading}” (handwriting, read automatically)" if m.reading else "")
+            if m.kind == "note" else f"Highlighted in {_colour_name(m.color)}")
+    return f"- {what}" + (f"; covers: {', '.join(m.texts[:MAX_COVERED])}" if m.texts else "")
+
+
+def _colour_name(rgb) -> str:
+    hue = 2 * int(cv2.cvtColor(np.uint8([[rgb[::-1]]]), cv2.COLOR_BGR2HSV)[0, 0, 0])  # degrees
+    return next(name for limit, name in ((15, "red"), (40, "orange"), (70, "yellow"), (160, "green"), (200, "cyan"),
+                                         (260, "blue"), (300, "purple"), (340, "magenta"), (361, "red"))
+                if hue < limit)
 
 
 def main() -> None:
