@@ -42,6 +42,7 @@ both. All three live in the Redis database of `REDIS_URL`.
 | `SYMBOL_LIBRARIES` | `/libraries` | folders (separated by `:`) with symbol libraries added to the built-in ones: library folders, ZIPs and DXF files (worker) |
 | `DEFAULT_SYMBOL_LIBRARIES` | `din-10628,floor-plan` | installed libraries (comma-separated ids) used when a job names none; earlier ones win on equal block names (worker) |
 | `MAX_LIBRARY_SIZE_BYTES` | `52428800` | limit for each library a job brings along in `library_urls` (50 MB) |
+| `MAX_SCAN_PAGES` | `20` | pages of a PDF or TIFF scan converted per job at most; each takes 5 to 60 s, and pages that would end after 90 % of `CONVERSION_TIMEOUT_SECONDS` are left out |
 
 The environment is read when a job starts, so settings are per container: the api needs `REDIS_URL`, `API_TOKEN`,
 `MAX_QUEUED_JOBS`; the worker everything else.

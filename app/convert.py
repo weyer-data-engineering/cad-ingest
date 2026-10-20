@@ -37,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dpi", type=float, help="scans without visible paper edges: their resolution")
     ap.add_argument("--drawing", default="auto", choices=["auto", "building", "pid"],
                     help="photos and scans: floor plan, P&ID or recognised from the texts (default)")
+    ap.add_argument("--pages", type=_pages, metavar="LIST",
+                    help="PDF and TIFF scans: the pages to convert, e.g. 1-3,5 (default: all, up to MAX_SCAN_PAGES)")
     ap.add_argument("--library", action="append", default=[], metavar="ID_OR_PATH",
                     help="photos and scans: a symbol library to use, an installed id or a library folder, ZIP or DXF; "
                          "repeat it for several, earlier ones win (default: the default libraries)")
@@ -56,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     os.makedirs(args.out, exist_ok=True)
     stem = os.path.join(args.out, source.stem)
     outputs = {"preview": f"{stem}.{PREVIEW[kind][0]}", "vectorize": f"{stem}.zip"}
-    options = {"paper": args.paper, "scale": args.scale, "dpi": args.dpi, "drawing": args.drawing}
+    options = {"paper": args.paper, "scale": args.scale, "dpi": args.dpi, "drawing": args.drawing, "pages": args.pages}
 
     # stdout carries only the paths of the results; libraries that print notices go to stderr
     with tempfile.TemporaryDirectory(prefix="cad-ingest-") as work, contextlib.redirect_stdout(sys.stderr):
@@ -73,6 +75,17 @@ def main(argv: list[str] | None = None) -> int:
     for warning in result["warnings"]:
         print(f"Warning: {warning}", file=sys.stderr)
     return 0
+
+
+def _pages(text: str) -> list[int]:
+    """'1-3,5' -> [1, 2, 3, 5]"""
+    out = []
+    for part in text.split(","):
+        first, _, last = part.partition("-")
+        out += range(int(first), int(last or first) + 1)
+    if not out or min(out) < 1:
+        raise ValueError(text)
+    return out
 
 
 if __name__ == "__main__":

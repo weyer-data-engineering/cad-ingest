@@ -96,7 +96,7 @@ and error code. Interactive OpenAPI documentation is served at `/docs`.
 | B-rep models | `step` `stp` `iges` `igs` `brep` `brp` | header data, assembly tree with instance counts, size, volume and surface area per part | GLB, +Y up, metres |
 | BIM | `ifc` | project hierarchy, element counts, named elements, materials, `Pset_*Common` values | GLB, one node per building element |
 | Meshes | `stl` `obj` `ply` `off` `3mf` `dae` `gltf` `glb` | objects, sizes, watertightness | GLB |
-| Photos and scans of drawings | `jpg` `jpeg` `png` `tif` `tiff` `heic` `heif` `webp` `bmp` `pdf` (first page) | recognised texts and symbols with their tags | PDF of the recognised drawing, plus a ZIP with the DXF |
+| Photos and scans of drawings | `jpg` `jpeg` `png` `tif` `tiff` `heic` `heif` `webp` `bmp` `pdf` (every page of a PDF or TIFF) | recognised texts and symbols with their tags | PDF of the recognised drawing, plus a ZIP with a DXF per page |
 
 DWG files are read with LibreDWG, B-rep models with OpenCascade, IFC with IfcOpenShell, drawings with ezdxf and
 meshes with trimesh. Native formats of SolidWorks, Inventor, CATIA, Revit and similar programs are not supported;

@@ -31,6 +31,13 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
     takes a piece out of a wall.
   - The benchmark has furnished floor plans at 1:50 and 1:100 (scan and phone photo), and `cad-ingest library check
     --scale` tests real-size libraries at a drawing scale.
+- Every page of a PDF or multi-page TIFF scan is converted, not only the first one. The first page with a drawing stays
+  at the root of the ZIP, every further page n goes to `page-n/` with the same files; each `report.json` names its
+  `page` and all `pages` converted, the preview holds every page and the markdown has a section per page. Pages
+  without a drawing are skipped with a warning.
+  - Job API: `options.pages` chooses pages; new setting `MAX_SCAN_PAGES` (default 20). A job leaves out the pages
+    it would not finish within `CONVERSION_TIMEOUT_SECONDS` and says so in a warning, rather than failing.
+  - Command line: `--pages 1-3,5`.
 
 ### Changed
 

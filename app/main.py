@@ -64,6 +64,8 @@ class VectorizeOptions(BaseModel):
     # Installed symbol libraries (GET /libraries) to recognise symbols from, earlier ones first; the default ones if
     # neither these nor library_urls are given
     libraries: list[LibraryId] | None = Field(default=None, min_length=1, max_length=20)
+    # Pages of a PDF or TIFF to convert, counted from 1; all of them (up to MAX_SCAN_PAGES) if not set
+    pages: list[Annotated[int, Field(ge=1)]] | None = Field(default=None, min_length=1, max_length=1000)
 
 
 class JobRequest(BaseModel):

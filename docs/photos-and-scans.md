@@ -39,6 +39,12 @@ teal, for checking) and `report.json` (sheet, resolution, drawing type, scale, c
 with their attributes and ports, and the lines joining two symbol ports). `extract` lists the recognised texts and
 symbols (with their tags) as markdown, so photographed plans become searchable too.
 
+Scans often arrive as PDFs or TIFFs with several pages. Every page is converted on its own (one at a time, so memory
+stays that of one page): the first page with a drawing at the root of the ZIP, every further page n in `page-n/` with
+the same files. Pages without a drawing, such as a cover letter, are skipped with a warning. `options.pages` (command
+line `--pages 1-3,5`) picks pages; a job converts at most `MAX_SCAN_PAGES` (20) and leaves out the pages it would not
+finish within its time limit. PDF pages are rendered at 300 dpi.
+
 ![Review overlay: recognised lines, arcs, symbols and texts in colour on the faded photo](images/review-overlay.jpg)
 
 *Detail of `overlay.png` for the synthetic P&ID above: solid lines in red, dashed lines in blue, arcs and circles in

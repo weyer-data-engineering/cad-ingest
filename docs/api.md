@@ -31,7 +31,7 @@ JSON. If `API_TOKEN` is set, every `/jobs` call needs `Authorization: Bearer <to
 | `operations` | `extract`, `preview` and/or `vectorize`, at least one. `vectorize` is required for photos and scans and allowed only for them |
 | `preview_url` | presigned `PUT` target of the preview, required with `preview`. The converter sends `Content-Type` `application/pdf` (2D, photos and scans) or `model/gltf-binary` (3D) |
 | `result_url` | presigned `PUT` target of the ZIP of `vectorize` (`Content-Type` `application/zip`), required with `vectorize` |
-| `options` | optional, for `vectorize`: `paper` the drawing is printed on (`A0` ... `A4`, default `A3`), `scale` denominator (e.g. `50` for 1:50; read from the title block if not set), `dpi` of a scan without visible paper edges, `drawing`: `building` (floor plan), `pid` (P&ID) or `auto` (default, recognised from the texts), `libraries`: ids of installed symbol libraries to recognise symbols from (see `GET /libraries`; at most 20, earlier ones win on equal block names; default: `DEFAULT_SYMBOL_LIBRARIES`); each is used on the kind of drawing it is for (`drawing`: P&IDs, floor plans) |
+| `options` | optional, for `vectorize`: `paper` the drawing is printed on (`A0` ... `A4`, default `A3`), `scale` denominator (e.g. `50` for 1:50; read from the title block if not set), `dpi` of a scan without visible paper edges, `drawing`: `building` (floor plan), `pid` (P&ID) or `auto` (default, recognised from the texts), `libraries`: ids of installed symbol libraries to recognise symbols from (see `GET /libraries`; at most 20, earlier ones win on equal block names; default: `DEFAULT_SYMBOL_LIBRARIES`); each is used on the kind of drawing it is for (`drawing`: P&IDs, floor plans), `pages`: the pages of a PDF or TIFF to convert, counted from 1 (default: all, at most `MAX_SCAN_PAGES`) |
 | `library_urls` | optional, only with `vectorize`: presigned `GET`s of symbol libraries the job brings along, a library ZIP or a DXF (at most 10, each up to `MAX_LIBRARY_SIZE_BYTES`). They come before the installed `libraries`; the default libraries are only used when the job names none at all. See [Symbol libraries](symbol-libraries.md) |
 | `callback_url` | optional, see Callback |
 | `priority` | `interactive` (default) or `bulk` |
@@ -115,6 +115,14 @@ curl -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '
 
 The `report.json` in the ZIP of `vectorize` lists the libraries that were used for the kind of drawing (`libraries`:
 id and version) and, for every placed symbol, the library it came from.
+
+PDF and TIFF scans may have several pages, and each page with a drawing is converted. The first one goes to the root
+of the ZIP (`plan.dxf`, `plan.pdf`, `overlay.png`, `underlay.png`, `report.json`), every further page n to the folder
+`page-n/` with the same files. Each `report.json` has its `page` and the `pages` converted (counted from 1). The
+preview holds one page per drawing, and the markdown has a section `## Page n of m` for each one. A job converts at
+most `MAX_SCAN_PAGES` pages and leaves out the pages it would not finish within `CONVERSION_TIMEOUT_SECONDS`; pages
+without a drawing, pages left out and pages asked for that the file does not have are named in `warnings`. A single
+image gives the same ZIP and markdown as before.
 
 ## Callback
 
