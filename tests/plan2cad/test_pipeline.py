@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import pytest
 from evaluate import evaluate
 from synth import building_plan, photo, scan
 
@@ -50,6 +51,14 @@ def test_lines_in_colour_are_ink(plan):
     img = cv2.cvtColor(render(plan, 200 / 25.4), cv2.COLOR_GRAY2BGR)
     img[img[..., 0] < 128] = (0, 255, 255)  # yellow, as lines in CAD often are: pale grey in plain luminance
     assert evaluate(plan, convert(img, paper="A3", dpi=200).drawing)["recall_1mm"] > 0.97
+
+
+@pytest.mark.parametrize("height, count, size", [(1.2, 30, 0.6), (2.1, 30, 1.0), (1.2, 5, 1.0), (5.0, 30, 2.0)])
+def test_symbols_go_with_the_text_size_of_the_sheet(height, count, size):
+    from app.plan2cad.model import Text
+    from app.plan2cad.pipeline import _printed
+
+    assert _printed([Text(0, 0, height, "P-101")] * count) == pytest.approx(size)
 
 
 def test_title_block_decides_orientation_when_text_is_unreadable(plan):

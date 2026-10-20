@@ -15,6 +15,22 @@ RUN curl -fsSL -o libredwg.tar.xz "https://github.com/LibreDWG/libredwg/releases
 	&& make -j"$(nproc)" \
 	&& make install-strip
 
+# Tesseract's accurate ("best") models for German and English (Apache 2.0), pinned to their 4.1.0 release: they read
+# the small texts of scanned drawings far better than the fast models of the Ubuntu packages, which they replace.
+FROM ubuntu:24.04 AS tessdata
+ARG TESSDATA_VERSION=4.1.0
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates curl \
+	&& rm -rf /var/lib/apt/lists/*
+WORKDIR /tessdata
+RUN for lang in eng deu; do \
+		curl -fsSL -o "$lang.traineddata" \
+			"https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/${TESSDATA_VERSION}/$lang.traineddata" || exit 1; \
+	done \
+	&& printf '%s  %s\n' \
+		8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba eng.traineddata \
+		8407331d6aa0229dc927685c01a7938fc5a641d1a9524f74838cdac599f0d06e deu.traineddata | sha256sum -c -
+
 FROM ubuntu:24.04 AS python-deps
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends python3.12 python3.12-venv ca-certificates \
@@ -36,6 +52,7 @@ RUN apt-get update \
 	&& useradd --system --uid 10001 --no-create-home cad
 COPY --from=python-deps /opt/venv /opt/venv
 COPY --from=libredwg /opt/libredwg/bin/dwg2dxf /usr/local/bin/dwg2dxf
+COPY --from=tessdata /tessdata/ /usr/share/tesseract-ocr/5/tessdata/
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

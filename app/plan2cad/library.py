@@ -170,11 +170,12 @@ def resolve(value: str, folders: str = "") -> Library:
     return read(value)
 
 
-def combine(libraries: list[Library], drawing: str = "pid", scale: int | None = None) -> dict[str, Template]:
+def combine(libraries: list[Library], drawing: str = "pid", scale: int | None = None,
+            printed: float = 1.0) -> dict[str, Template]:
     """The symbols of the libraries for one drawing type, at their size on the sheet. Real-size symbols are shrunk by
-    the drawing ``scale`` (the denominator); while it is unknown, by each of ASSUMED_SCALES. Where two libraries
-    define the same block name the earlier one wins, so a company library can replace a symbol of a starter library
-    on purpose."""
+    the drawing ``scale`` (the denominator); while it is unknown, by each of ASSUMED_SCALES. Printed-size symbols are
+    ``printed`` times their library size (a sheet printed smaller than drawn). Where two libraries define the same
+    block name the earlier one wins, so a company library can replace a symbol of a starter library on purpose."""
     out: dict[str, Template] = {}
     for lib in libraries:
         if drawing not in lib.drawing:
@@ -185,7 +186,7 @@ def combine(libraries: list[Library], drawing: str = "pid", scale: int | None = 
             if lib.size == "real":
                 out.update({f"{name} 1:{s}": scaled(t, 1 / s) for s in ([scale] if scale else ASSUMED_SCALES)})
             else:
-                out[name] = t
+                out[name] = scaled(t, printed) if printed != 1 else t
     return out
 
 

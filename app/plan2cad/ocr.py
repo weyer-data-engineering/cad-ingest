@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import os
 import re
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import cv2
 import numpy as np
 import pytesseract
+from scipy.ndimage import find_objects
+from scipy.spatial import cKDTree
 
 from ..config import Settings
 from .model import Text
@@ -51,7 +54,7 @@ def find_texts(ink: np.ndarray, gray: np.ndarray, ppm: float, rotation_check: bo
         if rotation:
             return [], np.zeros(ink.shape, np.uint8), rotation
     groups = [(g, False) for g in h_groups] + [(g, True) for g in v_groups]
-    results = _read([_crop(cc, g, vertical) for g, vertical in groups])
+    results = _voted(cc, groups, _read([_crop(cc, g, vertical) for g, vertical in groups]))
     found, unsure = [], []
     for (g, vertical), (s, conf) in zip(groups, results):
         s = fix(" ".join(s.split()))
@@ -71,6 +74,92 @@ def find_texts(ink: np.ndarray, gray: np.ndarray, ppm: float, rotation_check: bo
     return [t for t, _ in found], lut[cc.lab], rotation
 
 
+def frames(ink: np.ndarray, labels: np.ndarray, ppm: float) -> np.ndarray:
+    """The strokes that enclose a text line: the outline around a tag, such as an instrument bubble, the box of a
+    line number or an off-page connector (``labels`` as from find_texts). The paper around the text is filled
+    from it; if the fill stays within FRAME mm of the text, the strokes it meets are the frame."""
+    out = np.zeros(ink.shape, np.uint8)
+    blocked = ((ink > 0) & (labels == 0)).astype(np.uint8)  # strokes other than letters stop the fill
+    reach = round(FRAME * ppm)
+    stroke = np.ones((2 * round(0.4 * ppm) + 1,) * 2, np.uint8)  # the whole width of the frame's stroke
+    for sl in find_objects(labels):
+        if sl is None:
+            continue
+        y0, x0 = max(0, sl[0].start - reach), max(0, sl[1].start - reach)
+        y1, x1 = min(ink.shape[0], sl[0].stop + reach), min(ink.shape[1], sl[1].stop + reach)
+        window = blocked[y0:y1, x0:x1]
+        seed = ((sl[1].start + sl[1].stop) // 2 - x0, (sl[0].start + sl[0].stop) // 2 - y0)
+        if window[seed[1], seed[0]]:
+            continue
+        fill = np.zeros((y1 - y0 + 2, x1 - x0 + 2), np.uint8)
+        cv2.floodFill(window, fill, seed, 1, 0, 0, 4 | cv2.FLOODFILL_MASK_ONLY | (1 << 8))
+        inside = fill[1:-1, 1:-1]
+        if inside[0].any() or inside[-1].any() or inside[:, 0].any() or inside[:, -1].any():
+            continue  # the paper runs on: no frame
+        out[y0:y1, x0:x1] |= cv2.dilate(inside, stroke) & window
+    return out
+
+
+def _voted(cc: Components, groups: list[tuple[list[int], bool]], results: list[tuple[str, float]]
+           ) -> list[tuple[str, float]]:
+    """Corrects characters Tesseract confuses (0 and 8, 5 and S, ...) by a vote of the glyphs that look most alike
+    on the sheet. A drawing is written in one font, and a glyph read differently from most of its look-alikes was
+    misread: the slashed zero of a plotter font reads as 8, 9 or B now and then, but as 0 mostly. Only lines whose
+    characters map one to one to their glyphs take part."""
+    places, images = [], []
+    for k, ((g, vertical), (s, conf)) in enumerate(zip(groups, results)):
+        glyphs = _glyphs(cc, g, vertical)
+        chars = [j for j, ch in enumerate(s) if ch != " "]
+        if conf >= 30 and len(glyphs) == len(chars):
+            places += [(k, j) for j in chars]
+            images += [_glyph(cc, parts, vertical) for parts in glyphs]
+    if len(images) <= LOOK_ALIKES:
+        return results
+    dist, near = cKDTree(np.array(images)).query(np.array(images), k=LOOK_ALIKES + 1)
+    read = [results[k][0][j] for k, j in places]
+
+    def nearest(n: int, ch: str) -> float:  # the distance to the nearest look-alike read as ch
+        return next((d for d, m in zip(dist[n][1:], near[n][1:]) if read[m] == ch), np.inf)
+
+    spread = {ch: float(np.median([nearest(n, ch) for n, c in enumerate(read) if c == ch])) for ch in set(read)}
+    out = [list(s) for s, _ in results]
+    for n, (k, j) in enumerate(places):
+        ch = read[n]
+        alike = next((c for c in CONFUSED if ch in c), None)
+        if alike is None:
+            continue
+        best, votes = Counter(read[m] for m in near[n][1:]).most_common(1)[0]
+        # and the glyph looks like those of that kind: a rare 6 among many 0 is just as near them as to anything else
+        if best != ch and best in alike and votes >= LOOK_ALIKES // 2 and nearest(n, best) <= SPREAD * spread[best]:
+            out[k][j] = best
+    return [("".join(chars), conf) for chars, (_, conf) in zip(out, results)]
+
+
+def _glyphs(cc: Components, g: list[int], vertical: bool) -> list[list[int]]:
+    """The components of a text line merged into glyphs (parts across one another, like the dots of a colon), in
+    reading order."""
+    a, la = (cc.y, cc.h) if vertical else (cc.x, cc.w)
+    out: list[list[int]] = []
+    for i in sorted(g, key=lambda i: a[i]):
+        j = out[-1][0] if out else i
+        if j != i and min(a[i] + la[i], a[j] + la[j]) - max(a[i], a[j]) > 0.5 * min(la[i], la[j]):
+            out[-1].append(i)
+        else:
+            out.append([i])
+    return out
+
+
+def _glyph(cc: Components, parts: list[int], vertical: bool) -> np.ndarray:
+    """A glyph's image, upright, scaled to 10 x 14 pixels and normalised (for comparing glyphs)."""
+    x0, y0 = min(cc.x[i] for i in parts), min(cc.y[i] for i in parts)
+    x1, y1 = max(cc.x[i] + cc.w[i] for i in parts), max(cc.y[i] + cc.h[i] for i in parts)
+    img = cc.gray[y0:y1, x0:x1].astype(np.float32)
+    if vertical:
+        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+    f = cv2.resize(img, (10, 14), interpolation=cv2.INTER_AREA).ravel()
+    return (f - f.mean()) / (f.std() + 1e-6)
+
+
 def _letters(cc: Components, g: list[int], vertical: bool, ppm: float) -> list[int]:
     """The character-like members of a group that looks like a line of text: at least three of
     similar height (0.8 to 6 mm), none much longer than high (dashes, symbol parts). Empty if the
@@ -85,7 +174,25 @@ def _letters(cc: Components, g: list[int], vertical: bool, ppm: float) -> list[i
     return g[ok].tolist()
 
 
+LOOK_ALIKES = 16  # glyphs most like a glyph that vote on what it is
+SPREAD = 1.5  # a glyph is like a kind if as near to it as its own glyphs usually are to one another, give or take
+# characters Tesseract mistakes for one another in drawing fonts; not I and l, which differ only in height
+CONFUSED = ("0OD89B6Q", "17TJ", "5S", "2Z")
+FRAME = 12.0  # mm: the frame around a text (a tag's bubble or box) is at most this far from it
+SAME_HEIGHT = 1.5  # characters of one text line differ in height by at most this factor (a lower-case e and an f)
+PIECES = 0.25  # gap between the pieces of a broken character at most, in character heights (not a dashed line)
+SHAPES = set("0oO°1lI|[](){}.,:;-_= ")  # what the circles and bars of a symbol read as: two hotplates as "oo"
 _DIGITS = str.maketrans("OoSIlBZ", "0051182")
+
+
+def digits(s: str) -> str:
+    """A number with the letters OCR reads for digits turned into them (O as 0, S as 5, ...)."""
+    return s.translate(_DIGITS)
+
+
+def worded(s: str) -> bool:
+    """Whether a text reads as words or a code, not only as the circles and bars of a symbol ("oo", "101")."""
+    return not set(s) <= SHAPES
 
 
 def fix(s: str) -> str:
@@ -93,12 +200,16 @@ def fix(s: str) -> str:
     s = re.sub(r"(\d) ?m[?2’'`]$", r"\1 m²", s)
     s = re.sub(r"(\d) ?m[3]$", r"\1 m³", s)
     s = re.sub(r"\bDN([0-9OoSIlBZ]+)\b", lambda m: "DN" + m.group(1).translate(_DIGITS), s)
-    return re.sub(r"(?<=\d)[OoIl]+(?=\d)|(?<=\d)[Oo]+\b", lambda m: m.group(0).translate(_DIGITS), s)
+    # in a code an O or I next to a digit is a 0 or 1: PN16, CS31, C=01XY2Z (not the I of I/P or TIC)
+    return re.sub(r"(?<=\d)[OoIl]+|[OoIl]+(?=\d)", lambda m: m.group(0).translate(_DIGITS), s)
 
 
 def _group(cc: Components, idx: np.ndarray, horizontal: bool) -> tuple[list[list[int]], np.ndarray]:
-    """Links neighbouring characters of one text line (union-find). Returns groups of at least two
-    components and the remaining single components."""
+    """Links neighbouring characters of one text line (union-find). Characters of similar height are linked first;
+    then small marks (hyphens, dots, inch marks, the pieces of a broken character) join a line of two or more
+    characters they sit in. So a tall
+    stroke, such as the slanted side of an off-page connector next to two lines of text, links neither line to the
+    other nor itself to them. Returns groups of at least two components and the remaining single components."""
     if not len(idx):
         return [], idx
     a, b, la, lb = (cc.x, cc.y, cc.w, cc.h) if horizontal else (cc.y, cc.x, cc.h, cc.w)
@@ -111,20 +222,39 @@ def _group(cc: Components, idx: np.ndarray, horizontal: bool) -> tuple[list[list
             i = parent[i]
         return i
 
-    reach = int(lb[idx].max()) + 1
-    for k, i in enumerate(order):
-        end_i = a[i] + la[i]
-        for j in order[k + 1:]:
-            gap = a[j] - end_i
-            if gap > reach:
+    def neighbours():
+        reach = int(lb[idx].max()) + 1
+        for k, i in enumerate(order):
+            end_i = a[i] + la[i]
+            for j in order[k + 1:]:
+                gap = a[j] - end_i
+                if gap > reach:
+                    break
+                size = max(lb[i], lb[j])
+                if gap > 1.0 * size or gap < -0.5 * min(la[i], la[j]):
+                    continue
+                overlap = min(b[i] + lb[i], b[j] + lb[j]) - max(b[i], b[j])
+                centres = abs((2 * b[i] + lb[i]) - (2 * b[j] + lb[j])) / 2
+                if overlap >= 0.3 * min(lb[i], lb[j]) and centres <= 0.6 * size:
+                    yield int(i), int(j), gap
+
+    pairs = list(neighbours())
+    for i, j, _ in pairs:
+        if max(lb[i], lb[j]) <= SAME_HEIGHT * min(lb[i], lb[j]):
+            parent[root(i)] = root(j)
+    members: dict[int, list[int]] = {}
+    for i in idx:
+        members.setdefault(root(int(i)), []).append(int(i))
+    height = {r: float(np.median(lb[m])) for r, m in members.items() if len(m) > 1}  # of a line's characters
+    letters = {i for m in members.values() if len(m) > 1 for i in m}
+    for i, j, gap in pairs:  # left to right, so the pieces of a broken character join one after the other
+        for small, big in ((i, j), (j, i)):
+            h = height.get(root(big), 0.0)
+            middle = b[small] + lb[small] / 2  # of the small mark, beside the one it joins
+            near = big in letters or gap <= PIECES * h  # a mark that joined before: only if it nearly touches
+            if near and lb[small] < SAME_HEIGHT * h and b[big] - 0.2 * h <= middle <= b[big] + lb[big] + 0.2 * h:
+                parent[root(small)] = root(big)
                 break
-            size = max(lb[i], lb[j])
-            if gap > 1.0 * size or gap < -0.5 * min(la[i], la[j]):
-                continue
-            overlap = min(b[i] + lb[i], b[j] + lb[j]) - max(b[i], b[j])
-            centres = abs((2 * b[i] + lb[i]) - (2 * b[j] + lb[j])) / 2
-            if overlap >= 0.3 * min(lb[i], lb[j]) and centres <= 0.6 * size:
-                parent[root(int(i))] = root(int(j))
     groups: dict[int, list[int]] = {}
     for i in idx:
         groups.setdefault(root(int(i)), []).append(int(i))

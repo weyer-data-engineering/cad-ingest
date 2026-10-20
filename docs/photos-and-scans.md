@@ -13,10 +13,11 @@ job handler in `app/scan.py`.
 1. **Sheet**: finds the paper in the photo (GrabCut, edges refined at full resolution) and removes the perspective. If
    the paper runs out of the picture, it uses the printed drawing frame instead (aspect ratio from the perspective,
    Zhang & He). Scans without visible paper edges are deskewed.
-2. **Light**: takes the darkest colour channel as grey value where the colour is strong (so yellow and orange lines
-   are ink as dark as black ones; colour casts of photos are too weak for this), divides by the paper brightness (a
-   closing that follows soft shadow edges) and binarises against the darkest ink nearby, so glare and light toner keep
-   their lines.
+2. **Light**: on a colour plot, takes the darkest colour channel as grey value where the colour is strong (so yellow
+   and orange lines are ink as dark as black ones; colour casts of photos are too weak for this). On a black and white
+   print, strong colour is a markup added by hand and is taken out of the drawing, see [Markups](#markups). Then it
+   divides by the paper brightness (a closing that follows soft shadow edges) and binarises against the darkest ink
+   nearby, so glare and light toner keep their lines.
 3. **Vectors**: filled areas (thicker than 1.5 mm), horizontal and vertical lines (morphology), circles (Hough, verified
    on all ink; text found on a ring is dropped as misread symbol arcs), everything else by skeleton tracing with arc
    fitting. Collinear pieces are joined, regular pieces become dashed lines, corners are closed.
@@ -24,7 +25,12 @@ job handler in `app/scan.py`.
    with its heads); slivers and loose specks from the tracing are dropped. Floor plans get door swings (leaf and quarter
    arc) and walls, P&IDs equipment (large closed outlines), signal lines (dashed or ending at an instrument bubble) and
    pipes.
-5. **Text**: characters are grouped into lines and read by Tesseract in batches. The sheet is turned if its text
+5. **Text**: characters of similar height are grouped into lines first, and small marks such as dots, hyphens and
+   quotes join the line they sit in, so two text lines beside a slanted stroke stay apart. The lines are read by
+   Tesseract in batches with its most accurate models (`tessdata_best`). A drawing is written in one font, so a
+   character read unlike the glyphs that look most like it on the same sheet is corrected by their vote: the slashed
+   zero of a plotter font reads as 8, 9 or B now and then, but as 0 mostly. In a code, an O or I next to a digit is a
+   0 or 1 (`PN16`, `C=01XY2Z`). The sheet is turned if its text
    reads better turned: each rotation counts horizontal text the right way up together with vertical text reading
    bottom to top, so a P&ID full of vertical pipe labels is not taken for a sideways sheet. The scale is read from
    the title block. The drawing type weighs room areas (m²) and a building scale against nominal sizes (DN),
@@ -33,16 +39,19 @@ job handler in `app/scan.py`.
 6. **Symbols**: valves, pumps and instruments on P&IDs (and on drawings of unknown kind), toilets, washbasins, bathtubs
    and other fixtures on floor plans are looked up in symbol libraries and placed as their CAD blocks instead of loose
    strokes, see below.
+7. **Markups**: pen strokes and highlighter in colour on a black and white print become their own layers, see
+   [Markups](#markups).
 
 ## Output
 
 The ZIP holds `plan.dxf` (real-world millimetres, one layer per kind of object: `P2C-WALL`, `P2C-DOOR`, `P2C-PIPE`,
 `P2C-EQUIPMENT`, `P2C-SIGNAL`, `P2C-FRAME`, `P2C-LINE`, `P2C-DASH`, `P2C-CURVE`, `P2C-FILL`, `P2C-TEXT`,
-`P2C-TEXT-CHECK`, ISO line weights, the straightened photo `underlay.png` as raster underlay on `P2C-UNDERLAY`),
+`P2C-TEXT-CHECK`, and for markups `P2C-MARKUP`, `P2C-HIGHLIGHT` and `P2C-MARKUP-TEXT`; ISO line weights, the
+straightened photo `underlay.png` as raster underlay on `P2C-UNDERLAY`),
 `plan.pdf` (vector, on the paper size), `overlay.png` (the recognised vectors in colour on the faded photo, symbols in
-teal, for checking) and `report.json` (sheet, resolution, drawing type, scale, counts, timings, all texts, the symbols
-with their attributes and ports, and the lines joining two symbol ports). `extract` lists the recognised texts and
-symbols (with their tags) as markdown, so photographed plans become searchable too.
+teal, for checking), `markup-k.png` for each markup and `report.json` (sheet, resolution, drawing type, scale, counts, timings, all texts, the symbols
+with their attributes and ports, the lines joining two symbol ports and the markups). `extract` lists the recognised
+texts, symbols (with their tags) and markups as markdown, so photographed plans become searchable too.
 
 Scans often arrive as PDFs or TIFFs with several pages. Every page is converted on its own (one at a time, so memory
 stays that of one page): the first page with a drawing at the root of the ZIP, every further page n in `page-n/` with
@@ -66,6 +75,30 @@ docker run --rm --user "$(id -u)" -v "$PWD:/data" -w /data ghcr.io/weyer-data-en
 
 There is no DWG output: the ODA File Converter may be used by non-members for non-commercial applications only, and
 LibreDWG writes only old DWG versions, experimentally. AutoCAD and other CAD programs open the DXF directly.
+
+## Markups
+
+Plans come back from site and review with notes on them: a cloud around a valve with "removed" next to it, a pipe
+struck out, a line marked with a highlighter. On a black and white print, every stroke in strong colour is such a
+markup. Read as part of the drawing, it would turn into stray lines and symbols and garble the printed text under
+it. So the converter takes markups out before it reads the drawing and keeps them on their own layers:
+
+- **Pen strokes** become polylines in their colour on `P2C-MARKUP`. Strokes close to one another make one note.
+- **Highlighter** (light colour at least 1 mm wide) becomes a transparent fill in its colour on `P2C-HIGHLIGHT`. The
+  print under it shows through and is read as usual.
+- **Handwriting** in a note is read by Tesseract where it can. The reading goes on `P2C-MARKUP-TEXT` as a guess to
+  check: Tesseract is made for print, so it reads clear block letters and misses much of joined-up writing.
+- **What a markup covers**: the printed texts and the tags of the symbols inside a pen loop, under a pen stroke or
+  under highlighter, such as the instruments in a revision cloud.
+
+`report.json` lists them under `markups`, each with its `kind` (`note` or `highlight`), `box_mm` (x0, y0, x1, y1 on
+the sheet), `color` (RGB), the handwriting `reading` (or `null`), the printed `texts` and symbol tags it covers and its `image`: the
+ZIP holds `markup-k.png` for each markup, the markup in colour on the faded print around it. These images are for a
+person or a vision model to read what Tesseract could not. The markdown has a section `Markups (added by hand in
+colour)`, for example `- Note in red: “removed” (handwriting, read automatically); covers: FV 101, FT 101`.
+
+On a colour plot, where coloured lines are a large share of the ink, all colour is print and no markups are taken out.
+Markups in black or grey cannot be told from the print.
 
 ## Vector PDFs
 
@@ -124,7 +157,21 @@ otherwise look like symbols.
 
 OCR often reads small fixtures at 1:100 as letters (a washbasin as "IOl"). So two opposite sides of a rectangle are
 enough as a candidate, text may stand in for the outer outline and for small closed shapes such as a bowl or a
-hotplate, and a text made of the strokes of a symbol is dropped once the symbol is found.
+hotplate, and a text made of the strokes of a symbol is dropped once the symbol is found. The other way round, letters
+must not make a symbol: on a dense P&ID, a V or an X in a pipe label fits a valve. A symbol may find at most 30 % of
+its outline on text that reads as words or a code (anything but the circles and bars a symbol reads as, such as "oo"
+or "101"). And the frame around a text (the box of a line number, an interlock diamond, the end of a label) is only
+taken as a symbol that holds text inside its outline, such as an instrument bubble.
+
+Libraries whose symbols are drawn at the printed size (P&ID symbols, unlike fixtures) are drawn larger or smaller on
+some sheets, for example a large drawing printed on a smaller sheet. The converter takes the size from the text: where
+the sheet's median text height is more than a quarter larger or a fifth smaller than 2 mm, the symbols are looked
+for at that ratio (between half and twice their size).
+
+A sheet draws its symbols at one size. Once at least 12 symbols drawn at the printed size are found, their median size
+is the sheet's, and candidates more than 1.4 times larger or smaller are left out: at the smallest size the library
+allows, the x marks of a capillary line fit a flow arrow and a filled note marker fits an instrument bubble.
+Fixtures are left alone, as their size is that of the real object.
 
 ## Benchmark
 
@@ -163,6 +210,7 @@ stay linework. On floor plans, all fixtures are found at 1:50; at 1:100, where O
 
 ## Limits
 
+- Handwriting is read only in part (see [Markups](#markups)); the markup images in the ZIP show what it says.
 - Small text needs about 8 px per mm of paper. An A0 sheet as one 12 MP photo has 2.8 px/mm, so its text is not
   readable; use 200-300 dpi scans for A0/A1. Unread text is kept as a guess on `P2C-TEXT-CHECK`.
 - Thin lines (0.18 mm, e.g. dimension lines) need about 6 px per mm of paper. On a 12 MP photo of an A1 floor plan
