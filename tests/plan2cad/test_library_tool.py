@@ -35,6 +35,14 @@ def test_check_lists_the_symbols_and_tests_them_on_a_scan(tmp_path, capsys, monk
     assert re.search(r"MY_VALVE +2/2", out) and "Found: scan 100% (2/2). Found where no symbol was drawn: scan 0." in out
 
 
+def test_check_tests_a_floor_plan_library_on_floor_plans_at_its_scale(capsys, monkeypatch):
+    monkeypatch.setattr(library_tool, "RUNS", library_tool.RUNS[:1])
+    assert convert.main(["library", "check", "floor-plan", "--scale", "100"]) == 0
+    out = capsys.readouterr().out
+    assert "Blocks drawn at real size" in out and "on 1 A3 sheet at 1:100" in out
+    assert "Found: scan 100% (14/14). Found where no symbol was drawn: scan 0." in out
+
+
 def test_check_notes_what_keeps_symbols_from_being_found(tmp_path, capsys):
     doc = ezdxf.new("R2018", units=ezdxf.units.MM)
     doc.layers.add("PORT")
@@ -42,14 +50,16 @@ def test_check_notes_what_keeps_symbols_from_being_found(tmp_path, capsys):
     at_port.add_lwpolyline([(0, -1.6), (0, 1.6), (5, -1.6), (5, 1.6)], close=True)
     for x in (0, 5):
         at_port.add_point((x, 0), dxfattribs={"layer": "PORT"})
-    doc.blocks.new("TANK").add_lwpolyline([(-20, -15), (20, -15), (20, 15), (-20, 15)], close=True)
+    doc.blocks.new("TANK").add_lwpolyline([(-20, -15), (20, -15), (20, 15), (-20, 15)], close=True)  # a rectangle
+    doc.blocks.new("FUNNEL").add_lwpolyline([(-4, -3), (4, -3), (0, 3)], close=True)
     doc.blocks.new("DOT").add_line((0, 0), (0.5, 0))
     doc.saveas(tmp_path / "notes.dxf")
 
     assert convert.main(["library", "check", str(tmp_path / "notes.dxf"), "--no-self-test"]) == 0
     out = capsys.readouterr().out
     assert "VALVE_AT_PORT: the insertion point lies on a port" in out
-    assert "TANK: no PORT points and no circle, and larger than 25 mm: it cannot be found" in out
+    assert "FUNNEL: no PORT points, circle or rectangle, so it is only found where its strokes stand apart" in out
+    assert "TANK:" not in out
     assert "DOT: 0.5 x 0.0 mm; blocks are drawn at their printed size" in out
 
 

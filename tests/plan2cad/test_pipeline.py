@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from evaluate import evaluate
-from synth import photo
+from synth import building_plan, photo, scan
 
 from app.plan2cad.pipeline import convert
 from app.plan2cad.render import render
@@ -14,6 +14,16 @@ def test_scan_recovers_geometry_text_and_scale(plan, plan_scan):
     assert m["recall_1mm"] > 0.97 and m["precision_1mm"] > 0.97
     assert m["text_exact"] > 0.9
     assert r.drawing.scale == 50
+    assert not r.drawing.symbols  # no fixtures drawn, none found
+
+
+def test_fixtures_on_a_floor_plan_become_library_blocks():
+    plan = building_plan(7, fixtures=True)
+    r = convert(scan(plan, 7, dpi=200), paper="A3")
+    m = evaluate(plan, r.drawing)
+    assert r.info["drawing_type"] == "building" and [lib["id"] for lib in r.info["libraries"]] == ["floor-plan"]
+    assert m["symbol_recall"] > 0.85 and m["symbol_precision"] > 0.85
+    assert m["recall_1mm"] > 0.97  # the walls behind them stay
 
 
 def test_phone_photo_is_rectified(plan):

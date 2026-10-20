@@ -134,9 +134,9 @@ def test_installed_libraries_are_listed_and_checked(api, origin, worker, tmp_pat
     worker(SYMBOL_LIBRARIES=tmp_path / "libs")
 
     catalogue = api.get("/libraries").json()
-    assert [lib["id"] for lib in catalogue["libraries"]] == ["din-10628", "acme-pid"]
-    assert catalogue["default"] == ["din-10628"]
-    assert catalogue["libraries"][1]["symbols"] == [{"name": "MY_VALVE", "description": "Box valve"}]
+    assert [lib["id"] for lib in catalogue["libraries"]] == ["din-10628", "floor-plan", "acme-pid"]
+    assert catalogue["default"] == ["din-10628", "floor-plan"]
+    assert catalogue["libraries"][2]["symbols"] == [{"name": "MY_VALVE", "description": "Box valve"}]
     vectorize = {"operations": ["vectorize"], "result_url": origin.url("/preview/result")}
     origin.source_status["plan.jpg"].append(404)  # the accepted job ends at once
     assert submit(api, origin, "plan.jpg", options={"libraries": ["acme-pid", "din-10628"]}, **vectorize).status_code == 202

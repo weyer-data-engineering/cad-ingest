@@ -1,0 +1,10 @@
+# The floor plan starter library of cad-ingest: fixtures drawn at their real size, written by bench/make_library.py.
+# See docs/symbol-libraries.md for the format.
+id = "floor-plan"
+name = "Floor plan fixtures (starter library)"
+version = "1.0.0"
+format = 1
+licence = "Apache-2.0"
+drawing = ["building"]
+size = "real"
+file = "symbols.dxf"

@@ -19,6 +19,18 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   - `report.json` lists the libraries used and, for every symbol, its library.
   - Command line: `--library` (an installed id or a path, repeatable), `cad-ingest library check` (format, notes and
     a self-test on simulated scans and photos) and `cad-ingest library build` (from DWG and DXF files).
+- Symbols on floor plans: fixtures such as toilets, washbasins, bathtubs, shower trays, kitchen sinks, hobs and
+  washing machines become blocks too, with their back on the wall.
+  - Libraries say which drawings they are for (`drawing = ["building"]`) and whether their blocks are drawn at real
+    size (`size = "real"`, like architectural CAD blocks); real-size blocks are shrunk by the drawing scale, and 1:50
+    and 1:100 are tried while the scale is unknown. The DXF holds them at real size.
+  - A second built-in library, `floor-plan`, with seven fixtures; `DEFAULT_SYMBOL_LIBRARIES` is now
+    `din-10628,floor-plan`, and every library is used on the kind of drawing it is for.
+  - Fixtures are found from their rectangular outline, also where a side is the face of the wall or the edge of a
+    counter, and from two opposite sides where OCR read a small fixture at 1:100 as letters ("IOl"). A symbol never
+    takes a piece out of a wall.
+  - The benchmark has furnished floor plans at 1:50 and 1:100 (scan and phone photo), and `cad-ingest library check
+    --scale` tests real-size libraries at a drawing scale.
 - Every page of a PDF or multi-page TIFF scan is converted, not only the first one. The first page with a drawing stays
   at the root of the ZIP, every further page n goes to `page-n/` with the same files; each `report.json` names its
   `page` and all `pages` converted, the preview holds every page and the markdown has a section per page. Pages
@@ -30,8 +42,12 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 ### Changed
 
 - The starter library moved from `app/plan2cad/symbols.dxf` to `libraries/din-10628`.
-- A symmetric symbol (one that looks the same turned half way or mirrored) takes the pose in which most of its
-  attribute positions have a text, so a tag below a symmetric valve is no longer missed.
+- A symmetric symbol (one that looks the same turned or mirrored) takes the pose in which most of its attribute
+  positions have a text, so a tag below a symmetric valve is no longer missed, and then the pose with its back on the
+  wall (a hob with its insertion point on the wall, not on its front edge). Poses whose outlines lie within 0.75 mm
+  of each other count as the same.
+- Text that is only strokes of a found symbol read as letters ("00" on a hob) is dropped, and text ink counts towards
+  the circles and small closed shapes of a symbol.
 - The simulated scans and photos of the benchmark moved to `app/plan2cad/simulate.py`.
 
 ## [1.1.0] - unreleased

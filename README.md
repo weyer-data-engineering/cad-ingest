@@ -21,8 +21,8 @@ service, no AutoCAD licence and no GPU.
   three.js or `<model-viewer>`.
 - **Photo or scan to CAD.** A phone photo or a scan of a paper drawing becomes a DXF in real-world millimetres. It
   contains lines, arcs, circles, dashed lines, walls, doors, pipes, OCR text and the scale from the title block. P&ID
-  symbols such as valves, pumps and instruments become CAD blocks, from the starter library or from your own company
-  library.
+  symbols such as valves, pumps and instruments and floor plan fixtures such as toilets, washbasins and bathtubs
+  become CAD blocks, from the starter libraries or from your own company library.
 - **Ready for production.** An HTTP job API on Redis and RQ with queues, priorities, retries, callbacks and
   cancellation. Every file is converted in its own process with a time and memory limit. Release images for amd64
   and arm64 come with an SBOM and build provenance.
@@ -157,8 +157,9 @@ the title block.*
 The pipeline in `app/plan2cad` finds the sheet in the photo and removes the perspective. It evens out shadows and
 glare and traces the linework into lines, arcs, circles, dashed lines and filled areas. Pieces that belong together
 are joined into walls, pipes and equipment outlines. Texts are read with Tesseract OCR, and the scale is taken from
-the title block. On P&IDs, symbols are matched against DXF symbol libraries and placed as their blocks, with their
-tags as attributes. The starter library has 18 symbols after DIN EN ISO 10628-2.
+the title block. Symbols are matched against DXF symbol libraries and placed as their blocks: valves, pumps and
+instruments on P&IDs, with their tags as attributes, and toilets, washbasins, bathtubs and other fixtures on floor
+plans. Two starter libraries are built in: 18 P&ID symbols after DIN EN ISO 10628-2 and seven floor plan fixtures.
 
 Your own symbols plug in as a library: a folder with your CAD blocks and a short `library.toml`. The DXF then holds
 your original blocks, with your layers and attribute names. Install libraries on the server, or let each job bring
@@ -187,10 +188,12 @@ the reference. A selection of the results (mean over 1 to 3 seeds per case):
 |---|---|---|---|---|
 | Floor plan A3, scan 300 dpi | 100 % / 100 % | 100 % | - | 8 s |
 | Floor plan A3, phone photo 12 MP | 99.9 % / 100 % | 100 % | - | 5 s |
-| P&ID A1, scan 200 dpi | 99.9 % / 99.4 % | 87 % | 94 % / 93 % | 29 s |
+| Floor plan A3 1:50 with fixtures, phone photo 12 MP | 99.9 % / 100 % | 100 % | 100 % / 100 % | 7 s |
+| Floor plan A3 1:100 with fixtures, phone photo 12 MP | 99.7 % / 99.9 % | 90 % | 93 % / 90 % | 8 s |
+| P&ID A1, scan 200 dpi | 99.9 % / 99.4 % | 87 % | 94 % / 93 % | 31 s |
 | P&ID A1, phone photo 12 MP | 99.2 % / 96.7 % | 18 % | 78 % / 77 % | 32 s |
-| P&ID A0, scan 200 dpi | 100 % / 98.9 % | 84 % | 91 % / 91 % | 56 s |
-| P&ID A0, phone photo 48 MP | 99.1 % / 98.3 % | 34 % | 81 % / 84 % | 45 s |
+| P&ID A0, scan 200 dpi | 100 % / 98.9 % | 84 % | 91 % / 91 % | 53 s |
+| P&ID A0, phone photo 48 MP | 99.1 % / 98.3 % | 34 % | 82 % / 85 % | 45 s |
 
 Linework holds up down to about 3 pixels per millimetre of paper, but text needs about 8. Scan large sheets at 200 to
 300 dpi rather than photographing them. The [full table](docs/photos-and-scans.md#benchmark) also has the harder
@@ -204,7 +207,7 @@ cases. Run it yourself with `python bench/run.py --out bench/out --quick`.
   from synthetic drawings that anyone can regenerate.
 - **Ground truth.** The benchmark scores every result against an exact reference, so improvements are measured
   rather than judged by eye. Every change to the pipeline is benchmarked before and after.
-- **Tests in the image.** More than 130 tests run inside the container image, with the same native libraries as in
+- **Tests in the image.** More than 140 tests run inside the container image, with the same native libraries as in
   production. They cover every CAD format and the photo pipeline. The job tests use a real Redis and real worker
   processes. They include broken files, conversions killed by the kernel, cancellation, retries, callbacks, a full
   queue, a Redis outage and jobs left behind by a dying worker.
@@ -249,7 +252,8 @@ assistant.
 
 - Small text on photos and scans needs about 8 pixels per millimetre of paper. A single 12 MP photo of an A0 sheet has
   2.8, so use a 200 to 300 dpi scan for A0 and A1. Unread text is kept as a guess on its own layer for review.
-- Only symbols in the selected libraries are recognised. Everything else stays linework.
+- Only symbols in the selected libraries are recognised. Everything else stays linework. Fixtures on floor plans are
+  found at 1:50 and 1:100, or at the scale a job names; at 1:100 about one in ten is placed wrongly.
 - Paper that is not flat (waves, folds) shifts lines by up to a millimetre.
 - DWG is read through LibreDWG, which does not support every object of every AutoCAD version. Files that it cannot
   read fail with `unreadable` rather than producing a wrong preview.
@@ -272,8 +276,10 @@ directly.
 **Does it need a GPU, an internet connection or a cloud account?** No. Everything runs on the CPU inside the
 container. Apart from Redis, it only connects to the URLs that you put into a job.
 
-**Can it recognise our own P&ID symbols?** Yes. Put your CAD blocks into a symbol library, add the points where
-pipes connect, and check it with `cad-ingest library check`. See [Symbol libraries](docs/symbol-libraries.md).
+**Can it recognise our own P&ID symbols or furniture blocks?** Yes. Put your CAD blocks into a symbol library, add
+the points where pipes connect, and check it with `cad-ingest library check`. Fixture and furniture blocks drawn at
+real size work as they are: say `size = "real"` and `drawing = ["building"]` in `library.toml`. See [Symbol
+libraries](docs/symbol-libraries.md).
 
 **Which OCR languages are included?** German and English. The default is `deu`. Set `OCR_LANGUAGES=eng` or
 `deu+eng` for your drawings.

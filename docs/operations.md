@@ -40,7 +40,7 @@ both. All three live in the Redis database of `REDIS_URL`.
 | `RETRY_DELAY_SECONDS` | `30` | first delay before a re-run (then x4: 30 s, 2 min) and before a callback retry (then x2) |
 | `OCR_LANGUAGES` | `deu` | Tesseract languages for the texts on photos and scans: `eng` for English drawings, `deu+eng` for both (the image has `deu` and `eng`; add other `tesseract-ocr-*` packages in your own image) |
 | `SYMBOL_LIBRARIES` | `/libraries` | folders (separated by `:`) with symbol libraries added to the built-in ones: library folders, ZIPs and DXF files (worker) |
-| `DEFAULT_SYMBOL_LIBRARIES` | `din-10628` | installed libraries (comma-separated ids) used when a job names none; earlier ones win on equal block names (worker) |
+| `DEFAULT_SYMBOL_LIBRARIES` | `din-10628,floor-plan` | installed libraries (comma-separated ids) used when a job names none; earlier ones win on equal block names (worker) |
 | `MAX_LIBRARY_SIZE_BYTES` | `52428800` | limit for each library a job brings along in `library_urls` (50 MB) |
 | `MAX_SCAN_PAGES` | `20` | pages of a PDF or TIFF scan converted per job at most; each takes 5 to 60 s, and pages that would end after 90 % of `CONVERSION_TIMEOUT_SECONDS` are left out |
 
