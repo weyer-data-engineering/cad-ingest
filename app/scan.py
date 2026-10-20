@@ -33,8 +33,7 @@ def vectorize(path: str, name: str, options: dict, result: str, preview: str | N
             raise ConversionError(str(e)) from None
     r = convert(img, paper=options.get("paper", "A3"), scale=options.get("scale"), dpi=options.get("dpi") or dpi,
                 drawing=None if options.get("drawing", "auto") == "auto" else options["drawing"],
-                templates=library.combine(libraries))
-    r.info["libraries"] = [{"id": lib.id, "version": lib.version} for lib in libraries]
+                libraries=libraries)
     d, counts = r.drawing, r.info["counts"]
     if not any(counts[k] for k in ("lines", "arcs", "circles", "polylines")):
         raise ConversionError("No drawing was recognised in the image")

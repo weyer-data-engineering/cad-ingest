@@ -14,11 +14,27 @@ from app.plan2cad.model import Drawing
 from .conftest import write_library, zipped
 
 
-def test_starter_library_is_built_in_and_the_default():
-    starter = library.installed()["din-10628"]
+def test_starter_libraries_are_built_in_and_the_default():
+    starter, fixtures = library.installed()["din-10628"], library.installed()["floor-plan"]
     assert starter.version == "1.0.0" and starter.licence == "Apache-2.0" and starter.drawing == ["pid"]
-    assert library.select() == [starter] and len(starter.symbols) == 18 and not starter.warnings
+    assert (fixtures.drawing, fixtures.size, len(fixtures.symbols)) == (["building"], "real", 7)
+    assert library.select() == [starter, fixtures] and len(starter.symbols) == 18 and not starter.warnings
     assert {"name": "PUMP", "description": "Centrifugal pump"} in starter.summary()["symbols"]
+    assert not fixtures.warnings and fixtures.summary()["size"] == "real"
+
+
+def test_real_size_symbols_are_shrunk_by_the_drawing_scale():
+    both = library.select()
+    assert set(library.combine(both, "pid")) == set(library.load())  # P&IDs get the P&ID symbols only
+    at50 = library.combine(both, "building", 50)
+    bathtub = at50["BATHTUB 1:50"]
+    assert (bathtub.name, bathtub.unit) == ("BATHTUB", pytest.approx(1 / 50))
+    xs = [v for q in bathtub.parts if hasattr(q, "x1") for v in (q.x1, q.x2)]
+    assert max(xs) - min(xs) == pytest.approx(34)  # 1700 mm at 1:50
+    assert sorted(library.combine(both, "building"))[:2] == ["BATHTUB 1:100", "BATHTUB 1:50"]  # scale unknown
+
+    ref = to_dxf(Drawing(420, 297, symbols=[library.place(bathtub, 100, 50)], scale=50)).modelspace().query("INSERT")[0]
+    assert ref.dxf.name == "BATHTUB" and ref.dxf.xscale == pytest.approx(1)  # the block at real size, unscaled
 
 
 def test_a_folder_its_zip_and_its_bare_dxf_hold_the_same_symbols(tmp_path):
@@ -61,7 +77,7 @@ def test_installed_libraries_come_from_folders_and_must_have_distinct_ids(tmp_pa
     write_library(tmp_path / "libs" / "acme")
     (tmp_path / "libs" / "lost+found").mkdir()  # no library.toml: not a library
     folders = str(tmp_path / "libs")
-    assert list(library.installed(folders)) == ["din-10628", "acme-pid"]
+    assert list(library.installed(folders)) == ["din-10628", "floor-plan", "acme-pid"]
     assert library.select(defaults="acme-pid, din-10628", folders=folders)[0].id == "acme-pid"
     with pytest.raises(LibraryError, match="'nope' is not installed"):
         library.select(["nope"], folders=folders)
@@ -74,7 +90,8 @@ def test_installed_libraries_come_from_folders_and_must_have_distinct_ids(tmp_pa
 @pytest.mark.parametrize("manifest, reason", [
     ('id = "ACME"', "'id' must be lower-case"),
     ("format = 2", "library format 2 needs a newer cad-ingest"),
-    ('drawing = ["building"]', "symbols are recognised on P&IDs so far"),
+    ('drawing = ["section"]', "out of pid, building"),
+    ('size = "large"', "'size' must be one of printed, real"),
     ('file = "../symbols.dxf"', "'file' must be a DXF file inside the library"),
     ("version = 2.1", "'version' must be a string"),
     ("id = ", "library.toml: "),  # not TOML

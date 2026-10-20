@@ -1,15 +1,18 @@
-"""Replaces recognised P&ID symbols with blocks of the symbol library (see library.py).
+"""Replaces recognised symbols (valves, pumps and instruments on P&IDs, fixtures on floor plans) with blocks of the
+symbol libraries (see library.py).
 
 Hypotheses come from the drawing: two line ends that two ports of a symbol fit (a valve between two pipe ends, a safety
-valve between its riser and outlet; this fixes position, turn and size), circles (pumps, heat exchangers, instruments,
-scaled to the radius) and, where no symbol was found yet, single line ends at a port and groups of small strokes. Each
-is fitted by moving it a little and scored on points along the centre lines of the ink (or the drawing's lines), like
-an oriented chamfer match: a point of the symbol's outline counts as found if ink runs close by in the same direction.
-The score rewards the ink explained and penalises the outline missing and the ink inside the symbol it does not
-explain; lines leaving through a port, such as pipes, are expected there. Of overlapping hits the best one wins. The
-linework a symbol explains is removed, line ends are snapped onto its ports and the texts at its attribute positions
-become its attributes; a symmetric symbol (a valve that looks the same turned half way) takes the pose in which most of
-them stand there."""
+valve between its riser and outlet; this fixes position, turn and size), rectangles whose sides lie on linework and
+that a rectangle of the symbol fits (a washbasin against a wall, a hob in a counter), circles (pumps, heat
+exchangers, instruments, scaled to the radius) and, where no symbol was found yet, single line ends at a port and
+groups of small strokes. Each is fitted by moving it a little and scored on points along the centre lines of the ink
+(or the drawing's lines), like an oriented chamfer match: a point of the symbol's outline counts as found if ink runs
+close by in the same direction. The score rewards the ink explained and penalises the outline missing and the ink
+inside the symbol it does not explain; lines leaving through a port, such as pipes, are expected there. Of overlapping
+hits the best one wins. The linework a symbol explains is removed (a wall only where a symbol covers it), line ends are
+snapped onto its ports and the texts at its attribute positions become its attributes; a symmetric symbol (a valve
+that looks the same turned half way) takes the pose in which most of them stand there, then the one with its back on
+the wall."""
 
 from __future__ import annotations
 
@@ -41,9 +44,15 @@ STUB = 4.0  # mm: straight lines of the drawing longer than this are pipes, not 
 SNAP = 1.5  # mm: line ends this close to a port are moved onto it
 BLOCK = (200.0, 120.0)  # mm: largest title block (width, height)
 REACH = 4.0  # mm: a text this close to an attribute position becomes the attribute
-SAME = 0.2  # mm: a symbol turned or mirrored with its outline points this close to the original looks the same
+SAME = 1.5 * TOL  # mm: a symbol turned or mirrored with its outline this close to the original fits the same strokes
 TAKEN = 0.3  # a hit is dropped if this share of the linework it explains belongs to a better one
-GONE = 0.6  # a piece is removed if this share of it is explained by symbols
+GONE = 0.6  # a piece is removed if this share of it is explained by symbols (of a wall only if inside a symbol)
+AXIS = 0.4  # mm a line may lean over its length and still be a side of an axis-parallel rectangle
+LEAN = 0.06  # or this share of its length: tracing may join a side with a wall end it continues
+BEND = 0.5  # mm an arc may bend and still be a side of a rectangle (photos trace short sides with a slight bend)
+LETTER = 6.0  # mm: closed shapes up to this size may be read as a letter (a hotplate as "0", a small bowl as "O")
+CORNER = 0.75  # mm the sides of a rectangle may stop short of its corners (gaps in traced lines)
+ASPECT = 0.15  # a rectangle may be this much more stretched than the one of the symbol it fits (real objects vary)
 
 
 @dataclass
@@ -54,7 +63,7 @@ class _Shape:
     pts: np.ndarray  # points along the outline
     heading: np.ndarray  # direction of the outline at these points (unit vectors)
     group: np.ndarray  # the part of the symbol each point belongs to
-    rim: np.ndarray  # points on the outer outline (convex hull), where text may stand in for a stroke
+    rim: np.ndarray  # where text may stand in for a stroke: the outer outline (convex hull), circles, small closed shapes
     through: np.ndarray  # points (and directions, oriented form) along lines that must run through the symbol
     hull: np.ndarray  # half-planes (nx, ny, offset) of the convex hull: inside where nx * x + ny * y + offset <= 0
     at: np.ndarray  # the ports
@@ -63,6 +72,7 @@ class _Shape:
     smallest: float  # scale below which separate parts of the symbol (two bars) would melt into one line
     variants: list[tuple[int, bool, np.ndarray, np.ndarray]]  # distinct (quarter turns, mirror, box low, box high)
     ring: tuple[np.ndarray, float] | None  # centre and radius of the largest circle
+    rects: np.ndarray  # axis-parallel rectangles of the outline: centre x, y, width, height
 
 
 @dataclass
@@ -111,7 +121,7 @@ def recognise(d: Drawing, library: dict[str, Template], ink: tuple | None = None
     if not len(ink.points):
         return
     shapes = [_shape(t) for t in library.values()]
-    # Symbols between line ends and at circles first, then the rest only where no symbol was found yet
+    # Symbols between line ends, at rectangles and at circles first, then the rest only where no symbol was found yet
     hits = _fitted(_anchored(d, shapes), ink)
     hits += _fitted(_leftover(d, shapes, ink, _select(hits, len(ink.points))), ink)
     block = _title_block(d)  # small unread text there looks like symbols
@@ -120,7 +130,8 @@ def recognise(d: Drawing, library: dict[str, Template], ink: tuple | None = None
     placed = [place(h.shape.t, *h.pose) for h in found]
     d.symbols += placed
     _snap(d)
-    _attributes(d, placed, library)
+    _attributes(d, placed)
+    d.texts = [t for t in d.texts if not any(_contains(h, (t.x, t.y)) and _misread(h, ink) for h in found)]
 
 
 def ink_samples(mask: np.ndarray, text: np.ndarray, ppm: float, lines: list[Line]) -> tuple:
@@ -208,7 +219,8 @@ def _shape(t: Template) -> _Shape:
     except QhullError:  # a single straight stroke: its bounding box
         lo, hi = pts.min(0) - STEP, pts.max(0) + STEP
         hull = np.array([[-1, 0, lo[0]], [1, 0, -hi[0]], [0, -1, lo[1]], [0, 1, -hi[1]]])
-    rim = (pts @ hull[:, :2].T + hull[:, 2]).max(axis=1) > -2 * STEP
+    circle = np.repeat([isinstance(q, Circle) for q in t.parts], [len(p) for p, _ in sampled])
+    rim = ((pts @ hull[:, :2].T + hull[:, 2]).max(axis=1) > -2 * STEP) | circle | np.isin(group, _letters(t, sampled))
     lines = [_sample(q) for q in t.through]
     through = np.vstack([np.hstack(q) for q in lines]) if lines else np.zeros((0, 4))
     ports = np.array(t.ports, float).reshape(-1, 2)
@@ -223,9 +235,26 @@ def _shape(t: Template) -> _Shape:
     ring = max(((np.array([q.cx, q.cy]), q.r) for q in t.parts if isinstance(q, Circle)), key=lambda c: c[1],
                default=None)
     gaps = [cKDTree(pts[group == a]).query(pts[group == b])[0].min() for a in set(group) for b in set(group) if a < b]
-    smallest = 2 * TOL / min([g for g in gaps if g > STEP] or [np.inf])
+    smallest = TOL / min([g for g in gaps if g > STEP] or [np.inf])
     return _Shape(t, pts, heading, group, rim, through, hull, ports, units, float(np.linalg.norm(pts, axis=1).max()), smallest,
-                  variants, ring)
+                  variants, ring, rectangles(t))
+
+
+def _letters(t: Template, sampled: list) -> list[int]:
+    """The parts (groups) of the symbol that are closed and small enough for OCR to read as a letter."""
+    out = []
+    for g in set(t.groups):
+        mine = [p for (p, _), h in zip(sampled, t.groups) if h == g]
+        ends = np.array([p[i] for p in mine for i in (0, -1)])
+        if np.ptp(np.vstack(mine), 0).max() <= LETTER and cKDTree(ends).query(ends, k=2)[0][:, 1].max() < STEP:
+            out.append(g)  # every end meets another one: closed
+    return out
+
+
+def rectangles(t: Template) -> np.ndarray:
+    """The axis-parallel rectangles of the symbol's outline (centre x, y, width, height): anchors for finding it."""
+    segments = np.array([(q.x1, q.y1, q.x2, q.y2) for q in t.parts if isinstance(q, Line)]).reshape(-1, 4)
+    return _rectangles(segments, 1.0, np.inf)
 
 
 def _pieces(d: Drawing) -> list[tuple[tuple, np.ndarray, np.ndarray]]:
@@ -261,6 +290,7 @@ def _anchored(d: Drawing, shapes: list[_Shape]):
             cn, sn = c[n, k], s[n, k]
             origin = points[i[n]] - scale[n, k] * np.array([cn * pa[k, 0] - sn * pa[k, 1], sn * pa[k, 0] + cn * pa[k, 1]])
             yield shape[k], (*origin, math.degrees(turn[n, k]), bool(mirror[k]), float(scale[n, k])), 0.5, SIZES
+    yield from _framed(d, [s for s in shapes if len(s.rects)])
     for c in d.circles:
         for s in shapes:
             if s.ring and SCALES[0] <= c.r / s.ring[1] <= SCALES[1]:
@@ -288,7 +318,9 @@ def _leftover(d: Drawing, shapes: list[_Shape], ink: _Ink, found: list[_Hit]):
             origins = p - np.column_stack([c * pa[:, 0] - s * pa[:, 1], s * pa[:, 0] + c * pa[:, 1]])
             for k in range(len(shape)):
                 yield shape[k], (*origins[k], math.degrees(turn[k]), bool(mirror[k]), 1.0), 1.0, (1.0,)
-    for lo, hi in _clusters(ink):
+    # Symbols without ports or circles are only found as a group of strokes, which must be allowed their size
+    loose = [np.hypot(*(s.pts.max(0) - s.pts.min(0))) for s in shapes if not len(s.at) and not s.ring]
+    for lo, hi in _clusters(ink, max([SMALL] + [1.25 * size for size in loose])):
         size, centre = hi - lo, (lo + hi) / 2
         if not any(map(free, (lo, hi, (lo[0], hi[1]), (hi[0], lo[1])))):
             continue  # the whole group lies inside a symbol found already
@@ -297,6 +329,71 @@ def _leftover(d: Drawing, shapes: list[_Shape], ink: _Ink, found: list[_Hit]):
                 scale = float(np.clip(max(size / np.maximum(thi - tlo, STEP)), *SCALES))
                 if np.all(np.abs(size - scale * (thi - tlo)) <= 0.25 * scale * (thi - tlo) + 0.5):
                     yield s, (*(centre - scale * (tlo + thi) / 2), 90 * k, mirror_, scale), 2.0, (1.0,)
+
+
+def _framed(d: Drawing, shapes: list[_Shape]):
+    """(shape, pose, search radius in mm, sizes to try) where a rectangle of the drawing has the proportions of a
+    rectangle of the symbol, turned and mirrored like the symbol may be: this fixes position and size."""
+    if not shapes:
+        return
+    sides = np.concatenate([s.rects[:, 2:] for s in shapes])
+    found = _rectangles(_segments(d), sides.min() * SCALES[0], sides.max() * SCALES[1], pairs=True)
+    if not len(found):
+        return
+    for s in shapes:
+        for tx, ty, tw, th in s.rects:
+            for k, mirror, _, _ in s.variants:
+                w, h = (th, tw) if k % 2 else (tw, th)
+                sx, sy = found[:, 2] / w, found[:, 3] / h
+                scale = np.sqrt(sx * sy)
+                ok = (np.abs(sx - sy) <= ASPECT * scale) & (scale >= SCALES[0]) & (scale <= SCALES[1])
+                for cx, cy, f in zip(found[ok, 0], found[ok, 1], scale[ok]):
+                    m = _matrix(90 * k, mirror, f)
+                    yield s, (*(np.array([cx, cy]) - m @ (tx, ty)), 90 * k, mirror, float(f)), 0.5, (1.0,)
+
+
+def _segments(d: Drawing) -> np.ndarray:
+    """The straight pieces of the drawing (x1, y1, x2, y2), walls included, the frame not. An arc that bends less
+    than BEND counts with its chord: on photos a short side of a rectangle is often traced with a slight bend."""
+    parts = [q for pl in d.polylines if pl.kind != "frame" for q in pl.parts()] + d.lines + d.arcs
+    segments = [(q.x1, q.y1, q.x2, q.y2) if isinstance(q, Line) else _chord(q) for q in parts]
+    return np.array([q for q in segments if q], float).reshape(-1, 4)
+
+
+def _chord(a: Arc) -> tuple[float, float, float, float] | None:
+    half = math.radians((a.end - a.start) % 360) / 2
+    if a.r * (1 - math.cos(half)) > BEND:
+        return None
+    s, e = math.radians(a.start), math.radians(a.end)
+    return a.cx + a.r * math.cos(s), a.cy + a.r * math.sin(s), a.cx + a.r * math.cos(e), a.cy + a.r * math.sin(e)
+
+
+def _rectangles(segments: np.ndarray, lo: float, hi: float, pairs: bool = False) -> np.ndarray:
+    """Axis-parallel rectangles (centre x, y, width, height), each side lo to hi mm long, whose four sides lie on the
+    ``segments`` (x1, y1, x2, y2). A side may be part of a longer line: the back of a washbasin is the face of the
+    wall it hangs on, the front of a hob the edge of a counter. With ``pairs``, also two opposite sides alone, the
+    longer one perhaps part of a longer line: on a small fixture, OCR may have read the other two as letters."""
+    x1, y1, x2, y2 = segments.T
+    lean = np.maximum(AXIS, LEAN * np.hypot(x2 - x1, y2 - y1))
+    flat, upright = np.abs(y2 - y1) <= lean, np.abs(x2 - x1) <= lean
+    shortest = max(lo - 2 * CORNER, 0.5)
+    hor = np.column_stack([(y1 + y2) / 2, np.minimum(x1, x2), np.maximum(x1, x2)])[flat & (np.abs(x2 - x1) >= shortest)]
+    ver = np.column_stack([(x1 + x2) / 2, np.minimum(y1, y2), np.maximum(y1, y2)])[upright & (np.abs(y2 - y1) >= shortest)]
+    out = set()
+    for a, b in zip(*np.nonzero((ver[None, :, 0] - ver[:, None, 0] >= lo) & (ver[None, :, 0] - ver[:, None, 0] <= hi))):
+        (xl, la, lb), (xr, ra, rb) = ver[a], ver[b]  # left and right side
+        top, bottom = max(la, ra) - CORNER, min(lb, rb) + CORNER  # where both sides run
+        across = hor[(hor[:, 1] <= xl + CORNER) & (hor[:, 2] >= xr - CORNER) & (hor[:, 0] >= top) & (hor[:, 0] <= bottom)]
+        for ya, yb in ((ya, yb) for ya in across[:, 0] for yb in across[:, 0] if lo <= yb - ya <= hi):
+            out.add((round((xl + xr) / 2, 2), round((ya + yb) / 2, 2), round(xr - xl, 2), round(yb - ya, 2)))
+    for sides, upright in ((hor, False), (ver, True)) if pairs else ():
+        at, a, b = sides.T
+        apart, start, end = at[None] - at[:, None], np.maximum(a[:, None], a[None]), np.minimum(b[:, None], b[None])
+        run, shorter = end - start, np.minimum((b - a)[:, None], (b - a)[None])
+        i, j = np.nonzero((apart >= lo) & (apart <= hi) & (run >= lo) & (run <= hi) & (run >= shorter - 2 * CORNER))
+        for c, m, r, w in zip((at[i] + at[j]) / 2, (start + end)[i, j] / 2, run[i, j], apart[i, j]):
+            out.add(tuple(round(float(v), 2) for v in ((c, m, w, r) if upright else (m, c, r, w))))
+    return np.array(sorted(out), float).reshape(-1, 4)
 
 
 def _port_choices(shapes: list[_Shape], n: int):
@@ -364,9 +461,9 @@ def _within(p, box) -> bool:
     return box[0] <= p[0] <= box[2] and box[1] <= p[1] <= box[3]
 
 
-def _clusters(ink: _Ink) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Bounding boxes (low, high corner) of groups of ink points within a millimetre of each other, leaving out text
-    and long straight lines: a pipe would make the group larger than the symbol on it."""
+def _clusters(ink: _Ink, limit: float) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Bounding boxes (low, high corner) of groups of ink points within a millimetre of each other and up to ``limit``
+    mm across, leaving out text and long straight lines: a pipe would make the group larger than the symbol on it."""
     points = ink.points[~ink.text & ~ink.straight]
     if len(points) < 2:
         return []
@@ -376,7 +473,19 @@ def _clusters(ink: _Ink) -> list[tuple[np.ndarray, np.ndarray]]:
     starts = np.flatnonzero(np.r_[True, np.diff(label[order]) > 0])
     lo, hi = np.minimum.reduceat(points[order], starts), np.maximum.reduceat(points[order], starts)
     big = np.diff(np.r_[starts, len(order)]) >= 4  # more than a speck
-    return [(a, b) for a, b in zip(lo[big], hi[big]) if np.hypot(*(b - a)) <= SMALL]
+    return [(a, b) for a, b in zip(lo[big], hi[big]) if np.hypot(*(b - a)) <= limit]
+
+
+def _misread(h: _Hit, ink: _Ink) -> bool:
+    """Whether most of the text ink inside the symbol lies on its outline: its strokes read as letters (two hotplates
+    as "00", a small washbasin as "Ol"), not a label written inside it."""
+    near = np.array(ink.tree.query_ball_point(h.pose[:2], h.shape.radius * h.pose[4] + TOL), int)
+    near = near[ink.text[near]] if len(near) else near
+    if not len(near):
+        return False
+    q = (ink.points[near] - h.pose[:2]) @ np.linalg.inv(_matrix(*h.pose[2:])).T
+    inside = near[np.all(q @ h.shape.hull[:, :2].T + h.shape.hull[:, 2] <= TOL / h.pose[4], axis=1)]
+    return len(inside) > 0 and np.isin(inside, h.claim).mean() >= 0.5
 
 
 def _stub(p: np.ndarray) -> bool:
@@ -512,7 +621,8 @@ def _screened(hypotheses: list, ink: _Ink, chunk: int = 4000) -> list:
 
 def _found(outline: np.ndarray, rim: np.ndarray, ink: _Ink, tol) -> np.ndarray:
     """Which outline points (oriented) have linework within ``tol``; text counts only on the outer outline (a
-    misread arrow tip), not inside (letters in a bubble do not make a bar across it)."""
+    misread arrow tip), on circles and on small closed shapes (two hotplates read as "00"), not elsewhere inside
+    (letters in a bubble do not make a bar across it)."""
     tol = np.broadcast_to(tol, len(outline))
     found = np.zeros(len(outline), bool)
     for tree, which in ((ink.oriented_tree, rim), (ink.strokes, ~rim)):
@@ -534,9 +644,14 @@ def _remove(d: Drawing, pieces: list, found: list[_Hit]) -> None:
         near = np.array(tree.query_ball_point(h.pose[:2], h.shape.radius * h.pose[4] + TOL), int)
         if len(near):
             explained[near[h.explains(points[near], oriented[near])]] = True
+
+    def wall(owner, p) -> bool:  # a piece of a wall that reaches beyond the symbols: the washbasin hangs on it
+        return owner[0] == "pl" and d.polylines[owner[1]].kind == "wall" and \
+            not all(any(_contains(h, q) for h in found) for q in p[::4])
+
     gone, start = set(), 0
     for owner, p, _ in pieces:
-        if explained[start:start + len(p)].mean() >= GONE:
+        if explained[start:start + len(p)].mean() >= GONE and not wall(owner, p):
             gone.add(owner)
         start += len(p)
     drop = defaultdict(set)
@@ -602,43 +717,74 @@ def _snap(d: Drawing) -> None:
         (ln.x1, ln.y1), (ln.x2, ln.y2) = snapped((ln.x1, ln.y1)), snapped((ln.x2, ln.y2))
 
 
-def _attributes(d: Drawing, placed: list[Symbol], library: dict[str, Template]) -> None:
+def _attributes(d: Drawing, placed: list[Symbol]) -> None:
     """Texts at the attribute positions of a symbol (its tag, the letters in an instrument bubble) become its
-    attributes."""
+    attributes. A symmetric symbol fits the linework as well in each of its symmetric poses; it takes the one with
+    most texts at its attributes, then the one whose back (the side through its insertion point) lies most on the
+    linework left around it and continues it: a washbasin with its back on the wall face, not its front edge."""
     readable = [t for t in d.texts if not t.uncertain]
-    if not readable:
-        return
-    tree, taken = cKDTree([(t.x, t.y) for t in readable]), set()
+    texts_at = cKDTree([(t.x, t.y) for t in readable]) if readable else None
+    left = [p for _, p, _ in _pieces(d)]  # the linework the symbols did not take
+    lines = cKDTree(np.vstack(left)) if left else None
+    taken: set[int] = set()
 
-    def texts(sym: Symbol, t: Template, angle: float, mirror: bool) -> dict[str, int]:
-        f, found = transform(sym.x, sym.y, angle, mirror, sym.scale), {}
-        for tag, at in t.tags.items():
-            dist, i = tree.query(f(*at), distance_upper_bound=REACH * sym.scale)
+    def texts(t: Template, pose) -> dict[str, int]:
+        f, found = transform(*pose), {}
+        for tag, at in t.tags.items() if texts_at else ():
+            dist, i = texts_at.query(f(*at), distance_upper_bound=REACH * pose[4])
             if dist < np.inf and i not in taken and i not in found.values():
                 found[tag] = i
         return found
 
+    def on_wall(t: Template, pose) -> int:  # points of the back line, at the insertion point and beyond both ends
+        back = _back(t)
+        if not lines or back is None:
+            return 0
+        u, ends = back
+        f = transform(*pose)
+        points = [(0.0, 0.0)] + [(end + g * np.sign(end)) * u for end in ends for g in (0.5, 1.0, 1.5)]
+        return int(np.sum(lines.query([f(*p) for p in points])[0] <= TOL))
+
     for sym in placed:
-        t = library[sym.name]
-        if not t.tags:
+        t = sym.template
+        pose = (sym.x, sym.y, sym.angle, sym.mirror, sym.scale)
+        if not t.tags and not lines:
             continue
-        # A symmetric symbol fits the linework as well in its symmetric poses: the one with texts at its attributes
-        poses = [(sym.angle, sym.mirror)] + [((sym.angle + turn) % 360, sym.mirror != flip) for turn, flip in
-                                              _symmetries(t)]
-        found, angle, mirror = max(((texts(sym, t, a, m), a, m) for a, m in poses), key=lambda o: len(o[0]))
-        if (angle, mirror) != (sym.angle, sym.mirror):
-            turned = place(t, sym.x, sym.y, angle, mirror, sym.scale)
-            sym.angle, sym.mirror, sym.parts, sym.ports = turned.angle, turned.mirror, turned.parts, turned.ports
+        m = _matrix(sym.angle, sym.mirror, sym.scale)
+        poses = [pose] + [(*(np.array([sym.x, sym.y]) + m @ shift), (sym.angle + (-turn if sym.mirror else turn)) % 360,
+                           sym.mirror != flip, sym.scale) for turn, flip, shift in _symmetries(t)]
+        found, best = max(((texts(t, q), q) for q in poses), key=lambda o: (len(o[0]), on_wall(t, o[1])))
+        if best is not pose:
+            turned = place(t, float(best[0]), float(best[1]), best[2], best[3], best[4])
+            sym.x, sym.y, sym.angle, sym.mirror = turned.x, turned.y, turned.angle, turned.mirror
+            sym.parts, sym.ports = turned.parts, turned.ports
         taken.update(found.values())
         sym.attributes.update({tag: readable[i] for tag, i in found.items()})
     gone = {id(readable[i]) for i in taken}
     d.texts = [t for t in d.texts if id(t) not in gone]
 
 
-def _symmetries(t: Template) -> list[tuple[float, bool]]:
-    """The turns (degrees added) and mirror flips about the insertion point that leave the symbol looking the same:
-    a half turn, a mirror across its vertical and one across its horizontal axis."""
+def _back(t: Template) -> tuple[np.ndarray, tuple[float, float]] | None:
+    """The direction of the straight side through the insertion point (the back of a fixture) and how far it reaches
+    either way, or None if the insertion point lies on no straight side."""
+    for q in t.parts:
+        if isinstance(q, Line) and (length := math.hypot(q.x2 - q.x1, q.y2 - q.y1)) > 0:
+            u = np.array([q.x2 - q.x1, q.y2 - q.y1]) / length
+            a, b = sorted((np.dot((q.x1, q.y1), u), np.dot((q.x2, q.y2), u)))
+            if abs(q.x1 * u[1] - q.y1 * u[0]) < STEP and a < 0 < b:
+                return u, (float(a), float(b))
+    return None
+
+
+def _symmetries(t: Template) -> list[tuple[float, bool, np.ndarray]]:
+    """The quarter turns and mirror flips about the middle of the symbol that leave its outline where it is, with
+    the shift of the insertion point they cause (in symbol coordinates): a hob turned half way looks the same, but
+    has its insertion point on the other side."""
     pts = np.vstack([_sample(q)[0] for q in t.parts])
-    tree = cKDTree(pts)
-    return [(turn, flip) for turn, flip, m in ((180.0, False, (-1, -1)), (0.0, True, (-1, 1)), (180.0, True, (1, -1)))
-            if tree.query(pts * m)[0].max() < SAME]
+    middle, tree, out = (pts.min(0) + pts.max(0)) / 2, cKDTree(pts), []
+    for turn in (0, 90, 180, 270):
+        for flip in (False, True):
+            r = _matrix(turn, flip, 1)
+            if (turn or flip) and tree.query((pts - middle) @ r.T + middle)[0].max() < SAME:
+                out.append((float(turn), flip, middle - r @ middle))
+    return out

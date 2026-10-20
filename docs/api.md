@@ -31,7 +31,7 @@ JSON. If `API_TOKEN` is set, every `/jobs` call needs `Authorization: Bearer <to
 | `operations` | `extract`, `preview` and/or `vectorize`, at least one. `vectorize` is required for photos and scans and allowed only for them |
 | `preview_url` | presigned `PUT` target of the preview, required with `preview`. The converter sends `Content-Type` `application/pdf` (2D, photos and scans) or `model/gltf-binary` (3D) |
 | `result_url` | presigned `PUT` target of the ZIP of `vectorize` (`Content-Type` `application/zip`), required with `vectorize` |
-| `options` | optional, for `vectorize`: `paper` the drawing is printed on (`A0` ... `A4`, default `A3`), `scale` denominator (e.g. `50` for 1:50; read from the title block if not set), `dpi` of a scan without visible paper edges, `drawing`: `building` (floor plan), `pid` (P&ID) or `auto` (default, recognised from the texts), `libraries`: ids of installed symbol libraries to recognise P&ID symbols from (see `GET /libraries`; at most 20, earlier ones win on equal block names; default: `DEFAULT_SYMBOL_LIBRARIES`) |
+| `options` | optional, for `vectorize`: `paper` the drawing is printed on (`A0` ... `A4`, default `A3`), `scale` denominator (e.g. `50` for 1:50; read from the title block if not set), `dpi` of a scan without visible paper edges, `drawing`: `building` (floor plan), `pid` (P&ID) or `auto` (default, recognised from the texts), `libraries`: ids of installed symbol libraries to recognise symbols from (see `GET /libraries`; at most 20, earlier ones win on equal block names; default: `DEFAULT_SYMBOL_LIBRARIES`); each is used on the kind of drawing it is for (`drawing`: P&IDs, floor plans) |
 | `library_urls` | optional, only with `vectorize`: presigned `GET`s of symbol libraries the job brings along, a library ZIP or a DXF (at most 10, each up to `MAX_LIBRARY_SIZE_BYTES`). They come before the installed `libraries`; the default libraries are only used when the job names none at all. See [Symbol libraries](symbol-libraries.md) |
 | `callback_url` | optional, see Callback |
 | `priority` | `interactive` (default) or `bulk` |
@@ -92,9 +92,12 @@ ones; `503` before any worker has started:
 
 ```json
 {"libraries": [{"id": "din-10628", "name": "P&ID symbols after DIN EN ISO 10628-2 (starter library)",
-                "version": "1.0.0", "licence": "Apache-2.0", "drawing": ["pid"],
-                "symbols": [{"name": "GATE_VALVE", "description": "Gate valve"}, ...]}],
- "default": ["din-10628"]}
+                "version": "1.0.0", "licence": "Apache-2.0", "drawing": ["pid"], "size": "printed",
+                "symbols": [{"name": "GATE_VALVE", "description": "Gate valve"}, ...]},
+               {"id": "floor-plan", "name": "Floor plan fixtures (starter library)", "version": "1.0.0",
+                "licence": "Apache-2.0", "drawing": ["building"], "size": "real",
+                "symbols": [{"name": "WC", "description": "Toilet"}, ...]}],
+ "default": ["din-10628", "floor-plan"]}
 ```
 
 ```bash
@@ -110,8 +113,8 @@ curl -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '
   "options":{"paper":"A1","libraries":["din-10628"]}}'
 ```
 
-The `report.json` in the ZIP of `vectorize` lists the libraries that were used (`libraries`: id and version) and, for
-every placed symbol, the library it came from.
+The `report.json` in the ZIP of `vectorize` lists the libraries that were used for the kind of drawing (`libraries`:
+id and version) and, for every placed symbol, the library it came from.
 
 ## Callback
 

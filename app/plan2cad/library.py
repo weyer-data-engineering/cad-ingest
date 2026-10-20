@@ -1,7 +1,8 @@
 """Symbol libraries: the CAD blocks recognised symbols become (valves, pumps, instruments, ...).
 
 A library is a folder with a `library.toml` and a DXF, the same folder as a ZIP, or a bare DXF (see
-docs/symbol-libraries.md). Each block of the DXF is one symbol at its printed size around its insertion point. Its
+docs/symbol-libraries.md). Each block of the DXF is one symbol around its insertion point, at its printed size (P&ID
+symbols) or at its real size (fixtures on floor plans, shrunk by the drawing scale before matching). Its
 lines, arcs, circles, polylines, splines and ellipses are the outline the matcher looks for; POINTs on the layer PORT
 are where pipes connect, LINEs on the layer THROUGH a line that runs through the symbol (the pipe under a flow arrow:
 required for a match, not part of the symbol), ATTDEFs its attributes, placed where their text stands. Everything
@@ -17,7 +18,7 @@ import tomllib
 import zipfile
 import zlib
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from itertools import pairwise
 from pathlib import Path, PurePosixPath
@@ -28,11 +29,15 @@ from ezdxf import recover, units
 from .model import Arc, Circle, Line, Symbol
 
 FORMAT = 1  # the library format this version reads
-DRAWINGS = ("pid",)  # the drawing types symbols are recognised on
+DRAWINGS = ("pid", "building")  # the drawing types symbols are recognised on: P&IDs and floor plans
+SIZES = ("printed", "real")  # blocks drawn at the size they have on the sheet, or at the size of the real object
+ASSUMED_SCALES = (50, 100)  # drawing scales tried for real-size symbols while the scale of a drawing is unknown
+DEFAULTS = "din-10628,floor-plan"  # the built-in libraries used when nothing else is chosen
 ID = r"[a-z0-9][a-z0-9-]{0,63}"
 MANIFEST = "library.toml"
 BUILT_IN = Path(__file__).resolve().parents[2] / "libraries"  # shipped with cad-ingest, always installed
 STARTER = BUILT_IN / "din-10628"
+FLOOR_PLAN = BUILT_IN / "floor-plan"
 PORT_LAYER, THROUGH_LAYER = "PORT", "THROUGH"
 OUTLINE = {"LINE", "ARC", "CIRCLE", "LWPOLYLINE", "POLYLINE", "SPLINE", "ELLIPSE"}
 FLATTEN = 0.05  # mm: splines and ellipses become straight pieces this close to the curve
@@ -56,12 +61,13 @@ class Library:
     symbols: dict[str, Template] = field(default_factory=dict, repr=False)  # by block name
     warnings: list[str] = field(default_factory=list, repr=False)  # what was ignored, for `cad-ingest library check`
     path: Path | None = None
+    size: str = "printed"  # one of SIZES
 
     def summary(self) -> dict:
         """What GET /libraries tells about the library."""
         return {"id": self.id, "name": self.name, "version": self.version, "licence": self.licence,
-                "drawing": self.drawing, "symbols": [{"name": t.name, "description": t.description}
-                                                     for t in self.symbols.values()]}
+                "drawing": self.drawing, "size": self.size,
+                "symbols": [{"name": t.name, "description": t.description} for t in self.symbols.values()]}
 
 
 @dataclass
@@ -75,6 +81,7 @@ class Template:
     ports: list[tuple[float, float]]
     tags: dict[str, tuple[float, float]]  # attribute tag -> where its text stands
     through: list[Line]  # lines that run through the symbol in the drawing
+    unit: float = 1.0  # millimetres of these coordinates per drawing unit of the block in its library
     library: Library | None = field(default=None, repr=False, compare=False)
 
 
@@ -140,7 +147,7 @@ def installed(folders: str = "") -> dict[str, Library]:
 
 
 def select(ids: list[str] | None = None, own: list[Library] | tuple = (), folders: str = "",
-           defaults: str = "din-10628") -> list[Library]:
+           defaults: str = DEFAULTS) -> list[Library]:
     """The libraries for one conversion, in order of precedence: ``own`` (the libraries a job brings along, or the
     CLI's), then the installed libraries ``ids``. Without either, the comma-separated ``defaults``."""
     available = installed(folders)
@@ -163,14 +170,35 @@ def resolve(value: str, folders: str = "") -> Library:
     return read(value)
 
 
-def combine(libraries: list[Library]) -> dict[str, Template]:
-    """The symbols of the libraries by block name. Where two define the same name the earlier one wins, so a company
-    library can replace a symbol of the starter library on purpose."""
+def combine(libraries: list[Library], drawing: str = "pid", scale: int | None = None) -> dict[str, Template]:
+    """The symbols of the libraries for one drawing type, at their size on the sheet. Real-size symbols are shrunk by
+    the drawing ``scale`` (the denominator); while it is unknown, by each of ASSUMED_SCALES. Where two libraries
+    define the same block name the earlier one wins, so a company library can replace a symbol of a starter library
+    on purpose."""
     out: dict[str, Template] = {}
     for lib in libraries:
+        if drawing not in lib.drawing:
+            continue
         for name, t in lib.symbols.items():
-            out.setdefault(name, t)
+            if any(other.name == name for other in out.values()):
+                continue
+            if lib.size == "real":
+                out.update({f"{name} 1:{s}": scaled(t, 1 / s) for s in ([scale] if scale else ASSUMED_SCALES)})
+            else:
+                out[name] = t
     return out
+
+
+def scaled(t: Template, f: float) -> Template:
+    """The symbol ``f`` times as large: a real-size symbol at the drawing scale 1:(1/f)."""
+    def part(q):
+        if isinstance(q, Line):
+            return replace(q, x1=q.x1 * f, y1=q.y1 * f, x2=q.x2 * f, y2=q.y2 * f)
+        return replace(q, cx=q.cx * f, cy=q.cy * f, r=q.r * f)
+
+    return replace(t, parts=[part(q) for q in t.parts], ports=[(x * f, y * f) for x, y in t.ports],
+                   tags={tag: (x * f, y * f) for tag, (x, y) in t.tags.items()},
+                   through=[part(q) for q in t.through], unit=t.unit * f)
 
 
 # --------------------------------------------------------------------------- reading
@@ -194,7 +222,8 @@ def _manifest(raw: bytes | None, default_id: str) -> dict:
 
     out = {"id": get("id", str, slug(default_id)), "format": get("format", int, FORMAT),
            "version": get("version", str, None), "licence": get("licence", str, m.get("license")),
-           "drawing": get("drawing", list, list(DRAWINGS)), "file": get("file", str, "symbols.dxf")}
+           "drawing": get("drawing", list, ["pid"]), "size": get("size", str, "printed"),
+           "file": get("file", str, "symbols.dxf")}
     out["name"] = get("name", str, out["id"])
     if not re.fullmatch(ID, out["id"]):
         raise LibraryError(f"{MANIFEST}: 'id' must be lower-case letters, digits and hyphens: '{out['id']}'")
@@ -203,7 +232,9 @@ def _manifest(raw: bytes | None, default_id: str) -> dict:
                            f"(this one reads format {FORMAT})")
     if not out["drawing"] or not all(d in DRAWINGS for d in out["drawing"]):
         raise LibraryError(f"{MANIFEST}: 'drawing' must list drawing types out of {', '.join(DRAWINGS)} "
-                           "(symbols are recognised on P&IDs so far)")
+                           "(P&IDs and floor plans)")
+    if out["size"] not in SIZES:
+        raise LibraryError(f"{MANIFEST}: 'size' must be one of {', '.join(SIZES)}: '{out['size']}'")
     file = PurePosixPath(out["file"])
     if file.is_absolute() or ".." in file.parts or file.suffix.lower() != ".dxf":
         raise LibraryError(f"{MANIFEST}: 'file' must be a DXF file inside the library: '{out['file']}'")
@@ -250,7 +281,8 @@ def _library(manifest: dict, data: bytes, bare: bool = False) -> Library:
         raise LibraryError(f"{where}not a readable DXF file ({type(e).__name__})") from None
     unit = units.conversion_factor(doc.units, units.InsertUnits.Millimeters) if doc.units else 1.0
     lib = Library(manifest["id"], manifest["name"], manifest["version"], manifest["licence"], manifest["drawing"],
-                  unit, doc, warnings=[f"{MANIFEST}: unknown key '{k}' is ignored" for k in manifest["unknown"]])
+                  unit, doc, warnings=[f"{MANIFEST}: unknown key '{k}' is ignored" for k in manifest["unknown"]],
+                  size=manifest["size"])
     for block in doc.blocks:
         if block.name.startswith(("*", "_")):  # anonymous blocks (dimensions, ...) and arrowheads
             continue
@@ -299,7 +331,7 @@ def _template(block, unit: float) -> tuple[Template | None, Counter]:
     if not parts:
         return None, ignored
     description = block.block.dxf.get("description", "") or block.name
-    return Template(block.name, description, parts, groups, ports, tags, through), ignored
+    return Template(block.name, description, parts, groups, ports, tags, through, unit), ignored
 
 
 def _pieces(e, down, unit: float) -> list[Line | Arc | Circle]:
