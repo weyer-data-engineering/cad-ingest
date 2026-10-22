@@ -283,16 +283,27 @@ def _faint(weak: np.ndarray, ink: np.ndarray, ppm: float) -> np.ndarray:
     """The faint stretches of horizontal and vertical lines (a pale pen, a line printed light, a stroke that came out
     dotted): straight runs of ``weak`` pixels as long as an axis line, added where the clear ``ink`` has no stroke
     across them, so that lines do not grow thicker. Only long runs count, so the fine details of a symbol drawn in
-    light grey stay as they are, and runs thicker than a line (a grey area) do not count."""
+    light grey stay as they are, and neither runs thicker than a line (a grey area) nor stretches that touch a
+    character-sized stroke (the blurred band through a line of text on a photo)."""
     weak = weak.astype(np.uint8)
     length = max(12, round(6 * ppm))
-    reach = 2 * max(1, round(0.3 * ppm)) + 1
+    reach = 2 * (max(1, round(0.3 * ppm)) + 2) + 1  # a clear stroke with its blurred edge
     blob = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(3, round(0.8 * ppm) | 1),) * 2)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    small = np.maximum(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]) <= 7.5 * ppm
+    small[0] = False
     out = np.zeros_like(weak)
-    for along, across in (((length, 1), (1, reach)), ((1, length), (reach, 1))):  # (width, height)
+    for along, across, size in (((length, 1), (1, reach), stats[:, cv2.CC_STAT_HEIGHT]),  # (width, height)
+                                ((1, length), (reach, 1), stats[:, cv2.CC_STAT_WIDTH])):
         run = cv2.morphologyEx(weak, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, along))
         run &= 1 - cv2.morphologyEx(run, cv2.MORPH_OPEN, blob)
-        out |= run & (1 - cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, across)))
+        add = run & (1 - cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, across)))
+        letters = cv2.dilate((small & (size > ppm))[lab].astype(np.uint8), np.ones((3, 3), np.uint8))
+        m, pieces = cv2.connectedComponents(add, connectivity=8)
+        touching = np.zeros(m, bool)
+        touching[pieces[(letters > 0) & (add > 0)]] = True
+        touching[0] = False
+        out |= add & ~touching[pieces]
     return out
 
 
