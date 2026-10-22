@@ -133,7 +133,7 @@ A PDF page that is a scan, or a drawing flattened to an image, takes the image r
 Recognised symbols become references (`INSERT`) to the blocks of a symbol library on the layer `P2C-SYMBOL`, with
 their texts as attributes (the tag of a pump, the letters and number of an instrument), so the DXF holds a valve as a
 valve, not as six strokes, and a washbasin as a washbasin. Pipe ends are snapped onto the ports of the symbols they
-lead to: the nearest end that points at a port, so that a pipe is not turned to reach it.
+lead to; of parallel pipes ending beside one port, only the one pointing at it, so that the others are not turned.
 
 The symbols come from symbol libraries: DXF files with one block per symbol, with points where pipes connect and the
 places of their attributes. Each library is for P&IDs or for floor plans, and only used on its kind of drawing. Two

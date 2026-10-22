@@ -648,8 +648,6 @@ def bridge(lines: list[Line], arcs: list[Arc], norm: np.ndarray, ppm: float) -> 
     for i, j in cKDTree(E).query_pairs(BRIDGE):
         if owner[i][0] == owner[j][0] or min(width[i], width[j]) < 0.6 * max(width[i], width[j]):
             continue  # one piece, or two different pens
-        if max(length[i], length[j]) < BRANCH:
-            continue  # two short strokes, such as the sides of a valve meeting in its middle
         gap = E[j] - E[i]
         g = float(np.hypot(*gap))
         if abs(math.remainder(D[i] - D[j] - math.pi, 2 * math.pi)) > BRIDGE_ANGLE:
@@ -657,16 +655,21 @@ def bridge(lines: list[Line], arcs: list[Arc], norm: np.ndarray, ppm: float) -> 
         if g > 0.3 and (abs(math.remainder(math.atan2(gap[1], gap[0]) - D[i], 2 * math.pi)) > BRIDGE_ANGLE
                         and abs(math.sin(math.atan2(gap[1], gap[0]) - D[i])) * g > 0.35):
             continue  # side by side, not in line
-        pairs.append((g, i, j))
-    used, merged = set(), {}
+        pairs.append((max(length[i], length[j]) < BRANCH, g, i, j))
+    used, merged, dots = set(), {}, []
     out = list(lines)
-    for g, i, j in sorted(pairs):
+    for short, g, i, j in sorted(pairs):
         if i in used or j in used:
+            continue
+        a, b = owner[i], owner[j]
+        if short and (a[0] >= len(lines) or b[0] >= len(lines)):
             continue
         if not _stroked(darkness, E[i], E[j], D[i], min(width[i], width[j]), ppm):
             continue
+        if short:  # two short strokes: only as part of a longer run, see _dotted
+            dots.append((i, j))
+            continue
         used |= {i, j}
-        a, b = owner[i], owner[j]
         if a[0] < len(lines) and b[0] < len(lines) and _in_line(out[a[0]], out[b[0]]):
             merged[a] = b
         elif a[0] < len(lines) and b[0] < len(lines):  # meet half way, the polylines join them
@@ -676,6 +679,13 @@ def bridge(lines: list[Line], arcs: list[Arc], norm: np.ndarray, ppm: float) -> 
             _move(out[a[0]], a[1], E[j])
         elif b[0] < len(lines):
             _move(out[b[0]], b[1], E[i])
+    for i, j in _dotted(dots, merged, owner, out):
+        used |= {i, j}
+        if _in_line(out[owner[i][0]], out[owner[j][0]]):
+            merged[owner[i]] = owner[j]
+        else:
+            _move(out[owner[i][0]], owner[i][1], (E[i] + E[j]) / 2)
+            _move(out[owner[j][0]], owner[j][1], (E[i] + E[j]) / 2)
     free = [i for i in range(len(E)) if i not in used and owner[i][0] < len(lines)]
     _branches(out, [(owner[i], E[i], D[i]) for i in free], darkness, ppm)
     # collinear lines that bridge a gap become one line through their outer ends
@@ -700,6 +710,31 @@ def bridge(lines: list[Line], arcs: list[Arc], norm: np.ndarray, ppm: float) -> 
             continue
         result.append(_joined([out[i] for i in members]))
     return result
+
+
+def _dotted(dots: list[tuple[int, int]], merged: dict, owner: list, lines: list[Line]) -> list[tuple[int, int]]:
+    """The gaps between short pieces in line (ends i, j) that are closed: those of a run that is at least twice
+    BRANCH long once joined, such as a faint line that came out dotted, but not the two sides of a valve that meet in
+    its middle."""
+    parent = list(range(len(lines)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for (i, _), (j, _) in merged.items():
+        parent[root(i)] = root(j)
+    taken = set()
+    for i, j in dots:
+        if i not in taken and j not in taken and root(owner[i][0]) != root(owner[j][0]):
+            taken |= {i, j}
+            parent[root(owner[i][0])] = root(owner[j][0])
+    length: dict[int, float] = {}
+    for k, ln in enumerate(lines):
+        length[root(k)] = length.get(root(k), 0.0) + math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1)
+    return [(i, j) for i, j in dots if i in taken and length[root(owner[i][0])] >= 2 * BRANCH]
 
 
 def _branches(lines: list[Line], ends: list, darkness: np.ndarray, ppm: float) -> None:

@@ -42,7 +42,7 @@ SIZES = (1.0, 0.87, 1.15)  # sizes tried around a size estimated from line ends 
 SMALL = 25.0  # mm: groups of strokes up to this size (bounding box diagonal) can be a symbol
 STUB = 4.0  # mm: straight lines of the drawing longer than this are pipes, not parts of a symbol
 SNAP = 1.5  # mm: line ends this close to a port are moved onto it
-SNAP_SIDE = 0.5  # mm: ... if the port lies at most this far beside the line
+SNAP_PARALLEL = math.radians(15)  # ... but of parallel lines arriving at one port, only the one pointing at it
 BLOCK = (200.0, 120.0)  # mm: largest title block (width, height)
 REACH = 4.0  # mm: a text this close to an attribute position becomes the attribute
 SAME = 1.5 * TOL  # mm: a symbol turned or mirrored with its outline this close to the original fits the same strokes
@@ -737,10 +737,10 @@ def _length(pl: Polyline) -> float:
 
 
 def _snap(d: Drawing) -> None:
-    """Moves line ends close to a port onto it, so that the line is connected to the symbol: the nearest end that
-    points at the port, so that snapping does not turn the line (two parallel pipes beside a port stay straight). A
-    short line with both ends at the same symbol is left over from its strokes and dropped: snapped, it would join the
-    symbol to itself."""
+    """Moves line ends close to a port onto it, so that the line is connected to the symbol. Of parallel lines that
+    end beside one port (two pipes running past a valve), only the one pointing at it is moved, so the other is not
+    turned onto it. A short line with both ends at the same symbol is left over from its strokes and dropped: snapped,
+    it would join the symbol to itself."""
     ports = [p for s in d.symbols for p in s.ports]
     if not ports:
         return
@@ -762,13 +762,14 @@ def _snap(d: Drawing) -> None:
     for item in [(ln, k) for ln in d.lines for k in (0, 1)] + [(pl, k) for pl in d.polylines if not pl.closed
                                                                 for k in (0, 1)]:
         p, q = _end(*item)
-        if (i := port(p)) is not None and _aside(p, q, ports[i]) <= SNAP_SIDE:
-            offers.append((math.dist(p, ports[i]), i, item))
-    taken = set()
-    for _, i, (obj, k) in sorted(offers, key=lambda o: o[0]):
-        if i not in taken:
-            taken.add(i)
-            _set_end(obj, k, tuple(map(float, ports[i])))
+        if (i := port(p)) is not None:
+            offers.append((_aside(p, q, ports[i]), i, math.atan2(p[1] - q[1], p[0] - q[0]), item))
+    taken: dict[int, list[float]] = {}
+    for _, i, heading, (obj, k) in sorted(offers, key=lambda o: o[0]):
+        if any(abs(math.remainder(heading - h, 2 * math.pi)) < SNAP_PARALLEL for h in taken.get(i, [])):
+            continue  # a parallel line that points at the port more closely has it
+        taken.setdefault(i, []).append(heading)
+        _set_end(obj, k, tuple(map(float, ports[i])))
 
 
 def _end(obj: Line | Polyline, k: int) -> tuple[tuple[float, float], tuple[float, float]]:

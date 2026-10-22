@@ -89,10 +89,11 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
     and were cut apart by a crossing or touching line become one arc again, also within a polyline.
   - A gap of up to 5 mm in a line is closed where the grey image shows a stroke along it (a faint stretch darker
     than the paper beside it, a crossing that cut it), and a branch from 4 mm that stops short of the pipe it points
-    at is extended onto it. Gaps of bare paper, such as dashes, and the inside of a small symbol stay open.
+    at is extended onto it. Gaps of bare paper, such as dashes, and the inside of a small symbol stay open; short
+    pieces are joined only into a run of 8 mm or more (a dotted line), not the two sides of a valve.
   - Faint stretches of horizontal and vertical lines (a pale pen, a line that came out dotted) count as ink.
-  - A pipe end is snapped onto a symbol port only if it points at it, and each port takes one end, so two parallel
-    pipes beside a port are no longer turned onto it.
+  - Of parallel pipes that end beside one symbol port, only the one pointing at it is snapped onto it, so the others
+    are no longer turned onto the port.
 - Benchmark: new metrics for what makes rework tedious, `breaks_per_m` (places per metre of reference linework where
   the output stops although the line runs on), `curve_pieces` and `curves_as_arcs`, in a new report section.
 

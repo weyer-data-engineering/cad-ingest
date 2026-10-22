@@ -110,3 +110,14 @@ def test_arcs_of_one_circle_split_by_a_line_become_one_arc_but_not_across_a_wide
     assert not circles
     assert sorted((round(a.cx), round(a.start), round(a.end)) for a in arcs) == [(10, 0, 60), (10, 140, 180),
                                                                                 (50, 180, 0)]
+
+
+def test_bridge_joins_a_dotted_line_but_not_the_two_sides_of_a_valve():
+    ppm = 10
+    norm = np.full((200, 400), 255, np.uint8)
+    norm[50, 20:180] = 170  # a faint line that came out as dots
+    norm[50, [35, 55, 75, 95, 115, 135, 155]] = 60
+    norm[120, 200:260] = 60  # two short strokes meeting in the middle, like the sides of a valve
+    dots = [Line(2 + 2 * k, 5, 3.4 + 2 * k, 5) for k in range(8)]
+    out = bridge(dots + [Line(20, 12, 22.9, 12), Line(23.1, 12, 26, 12)], [], norm, ppm)
+    assert sorted((round(ln.x1, 1), round(ln.x2, 1)) for ln in out) == [(2.0, 17.4), (20.0, 22.9), (23.1, 26.0)]
