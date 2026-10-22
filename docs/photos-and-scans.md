@@ -21,13 +21,14 @@ job handler in `app/scan.py`.
    with clear ink, so a pale or dotted line stays one line.
 3. **Vectors**: filled areas (thicker than 1.5 mm), horizontal and vertical lines (morphology), circles (Hough, verified
    on all ink; text found on a ring is dropped as misread symbol arcs, and a ring whose quarters OCR took for brackets,
-   such as a circle in a box, is found as well), everything else by skeleton tracing. Each traced stroke is cut into
-   the fewest straight lines and true arcs that follow it: a vessel head, a bend or the round end of a line-number box
-   becomes one arc or a few tangent ones, not a chain of short lines. Arcs of one circle that a line cut apart become
-   one arc again. Collinear pieces are joined, regular pieces become dashed lines, corners are closed. A gap of up to
-   5 mm in a line is closed where the grey image shows the stroke along it (a faint stretch, a crossing that cut it),
-   and a branch that stops short of the pipe it points at is extended onto it; gaps of bare paper, such as dashes and
-   line jumps, stay open. The round ends of a line-number box and rounded corners between two lines are kept from
+   such as a circle in a box, is found as well), everything else by skeleton tracing. A traced stroke that is round
+   becomes one arc; one that runs straight and then bends is cut into the fewest straight lines and true arcs that
+   follow it, so a rounded corner, a vessel head or the round end of a line-number box is one arc or a few tangent
+   ones, not a chain of short lines. Arcs that lie on one circle and were cut apart by a line become one arc again.
+   Collinear pieces are joined, regular pieces become dashed lines, corners are closed. A gap of up to 5 mm in a line
+   is closed where the grey image shows a stroke along it (a faint stretch darker than the paper beside it, a
+   crossing that cut it), and a branch that stops short of the pipe it points at is extended onto it; gaps of bare
+   paper, such as dashes and line jumps, and the inside of a small symbol stay open. The round ends of a line-number box and rounded corners between two lines are kept from
    text recognition, which would read them as brackets.
 4. **Objects**: pieces that meet end to end become one polyline (a wall outline, a pipe run through its bends, a vessel
    with its heads); slivers and loose specks from the tracing are dropped. Floor plans get door swings (leaf and quarter

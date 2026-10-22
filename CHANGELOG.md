@@ -83,12 +83,13 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   symbols on text; and candidates are checked with one search for nearby ink instead of two.
 - Lines on scans and photos come out in one piece more often, and curves as true arcs, so that a conversion needs less
   rework (see `docs/photos-and-scans.md#how-it-works`):
-  - Each traced stroke is cut into the fewest straight lines and arcs that follow it: a vessel head, a bend or the
-    round end of a line-number box is one arc or a few tangent ones, not a chain of short lines. Arcs of one circle
-    that a crossing or touching line cut apart become one arc again, also within a polyline.
-  - A gap of up to 5 mm in a line is closed where the grey image shows the stroke along it (a faint stretch, a
-    crossing that cut it), and a branch that stops short of the pipe it points at is extended onto it. Gaps of bare
-    paper, such as dashes, stay open.
+  - A traced stroke that runs straight and then bends is cut into the fewest straight lines and arcs that follow it:
+    a rounded corner, a vessel head or the round end of a line-number box is one arc or a few tangent ones, not a
+    chain of short lines (a stroke that is round as a whole stays one arc, as before). Arcs that lie on one circle
+    and were cut apart by a crossing or touching line become one arc again, also within a polyline.
+  - A gap of up to 5 mm in a line is closed where the grey image shows a stroke along it (a faint stretch darker
+    than the paper beside it, a crossing that cut it), and a branch from 4 mm that stops short of the pipe it points
+    at is extended onto it. Gaps of bare paper, such as dashes, and the inside of a small symbol stay open.
   - Faint stretches of horizontal and vertical lines (a pale pen, a line that came out dotted) count as ink.
   - A pipe end is snapped onto a symbol port only if it points at it, and each port takes one end, so two parallel
     pipes beside a port are no longer turned onto it.
