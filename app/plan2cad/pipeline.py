@@ -17,6 +17,7 @@ from .model import PAPER, Drawing, Line, Text
 MAX_PIXELS = 80e6  # upper bound for the rectified sheet image
 PDF_PPM = 300 / 25.4  # resolution of the review image of a vector PDF page
 TEXT = 2.0  # mm: text height the printed-size symbols of the libraries go with (their tags are this high)
+FAINT = 0.25  # share of the way from paper to the darkest ink nearby that a faint stretch of a stroke reaches
 SCALES = {1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 200, 250, 500, 1000, 2000, 2500, 5000}
 
 
@@ -165,13 +166,13 @@ def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, che
     k = np.ones((2 * round(0.15 * ppm) + 1,) * 2, np.uint8)
     rem = ink & (1 - cv2.dilate(used, k))
     timer.lap("lines")
-    texts, labels, rotation = ocr.find_texts(rem, norm, ppm, check_rotation)
+    texts, labels, rotation = ocr.find_texts(rem & (1 - vectorize.joints(rem, hv, ppm)), norm, ppm, check_rotation)
     if rotation is None:
         rotation = title_block_rotation(hv, ink.shape[1] / ppm, ink.shape[0] / ppm)
     if rotation:
         return rotation
     timer.lap("text")
-    round_, rings = vectorize.circles(ink, ppm, (labels > 0).astype(np.uint8))
+    round_, rings = vectorize.circles(ink, ppm, (labels > 0).astype(np.uint8), hv)
     words = np.uint8([0] + [ocr.worded(t.text) for t in texts])[labels]
     texts, text_mask = _off_rings(texts, labels, rings)
     frame = ocr.frames(ink, labels * text_mask * words, ppm)  # not around a symbol's circles read as "oo"
@@ -179,7 +180,7 @@ def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, che
     linework = rem | (ink & cv2.dilate(crossing, k))  # without the long straight lines
     lines, arcs, circles = vectorize.shapes(vectorize.trace(linework & (1 - text_mask) & (1 - rings), ppm), ppm)
     arcs, more = vectorize.merge_arcs(arcs)
-    lines = vectorize.close_corners(vectorize.merge_lines(hv + lines))
+    lines = vectorize.bridge(vectorize.close_corners(vectorize.merge_lines(hv + lines)), arcs, norm, ppm)
     timer.lap("vectorize")
     return polygons, lines, arcs, round_ + circles + more, texts, (linework, text_mask * (1 + words), hv, frame)
 
@@ -258,14 +259,17 @@ def normalize(gray: np.ndarray, ppm: float) -> np.ndarray:
 
 def binarize(norm: np.ndarray, ppm: float) -> np.ndarray:
     """Ink mask (0/1). The threshold sits 45 % of the way from paper to the darkest ink nearby, so
-    faint lines (glare, light toner) survive; specks smaller than about 0.1 mm² are dropped and a
+    faint lines (glare, light toner) survive; fainter stretches of horizontal and vertical lines down to FAINT of
+    the way are added (_faint). Specks smaller than about 0.1 mm² are dropped and a
     3 mm band along the sheet edge, where printers do not print, is ignored."""
     f = min(1.0, 2.0 / ppm)
     small = cv2.resize(norm, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
     k = max(3, round(15 * ppm * f) | 1)
     darkest = cv2.GaussianBlur(cv2.erode(small, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))), (0, 0), k / 3)
-    t = 255 - 0.45 * np.maximum(255 - darkest.astype(np.float32), 110)
-    ink = (norm < cv2.resize(t, (norm.shape[1], norm.shape[0]), interpolation=cv2.INTER_LINEAR)).astype(np.uint8)
+    contrast = np.maximum(255 - darkest.astype(np.float32), 110)
+    size = (norm.shape[1], norm.shape[0])
+    ink = (norm < cv2.resize(255 - 0.45 * contrast, size, interpolation=cv2.INTER_LINEAR)).astype(np.uint8)
+    ink |= _faint(norm < cv2.resize(255 - FAINT * contrast, size, interpolation=cv2.INTER_LINEAR), ink, ppm)
     b = round(3 * ppm)
     ink[:b], ink[-b:], ink[:, :b], ink[:, -b:] = 0, 0, 0, 0
     n, lab, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
@@ -273,6 +277,23 @@ def binarize(norm: np.ndarray, ppm: float) -> np.ndarray:
     speck[0] = False
     ink[speck[lab]] = 0
     return ink
+
+
+def _faint(weak: np.ndarray, ink: np.ndarray, ppm: float) -> np.ndarray:
+    """The faint stretches of horizontal and vertical lines (a pale pen, a line printed light, a stroke that came out
+    dotted): straight runs of ``weak`` pixels as long as an axis line, added where the clear ``ink`` has no stroke
+    across them, so that lines do not grow thicker. Only long runs count, so the fine details of a symbol drawn in
+    light grey stay as they are, and runs thicker than a line (a grey area) do not count."""
+    weak = weak.astype(np.uint8)
+    length = max(12, round(6 * ppm))
+    reach = 2 * max(1, round(0.3 * ppm)) + 1
+    blob = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (max(3, round(0.8 * ppm) | 1),) * 2)
+    out = np.zeros_like(weak)
+    for along, across in (((length, 1), (1, reach)), ((1, length), (reach, 1))):  # (width, height)
+        run = cv2.morphologyEx(weak, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, along))
+        run &= 1 - cv2.morphologyEx(run, cv2.MORPH_OPEN, blob)
+        out |= run & (1 - cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, across)))
+    return out
 
 
 def detect_scale(texts: list[Text]) -> int | None:

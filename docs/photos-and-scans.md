@@ -17,10 +17,18 @@ job handler in `app/scan.py`.
    and orange lines are ink as dark as black ones; colour casts of photos are too weak for this). On a black and white
    print, strong colour is a markup added by hand and is taken out of the drawing, see [Markups](#markups). Then it
    divides by the paper brightness (a closing that follows soft shadow edges) and binarises against the darkest ink
-   nearby, so glare and light toner keep their lines.
+   nearby, so glare and light toner keep their lines. Fainter stretches of a stroke are added where they hang together
+   with clear ink, so a pale or dotted line stays one line.
 3. **Vectors**: filled areas (thicker than 1.5 mm), horizontal and vertical lines (morphology), circles (Hough, verified
-   on all ink; text found on a ring is dropped as misread symbol arcs), everything else by skeleton tracing with arc
-   fitting. Collinear pieces are joined, regular pieces become dashed lines, corners are closed.
+   on all ink; text found on a ring is dropped as misread symbol arcs, and a ring whose quarters OCR took for brackets,
+   such as a circle in a box, is found as well), everything else by skeleton tracing. Each traced stroke is cut into
+   the fewest straight lines and true arcs that follow it: a vessel head, a bend or the round end of a line-number box
+   becomes one arc or a few tangent ones, not a chain of short lines. Arcs of one circle that a line cut apart become
+   one arc again. Collinear pieces are joined, regular pieces become dashed lines, corners are closed. A gap of up to
+   5 mm in a line is closed where the grey image shows the stroke along it (a faint stretch, a crossing that cut it),
+   and a branch that stops short of the pipe it points at is extended onto it; gaps of bare paper, such as dashes and
+   line jumps, stay open. The round ends of a line-number box and rounded corners between two lines are kept from
+   text recognition, which would read them as brackets.
 4. **Objects**: pieces that meet end to end become one polyline (a wall outline, a pipe run through its bends, a vessel
    with its heads); slivers and loose specks from the tracing are dropped. Floor plans get door swings (leaf and quarter
    arc) and walls, P&IDs equipment (large closed outlines), signal lines (dashed or ending at an instrument bubble) and
@@ -124,7 +132,7 @@ A PDF page that is a scan, or a drawing flattened to an image, takes the image r
 Recognised symbols become references (`INSERT`) to the blocks of a symbol library on the layer `P2C-SYMBOL`, with
 their texts as attributes (the tag of a pump, the letters and number of an instrument), so the DXF holds a valve as a
 valve, not as six strokes, and a washbasin as a washbasin. Pipe ends are snapped onto the ports of the symbols they
-lead to.
+lead to: the nearest end that points at a port, so that a pipe is not turned to reach it.
 
 The symbols come from symbol libraries: DXF files with one block per symbol, with points where pipes connect and the
 places of their attributes. Each library is for P&IDs or for floor plans, and only used on its kind of drawing. Two
@@ -185,7 +193,8 @@ python bench/run.py --out bench/out [--quick] [--real photo.heic:A4]
 
 Metrics: share of reference linework found within 1 mm / 0.5 mm on paper (completeness) and share of found linework
 that is right (correctness), mean deviation, dashed lines, circles, exact texts, character error rate, scale, objects in
-one piece, symbols placed as the right block within 1.5 mm, attributes read, runtime. Mean over 1-3 seeds per case:
+one piece, breaks per metre of line (where the output stops although the line runs on), curves in one piece and drawn
+as arcs, symbols placed as the right block within 1.5 mm, attributes read, runtime. Mean over 1-3 seeds per case:
 
 | Case | px/mm | Lines found / correct (<= 1 mm) | Mean deviation | Circles found | Texts exact | Symbols found / correct | Attributes read | Runtime |
 |---|---|---|---|---|---|---|---|---|

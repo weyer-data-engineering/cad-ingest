@@ -49,6 +49,7 @@ SWEEP = [3, 4, 5, 6, 8, 10]  # px/mm on the A0 P&ID
 KEYS = ["recall_1mm", "precision_1mm", "recall_05mm", "precision_05mm", "deviation_mm", "dashed_recall_1mm",
         "circle_recall", "circle_precision", "text_exact", "text_cer", "text_false_positives", "text_review",
         "pieces_per_object", "objects_whole", "entities", "reference_objects", "short_pieces",
+        "breaks_per_m", "curve_pieces", "curves_as_arcs",
         "symbol_recall", "symbol_precision", "symbol_attributes",
         "scale_ok", "seconds", "source_ppm"]
 
@@ -200,6 +201,15 @@ def report(results: dict) -> str:
     for c in results["cases"]:
         lines.append(f"| {c['name']} | {num(c['pieces_per_object'])} | {pct(c['objects_whole'])} | {num(c['entities'], 0)} "
                      f"| {num(c['reference_objects'], 0)} | {num(c['short_pieces'], 0)} | {num(c['text_review'], 0)} |")
+    lines += ["", "## Continuous lines and true curves", "",
+              "Breaks: places per metre of linework where the output stops although the line runs on (a gap or a "
+              "joint that has to be closed by hand). Curve pieces: output entities per arc of the reference (1: in one "
+              "piece). Curves drawn as arcs: share of the reference arcs drawn as arcs, not as short straight lines.",
+              "",
+              "| Case | Breaks per metre | Pieces per curve | Curves drawn as arcs |", "|---|---|---|---|"]
+    for c in results["cases"]:
+        lines.append(f"| {c['name']} | {num(c.get('breaks_per_m'), 1)} | {num(c.get('curve_pieces'))} "
+                     f"| {pct(c.get('curves_as_arcs'))} |")
     lines += ["", "## Symbols as CAD blocks", "",
               "Reference symbols placed as a block of the right kind at the right place (≤ 1.5 mm).", "",
               "| Case | Symbols found | Symbols correct | Attributes read |", "|---|---|---|---|"]

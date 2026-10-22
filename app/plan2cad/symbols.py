@@ -42,6 +42,7 @@ SIZES = (1.0, 0.87, 1.15)  # sizes tried around a size estimated from line ends 
 SMALL = 25.0  # mm: groups of strokes up to this size (bounding box diagonal) can be a symbol
 STUB = 4.0  # mm: straight lines of the drawing longer than this are pipes, not parts of a symbol
 SNAP = 1.5  # mm: line ends this close to a port are moved onto it
+SNAP_SIDE = 0.5  # mm: ... if the port lies at most this far beside the line
 BLOCK = (200.0, 120.0)  # mm: largest title block (width, height)
 REACH = 4.0  # mm: a text this close to an attribute position becomes the attribute
 SAME = 1.5 * TOL  # mm: a symbol turned or mirrored with its outline this close to the original fits the same strokes
@@ -736,8 +737,10 @@ def _length(pl: Polyline) -> float:
 
 
 def _snap(d: Drawing) -> None:
-    """Moves line ends close to a port onto it, so that the line is connected to the symbol. A short line with both
-    ends at the same symbol is left over from its strokes and dropped: snapped, it would join the symbol to itself."""
+    """Moves line ends close to a port onto it, so that the line is connected to the symbol: the nearest end that
+    points at the port, so that snapping does not turn the line (two parallel pipes beside a port stay straight). A
+    short line with both ends at the same symbol is left over from its strokes and dropped: snapped, it would join the
+    symbol to itself."""
     ports = [p for s in d.symbols for p in s.ports]
     if not ports:
         return
@@ -748,10 +751,6 @@ def _snap(d: Drawing) -> None:
         dist, i = tree.query(p, distance_upper_bound=SNAP)
         return int(i) if dist < np.inf else None
 
-    def snapped(p):
-        i = port(p)
-        return p if i is None else tuple(map(float, ports[i]))
-
     def leftover(a, b, length: float) -> bool:
         i, k = port(a), port(b)
         return i is not None and k is not None and owner[i] == owner[k] \
@@ -759,11 +758,41 @@ def _snap(d: Drawing) -> None:
 
     d.lines = [ln for ln in d.lines if not leftover(a := (ln.x1, ln.y1), b := (ln.x2, ln.y2), math.dist(a, b))]
     d.polylines = [pl for pl in d.polylines if pl.closed or not leftover(pl.points[0], pl.points[-1], _length(pl))]
-    for pl in d.polylines:
-        if not pl.closed:
-            pl.points[0], pl.points[-1] = snapped(pl.points[0]), snapped(pl.points[-1])
-    for ln in d.lines:
-        (ln.x1, ln.y1), (ln.x2, ln.y2) = snapped((ln.x1, ln.y1)), snapped((ln.x2, ln.y2))
+    offers = []
+    for item in [(ln, k) for ln in d.lines for k in (0, 1)] + [(pl, k) for pl in d.polylines if not pl.closed
+                                                                for k in (0, 1)]:
+        p, q = _end(*item)
+        if (i := port(p)) is not None and _aside(p, q, ports[i]) <= SNAP_SIDE:
+            offers.append((math.dist(p, ports[i]), i, item))
+    taken = set()
+    for _, i, (obj, k) in sorted(offers, key=lambda o: o[0]):
+        if i not in taken:
+            taken.add(i)
+            _set_end(obj, k, tuple(map(float, ports[i])))
+
+
+def _end(obj: Line | Polyline, k: int) -> tuple[tuple[float, float], tuple[float, float]]:
+    """End k (0 or 1) of a line or polyline and the point before it."""
+    if isinstance(obj, Line):
+        return ((obj.x1, obj.y1), (obj.x2, obj.y2)) if k == 0 else ((obj.x2, obj.y2), (obj.x1, obj.y1))
+    return (obj.points[0], obj.points[1]) if k == 0 else (obj.points[-1], obj.points[-2])
+
+
+def _set_end(obj: Line | Polyline, k: int, p: tuple[float, float]) -> None:
+    if isinstance(obj, Line):
+        if k == 0:
+            obj.x1, obj.y1 = p
+        else:
+            obj.x2, obj.y2 = p
+    else:
+        obj.points[0 if k == 0 else -1] = p
+
+
+def _aside(p, q, port) -> float:
+    """How far the port lies beside the straight through q and the end p (mm)."""
+    dx, dy = p[0] - q[0], p[1] - q[1]
+    length = math.hypot(dx, dy)
+    return math.dist(p, port) if length == 0 else abs((port[0] - p[0]) * dy - (port[1] - p[1]) * dx) / length
 
 
 def _attributes(d: Drawing, placed: list[Symbol]) -> None:

@@ -7,6 +7,7 @@ import math
 import cv2
 import numpy as np
 from scipy import ndimage
+from scipy.spatial import cKDTree
 from skimage.morphology import skeletonize
 
 from .model import Arc, Circle, Line, Polygon
@@ -99,44 +100,126 @@ def _inked(half: np.ndarray, along: float, across: float, reach: float, horizont
     return bool((half[c0:c1, a] if horizontal else half[a, c0:c1]).any())
 
 
-def circles(ink: np.ndarray, ppm: float, text: np.ndarray | None = None) -> tuple[list[Circle], np.ndarray]:
+JOINT = 8.0  # mm: the largest stroke between two line ends that is kept from text recognition
+
+
+def joints(rem: np.ndarray, lines: list[Line], ppm: float) -> np.ndarray:
+    """The mask of the small strokes in ``rem`` that join the ends of two of the axis ``lines``: the round ends of a
+    line-number box or a rounded corner. Without their lines they look like brackets, and text recognition would
+    take them for letters."""
+    tips = np.zeros(rem.shape, np.int32)
+    for i, ln in enumerate(lines, 1):
+        for x, y in ((ln.x1, ln.y1), (ln.x2, ln.y2)):
+            cv2.circle(tips, (round(x * ppm), round(y * ppm)), round((0.5 + ln.width) * ppm), i, -1)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(rem, connectivity=8)
+    hit = (lab > 0) & (tips > 0)
+    ids, count = np.unique(np.unique(np.stack([lab[hit], tips[hit]]), axis=1)[0], return_counts=True)
+    keep = np.zeros(n, np.uint8)
+    keep[ids[count >= 2]] = 1
+    keep &= np.maximum(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]) <= JOINT * ppm
+    return keep[lab]
+
+
+def circles(ink: np.ndarray, ppm: float, text: np.ndarray | None = None,
+            lines: list[Line] | None = None) -> tuple[list[Circle], np.ndarray]:
     """Circles of 1.5 to 40 mm radius (instrument bubbles, pumps, heat exchangers): Hough candidates,
     refined on the ink and accepted if ink covers at least 85 % of the circumference while the
     inside is not filled. Candidates are searched without the ``text`` pixels (a letter O is not a
-    circle), but the ring is checked on all ink: on sharp scans OCR misreads symbol arcs as letters.
-    The inside must be free of ink other than text (a filled dot is not a ring).
-    Returns the circles and the mask of their rings."""
+    circle), then on all ink: OCR misreads symbol arcs as letters, such as the quarters of a circle in a box as
+    brackets. A ring found only there must not be a single letter. The ring is checked on all ink, and the inside must
+    be free of ink other than text (a filled dot is not a ring). The round end of a line-number box between two of
+    the axis ``lines`` is not a circle. Returns the circles and the mask of their rings."""
     search = ink if text is None else ink & (1 - text)
-    f = min(1.0, 4.0 / ppm)  # search at about 4 px/mm
-    px = ppm * f
-    small = cv2.GaussianBlur(cv2.resize(search * 255, None, fx=f, fy=f, interpolation=cv2.INTER_AREA), (0, 0), 1.0)
-    found = cv2.HoughCircles(small, cv2.HOUGH_GRADIENT_ALT, 1.5, max(4.0, 2 * px), param1=200, param2=0.7,
-                             minRadius=round(1.5 * px), maxRadius=round(40 * px))
     out, mask = [], np.zeros_like(ink)
-    if found is None:
-        return out, mask
     h, w = ink.shape
     thick = cv2.dilate(ink, np.ones((3, 3), np.uint8))
-    for x, y, r in found.reshape(-1, 3) / f:
-        band = max(2.0, 0.6 * ppm)
-        x0, y0 = max(0, int(x - r - band)), max(0, int(y - r - band))
-        x1, y1 = min(w, int(x + r + band) + 1), min(h, int(y + r + band) + 1)
-        ys, xs = np.nonzero(search[y0:y1, x0:x1])
-        xs, ys = xs + x0, ys + y0
-        near = np.abs(np.hypot(xs - x, ys - y) - r) < band
-        if near.sum() < 20:
-            continue
-        fit = _circle_fit(np.column_stack([xs[near], ys[near]]).astype(np.float64))
-        if fit is None:
-            continue
-        cx, cy, R, _ = fit
-        if _coverage(thick, cx, cy, R) < 0.85 or _coverage(search, cx, cy, 0.6 * R) > 0.5 \
-                or any(math.hypot(cx - c.cx * ppm, cy - c.cy * ppm) < 0.5 * R for c in out):
-            continue
-        width = max(1.0, near.sum() / (2 * np.pi * R))
-        out.append(Circle(cx / ppm, cy / ppm, R / ppm, float(width / ppm)))
-        cv2.circle(mask, (round(cx), round(cy)), round(R), 1, round(width + 2 * max(1.0, 0.1 * ppm)))
+    ends = _line_ends(lines or [])
+    for src, letters in [(search, None)] + ([] if text is None else [(ink, ink & text)]):
+        for x, y, r in _hough(src, ppm):
+            band = max(2.0, 0.6 * ppm)
+            x0, y0 = max(0, int(x - 1.3 * r - band)), max(0, int(y - 1.3 * r - band))
+            x1, y1 = min(w, int(x + 1.3 * r + band) + 1), min(h, int(y + 1.3 * r + band) + 1)
+            ys, xs = np.nonzero(src[y0:y1, x0:x1])
+            xs, ys = xs + x0, ys + y0
+            dist = np.hypot(xs - x, ys - y)
+            r = _ring_radius(dist, r)
+            near = np.abs(dist - r) < band
+            if near.sum() < 20:
+                continue
+            fit = _circle_fit(np.column_stack([xs[near], ys[near]]).astype(np.float64))
+            if fit is None:
+                continue
+            cx, cy, R, _ = fit
+            if _coverage(thick, cx, cy, R) < 0.85 or _coverage(search, cx, cy, 0.6 * R) > 0.5 \
+                    or any(math.hypot(cx - c.cx * ppm, cy - c.cy * ppm) < 0.5 * R for c in out) \
+                    or letters is not None and _one_glyph(letters, cx, cy, R) \
+                    or _slot_end(ends, cx / ppm, cy / ppm, R / ppm):
+                continue
+            width = max(1.0, near.sum() / (2 * np.pi * R))
+            out.append(Circle(cx / ppm, cy / ppm, R / ppm, float(width / ppm)))
+            cv2.circle(mask, (round(cx), round(cy)), round(R), 1, round(width + 2 * max(1.0, 0.1 * ppm)))
     return out, mask
+
+
+def _ring_radius(dist: np.ndarray, r: float) -> float:
+    """The radius between 0.7 and 1.3 times the Hough radius ``r`` at which most ink lies (per unit of circumference):
+    the Hough radius of a circle in a box is drawn towards the box."""
+    bins = np.arange(int(0.7 * r), int(1.3 * r) + 2)
+    if len(bins) < 3:
+        return r
+    count, _ = np.histogram(dist, bins)
+    k = int(np.argmax(count / (bins[:-1] + 0.5)))
+    return float(bins[k] + 0.5)
+
+
+def _hough(ink: np.ndarray, ppm: float) -> np.ndarray:
+    """Circle candidates (x, y, r in pixels), searched at about 4 px/mm."""
+    f = min(1.0, 4.0 / ppm)
+    px = ppm * f
+    small = cv2.GaussianBlur(cv2.resize(ink * 255, None, fx=f, fy=f, interpolation=cv2.INTER_AREA), (0, 0), 1.0)
+    found = cv2.HoughCircles(small, cv2.HOUGH_GRADIENT_ALT, 1.5, max(4.0, 2 * px), param1=200, param2=0.7,
+                             minRadius=round(1.5 * px), maxRadius=round(40 * px))
+    return np.zeros((0, 3)) if found is None else found.reshape(-1, 3) / f
+
+
+def _one_glyph(letters: np.ndarray, cx: float, cy: float, r: float) -> bool:
+    """True if most of the ring at (cx, cy, r) (pixels) is one connected stroke of the ``letters``: a letter O."""
+    pad = 3
+    x0, y0 = max(0, int(cx - r) - pad), max(0, int(cy - r) - pad)
+    window = letters[y0:int(cy + r) + pad + 1, x0:int(cx + r) + pad + 1]
+    _, lab = cv2.connectedComponents(window, connectivity=8)
+    lab = cv2.dilate(lab.astype(np.float32), np.ones((3, 3), np.uint8))
+    t = np.linspace(0, 2 * np.pi, max(36, int(2 * np.pi * r)), endpoint=False)
+    u = np.clip(np.round(cx - x0 + r * np.cos(t)).astype(int), 0, lab.shape[1] - 1)
+    v = np.clip(np.round(cy - y0 + r * np.sin(t)).astype(int), 0, lab.shape[0] - 1)
+    hit = lab[v, u][lab[v, u] > 0]
+    return len(hit) > 0 and np.bincount(hit.astype(int)).max() > 0.6 * len(t)
+
+
+def _line_ends(lines: list[Line]) -> np.ndarray:
+    """Both ends of each line with the unit vector into the line: rows x, y, ux, uy."""
+    rows = []
+    for ln in lines:
+        length = math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1)
+        if length > 0:
+            ux, uy = (ln.x2 - ln.x1) / length, (ln.y2 - ln.y1) / length
+            rows += [(ln.x1, ln.y1, ux, uy), (ln.x2, ln.y2, -ux, -uy)]
+    return np.array(rows, np.float64).reshape(-1, 4)
+
+
+def _slot_end(ends: np.ndarray, cx: float, cy: float, r: float) -> bool:
+    """True if two parallel lines end at the circle (mm) on either side of its centre, about its diameter apart, and
+    leave it the same way: the round end of a slot-shaped line-number box, not a circle."""
+    d = ends[:, :2] - (cx, cy)
+    dist = np.hypot(d[:, 0], d[:, 1])
+    at = ends[(dist > 0.5 * r) & (dist < r + max(0.5, 0.15 * r))]
+    for i, (x, y, ux, uy) in enumerate(at):
+        for x2, y2, ux2, uy2 in at[i + 1:]:
+            sides = (ux * (cy - y) - uy * (cx - x)) * (ux2 * (cy - y2) - uy2 * (cx - x2))
+            apart = abs(ux * (y2 - y) - uy * (x2 - x))
+            if ux * ux2 + uy * uy2 > 0.95 and sides < 0 and 1.3 * r <= apart <= 2.3 * r:
+                return True
+    return False
 
 
 def _coverage(ink: np.ndarray, cx: float, cy: float, r: float) -> float:
@@ -219,10 +302,10 @@ def _ordered(sub: np.ndarray, ends: np.ndarray) -> np.ndarray | None:
 # --------------------------------------------------------------------------- shapes
 
 def shapes(polylines: list[tuple[np.ndarray, float]], ppm: float) -> tuple[list[Line], list[Arc], list[Circle]]:
-    """Fits arcs and circles where a polyline is round, otherwise simplifies it to straight segments."""
+    """Fits a circle where a closed polyline is round; otherwise splits each polyline into the fewest straight
+    segments and arcs that stay within a tenth of a millimetre or so of it (see _pieces), so that a curve comes out
+    as one or a few arcs instead of a chain of short lines."""
     lines, arcs, circles = [], [], []
-    eps = max(1.2, 0.15 * ppm)
-    sag = max(2.0, 0.25 * ppm)  # an arc must bulge at least 0.25 mm from its chord
     tol = max(0.6, 0.05 * ppm)
     min_len = max(3.0, 0.4 * ppm)
     for pts, width in polylines:
@@ -231,25 +314,112 @@ def shapes(polylines: list[tuple[np.ndarray, float]], ppm: float) -> tuple[list[
             continue
         w = width / ppm
         closed = len(pts) > 3 and np.allclose(pts[0], pts[-1])
-        simple = cv2.approxPolyDP(pts.astype(np.float32), eps, closed)[:, 0, :].astype(np.float64)
-        if (closed or len(simple) > 3) and len(pts) >= 8:  # a corner (three points) is no arc
+        if len(pts) >= 8:
             fit = _circle_fit(pts)
             if fit and fit[3] < tol and 0.5 * ppm <= fit[2] <= 250 * ppm:
                 cx, cy, r, _ = fit
-                a = np.degrees(np.arctan2(pts[:, 1] - cy, pts[:, 0] - cx))
-                sweep = _sweep(a)
-                if closed or sweep >= 330:
+                if closed or _sweep(np.degrees(np.arctan2(pts[:, 1] - cy, pts[:, 0] - cx))) >= 330:
                     circles.append(Circle(cx / ppm, cy / ppm, r / ppm, w))
                     continue
-                if sweep >= 25 and r * (1 - math.cos(math.radians(min(sweep, 180)) / 2)) >= sag:
-                    start, end = (a[0], a[-1]) if _increasing(a) else (a[-1], a[0])
-                    arcs.append(Arc(cx / ppm, cy / ppm, r / ppm, start % 360, end % 360, w))
-                    continue
-        if closed:
-            simple = np.vstack([simple, simple[:1]])
-        for (x1, y1), (x2, y2) in zip(simple, simple[1:]):
-            lines.append(Line(x1 / ppm, y1 / ppm, x2 / ppm, y2 / ppm, w))
+        for piece in _pieces(pts, closed, ppm):
+            if isinstance(piece, Line):
+                lines.append(Line(piece.x1 / ppm, piece.y1 / ppm, piece.x2 / ppm, piece.y2 / ppm, w))
+            else:
+                arcs.append(Arc(piece.cx / ppm, piece.cy / ppm, piece.r / ppm, piece.start, piece.end, w))
     return lines, arcs, circles
+
+
+def _pieces(pts: np.ndarray, closed: bool, ppm: float) -> list[Line | Arc]:
+    """Splits a traced centre line (pixels) into the fewest straight segments and arcs that each stay close to it.
+
+    The pieces start and end at corners of a fine polygon approximation; a dynamic programme picks the split with
+    the fewest pieces, a straight segment before an arc where both fit. A curve that a coarse polygon would cut
+    into many short lines (a vessel head, a bend, the round end of a slot) becomes one arc or a few tangent ones."""
+    fine = max(0.7, 0.06 * ppm)
+    line_tol = max(1.2, 0.15 * ppm)  # as far as the old polygon approximation went
+    arc_rms, arc_max = max(0.6, 0.05 * ppm), max(1.5, 0.15 * ppm)
+    p32 = pts.astype(np.float32)
+    if closed:  # start at the sharpest corner, so that no piece has to bend around it
+        ring = pts[:-1]
+        ahead, back = np.roll(ring, -3, axis=0) - ring, ring - np.roll(ring, 3, axis=0)
+        turn = np.abs(np.remainder(np.arctan2(ahead[:, 1], ahead[:, 0]) - np.arctan2(back[:, 1], back[:, 0]) + np.pi,
+                                   2 * np.pi) - np.pi)
+        k = int(np.argmax(turn))
+        pts = np.vstack([ring[k:], ring[:k], ring[k:k + 1]])
+        p32 = pts.astype(np.float32)
+    corners = cv2.approxPolyDP(p32, fine, False)[:, 0, :]
+    # indices of the corners along the path
+    idx = [0]
+    for c in corners[1:-1]:
+        j = idx[-1] + int(np.argmin(np.hypot(*(pts[idx[-1]:] - c).T)))
+        if j > idx[-1]:
+            idx.append(j)
+    if idx[-1] != len(pts) - 1:
+        idx.append(len(pts) - 1)
+    n = len(idx)
+    best = [math.inf] * n
+    best[0], choice = 0.0, [None] * n
+    for j in range(1, n):
+        misses = 0
+        for i in range(j - 1, max(-1, j - 61), -1):
+            piece, cost = _fit_piece(pts[idx[i]:idx[j] + 1], line_tol, arc_rms, arc_max, ppm)
+            if piece is None:
+                misses += 1
+                if misses > 3:  # spans a corner: reaching further back only gets worse
+                    break
+                continue
+            misses = 0
+            if best[i] + cost < best[j]:
+                best[j], choice[j] = best[i] + cost, (i, piece)
+    out, j = [], n - 1
+    while j > 0:
+        if choice[j] is None:  # cannot happen: two neighbouring corners always fit a line
+            break
+        i, piece = choice[j]
+        out.append(piece)
+        j = i
+    return out[::-1]
+
+
+def _fit_piece(seg: np.ndarray, line_tol: float, arc_rms: float, arc_max: float, ppm: float):
+    """A straight segment or an arc through the ends of ``seg`` (pixels) if it stays close to all of its points;
+    returns (piece, cost) or (None, None). Arcs cost slightly more, so that a straight run stays a line."""
+    p, q = seg[0], seg[-1]
+    chord = q - p
+    h = float(np.hypot(*chord)) / 2
+    if h < 1e-6:
+        return None, None
+    u = chord / (2 * h)
+    nrm = np.array([-u[1], u[0]])
+    rel = seg - (p + q) / 2
+    a, v = rel @ u, rel @ nrm  # along the chord from its middle, and across it
+    if np.max(np.abs(v)) <= line_tol:
+        return Line(float(p[0]), float(p[1]), float(q[0]), float(q[1])), 1.0
+    if len(seg) < 6:
+        return None, None
+    # circle through both ends with its centre on the bisector, at (0, t): u^2 + v^2 - 2 t v - h^2 = 0
+    den = 2 * float(np.sum(v * v))
+    if den <= 0:
+        return None, None
+    t = float(np.sum(v * (a * a + v * v - h * h))) / den
+    r = math.hypot(h, t)
+    if not 0.5 * ppm <= r <= 1000 * ppm:
+        return None, None
+    dev = np.hypot(a, v - t) - r
+    if float(np.sqrt(np.mean(dev ** 2))) > arc_rms or float(np.max(np.abs(dev))) > arc_max:
+        return None, None
+    side = 1.0 if float(np.mean(v)) > 0 else -1.0  # the arc bulges to this side of the chord
+    sweep = 2 * math.asin(min(1.0, h / r))
+    if side * t > 0:  # the centre lies on the bulge's side: more than a half circle
+        sweep = 2 * math.pi - sweep
+    if sweep < math.radians(8) or sweep > math.radians(330):
+        return None, None
+    c = (p + q) / 2 + t * nrm
+    a0, a1 = (math.degrees(math.atan2(y - c[1], x - c[0])) % 360 for x, y in (p, q))
+    mid = seg[len(seg) // 2] - c
+    am = math.degrees(math.atan2(mid[1], mid[0])) % 360
+    start, end = (a0, a1) if (am - a0) % 360 <= (a1 - a0) % 360 else (a1, a0)  # angles increase from start to end
+    return Arc(float(c[0]), float(c[1]), r, start, end), 1.05
 
 
 def _circle_fit(pts: np.ndarray) -> tuple[float, float, float, float] | None:
@@ -274,7 +444,9 @@ def _increasing(a: np.ndarray) -> bool:
 
 
 def merge_arcs(arcs: list[Arc]) -> tuple[list[Arc], list[Circle]]:
-    """Arcs of one circle that were split where lines touch it become a circle again."""
+    """Arcs of one circle that were split where lines cross or touch it become one arc again, or a circle if they
+    go almost all the way round. A tangent line takes the stroke of an arc over a longer stretch than a crossing one,
+    so the gap that is closed grows with the radius."""
     groups: list[list[Arc]] = []
     for a in sorted(arcs, key=lambda a: a.r):
         for g in groups:
@@ -286,17 +458,35 @@ def merge_arcs(arcs: list[Arc]) -> tuple[list[Arc], list[Circle]]:
             groups.append([a])
     out_arcs, circles = [], []
     for g in groups:
-        covered = np.zeros(360, bool)
-        for a in g:
-            s = int(math.floor(a.start))
-            covered[np.arange(s, s + int(math.ceil((a.end - a.start) % 360)) + 1) % 360] = True
-        if len(g) > 1 and covered.sum() >= 300:
-            wsum = sum((a.end - a.start) % 360 for a in g)
-            avg = [sum(getattr(a, k) * ((a.end - a.start) % 360) for a in g) / wsum for k in ("cx", "cy", "r")]
-            circles.append(Circle(*avg, max(a.width for a in g)))
-        else:
+        if len(g) == 1:
             out_arcs += g
+            continue
+        weight = [(a.end - a.start) % 360 or 360 for a in g]
+        cx, cy, r = (float(np.average([getattr(a, k) for a in g], weights=weight)) for k in ("cx", "cy", "r"))
+        width = max(a.width for a in g)
+        for start, extent in _runs(g, math.degrees(max(1.5, 1.8 * math.sqrt(r)) / r)):
+            if extent >= 300:
+                circles.append(Circle(cx, cy, r, width))
+            else:
+                out_arcs.append(Arc(cx, cy, r, start % 360, (start + extent) % 360, width))
     return out_arcs, circles
+
+
+def _runs(arcs: list[Arc], gap: float) -> list[tuple[float, float]]:
+    """The stretches (start, extent in degrees) that arcs of one circle cover, with gaps up to ``gap`` degrees
+    closed."""
+    runs: list[list[float]] = []
+    for a in sorted(arcs, key=lambda a: a.start % 360):
+        sweep = (a.end - a.start) % 360 or 360
+        if runs and (a.start - runs[-1][0]) % 360 <= runs[-1][1] + gap:
+            runs[-1][1] = max(runs[-1][1], (a.start - runs[-1][0]) % 360 + sweep)
+        else:
+            runs.append([a.start % 360, sweep])
+    if len(runs) > 1 and (runs[0][0] - runs[-1][0]) % 360 <= runs[-1][1] + gap:  # round past 0 degrees
+        last, first = runs.pop(), runs[0]
+        first[1] = max(last[1], (first[0] - last[0]) % 360 + first[1])
+        first[0] = last[0]
+    return [(start, min(extent, 360.0)) for start, extent in runs]
 
 
 # --------------------------------------------------------------------------- line clean-up
@@ -375,6 +565,198 @@ def _solid_pieces(run, gap) -> list[tuple[float, float, float, bool]]:
         else:
             pieces.append((t1, t2, ln.width, ln.dashed))
     return pieces
+
+
+BRIDGE = 5.0  # mm: the longest gap between two pieces of one line that is closed where the scan shows its stroke
+BRIDGE_ANGLE = math.radians(12)
+
+
+def bridge(lines: list[Line], arcs: list[Arc], norm: np.ndarray, ppm: float) -> list[Line]:
+    """Closes gaps in lines that the scan shows as continuous: two line or arc ends that face each other up to
+    BRIDGE mm apart, or a line end that points at another line, are joined where the grey image has the stroke's
+    ink all along the gap (a faint or broken stretch, a crossing that cut the stroke). A gap of bare paper stays
+    open, so dashes, line jumps and deliberate breaks are kept. Collinear lines become one line; otherwise the
+    line end is moved onto the other piece. Returns the lines (arcs are not changed)."""
+    if not lines:
+        return lines
+    ends, dirs, owner, width = [], [], [], []
+    for i, ln in enumerate(lines):
+        if ln.dashed:
+            continue
+        for k, (x, y, ox, oy) in enumerate(((ln.x1, ln.y1, ln.x2, ln.y2), (ln.x2, ln.y2, ln.x1, ln.y1))):
+            ends.append((x, y))
+            dirs.append(math.atan2(y - oy, x - ox))
+            owner.append((i, k))
+            width.append(ln.width)
+    for i, a in enumerate(arcs):
+        for k, t in enumerate((a.start, a.end)):
+            r = math.radians(t)
+            ends.append((a.cx + a.r * math.cos(r), a.cy + a.r * math.sin(r)))
+            dirs.append(r - math.pi / 2 if k == 0 else r + math.pi / 2)  # leaving the arc along its tangent
+            owner.append((len(lines) + i, k))
+            width.append(a.width)
+    if not ends:
+        return lines
+    E, D = np.array(ends), np.array(dirs)
+    darkness = 255.0 - norm.astype(np.float32)
+    pairs = []
+    for i, j in cKDTree(E).query_pairs(BRIDGE):
+        if owner[i][0] == owner[j][0] or min(width[i], width[j]) < 0.6 * max(width[i], width[j]):
+            continue  # one piece, or two different pens
+        gap = E[j] - E[i]
+        g = float(np.hypot(*gap))
+        if abs(math.remainder(D[i] - D[j] - math.pi, 2 * math.pi)) > BRIDGE_ANGLE:
+            continue  # not facing each other
+        if g > 0.3 and (abs(math.remainder(math.atan2(gap[1], gap[0]) - D[i], 2 * math.pi)) > BRIDGE_ANGLE
+                        and abs(math.sin(math.atan2(gap[1], gap[0]) - D[i])) * g > 0.35):
+            continue  # side by side, not in line
+        pairs.append((g, i, j))
+    used, merged = set(), {}
+    out = list(lines)
+    for g, i, j in sorted(pairs):
+        if i in used or j in used:
+            continue
+        if not _stroked(darkness, E[i], E[j], D[i], ppm):
+            continue
+        used |= {i, j}
+        a, b = owner[i], owner[j]
+        if a[0] < len(lines) and b[0] < len(lines) and _in_line(out[a[0]], out[b[0]]):
+            merged[a] = b
+        elif a[0] < len(lines) and b[0] < len(lines):  # meet half way, the polylines join them
+            _move(out[a[0]], a[1], (E[i] + E[j]) / 2)
+            _move(out[b[0]], b[1], (E[i] + E[j]) / 2)
+        elif a[0] < len(lines):  # a line runs on into an arc: move its end onto the arc's end
+            _move(out[a[0]], a[1], E[j])
+        elif b[0] < len(lines):
+            _move(out[b[0]], b[1], E[i])
+    free = [i for i in range(len(E)) if i not in used and owner[i][0] < len(lines)]
+    _branches(out, [(owner[i], E[i], D[i]) for i in free], darkness, ppm)
+    # collinear lines that bridge a gap become one line through their outer ends
+    parent = list(range(len(out)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for (i, ki), (j, kj) in merged.items():
+        if root(i) != root(j):
+            parent[root(i)] = root(j)
+    groups: dict[int, list[int]] = {}
+    for i in range(len(out)):
+        groups.setdefault(root(i), []).append(i)
+    result = []
+    for members in groups.values():
+        if len(members) == 1:
+            result.append(out[members[0]])
+            continue
+        result.append(_joined([out[i] for i in members]))
+    return result
+
+
+def _branches(lines: list[Line], ends: list, darkness: np.ndarray, ppm: float) -> None:
+    """Extends each of the line ``ends`` ((line, end), point, heading) that stops short of another line it points at
+    (a branch off a pipe, a leader) up to BRIDGE mm onto that line, where the grey image has the stroke along the
+    gap."""
+    if not ends:
+        return
+    pts, of = [], []
+    for k, ln in enumerate(lines):
+        n = max(2, int(math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1)) + 2)  # about one sample per mm
+        pts.append(np.linspace((ln.x1, ln.y1), (ln.x2, ln.y2), n))
+        of.append(np.full(n, k))
+    tree, of = cKDTree(np.vstack(pts)), np.concatenate(of)
+    for (i, k), p, heading in ends:
+        u = np.array([math.cos(heading), math.sin(heading)])
+        hits = [(t, m) for m in set(of[tree.query_ball_point(p, BRIDGE + 1.0)].tolist()) if m != i
+                and (t := _ray_hit(p, u, lines[m])) is not None and 0.05 < t <= BRIDGE]
+        if hits:
+            t, _ = min(hits)
+            if _stroked(darkness, p, p + u * t, heading, ppm):
+                _move(lines[i], k, p + u * t)
+
+
+def _ray_hit(p: np.ndarray, u: np.ndarray, ln: Line) -> float | None:
+    """How far along the ray from p in direction u it meets the line (mm), if it meets it at 30 degrees or more."""
+    a = np.array([ln.x1, ln.y1])
+    v = np.array([ln.x2 - ln.x1, ln.y2 - ln.y1])
+    cross = u[0] * v[1] - u[1] * v[0]
+    if abs(cross) < 0.5 * math.hypot(*v):
+        return None
+    w = a - p
+    t, s = (w[0] * v[1] - w[1] * v[0]) / cross, (w[0] * u[1] - w[1] * u[0]) / cross
+    return float(t) if t > 0 and -0.02 <= s <= 1.02 else None
+
+
+def _stroked(darkness: np.ndarray, p: np.ndarray, q: np.ndarray, heading: float, ppm: float) -> bool:
+    """True if the grey image has ink all along p to q (mm): every sample within a pixel of the path at least 40 %
+    as dark as the stroke just before p, with no clear stretch longer than 0.25 mm."""
+    h, w = darkness.shape
+    u = np.array([math.cos(heading), math.sin(heading)])
+    before = p - u * np.linspace(0.3, 1.5, 6)[:, None]  # on the stroke, behind its end
+    g = float(np.hypot(*(q - p)))
+    n = max(2, int(g * ppm * 2))
+    path = p + (q - p) * np.linspace(0, 1, n)[:, None]
+
+    def dark(points: np.ndarray) -> np.ndarray:
+        px = points * ppm
+        best = np.zeros(len(points), np.float32)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                x = np.clip(np.round(px[:, 0]).astype(int) + dx, 0, w - 1)
+                y = np.clip(np.round(px[:, 1]).astype(int) + dy, 0, h - 1)
+                best = np.maximum(best, darkness[y, x])
+        return best
+
+    ref = float(np.median(dark(before)))
+    if ref < 40:  # the stroke itself is too faint to tell
+        return False
+    ok = dark(path) >= 0.4 * ref
+    if ok.mean() < 0.85:
+        return False
+    run = longest = 0
+    for v in ok:
+        run = 0 if v else run + 1
+        longest = max(longest, run)
+    return longest * g / n <= 0.25
+
+
+def _in_line(a: Line, b: Line) -> bool:
+    """Two lines on one straight: directions within 2 degrees and each end of one within 0.35 mm of the other's axis."""
+    da, db = math.atan2(a.y2 - a.y1, a.x2 - a.x1), math.atan2(b.y2 - b.y1, b.x2 - b.x1)
+    if abs(math.remainder(da - db, math.pi)) > math.radians(2):
+        return False
+    ux, uy = math.cos(da), math.sin(da)
+    return all(abs((x - a.x1) * uy - (y - a.y1) * ux) <= 0.35 for x, y in ((b.x1, b.y1), (b.x2, b.y2)))
+
+
+def _move(ln: Line, k: int, p: np.ndarray) -> None:
+    if k == 0:
+        ln.x1, ln.y1 = float(p[0]), float(p[1])
+    else:
+        ln.x2, ln.y2 = float(p[0]), float(p[1])
+
+
+def _joined(group: list[Line]) -> Line:
+    """One line through the outermost ends of collinear pieces, along their length-weighted direction."""
+    pts = np.array([(ln.x1, ln.y1) for ln in group] + [(ln.x2, ln.y2) for ln in group])
+    lengths = np.array([math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1) for ln in group])
+    c = pts.mean(axis=0)
+    _, _, vt = np.linalg.svd(pts - c)
+    d = vt[0]
+    t = (pts - c) @ d
+    p, q = c + d * t.min(), c + d * t.max()
+    horizontal = all(ln.y1 == ln.y2 for ln in group)
+    vertical = all(ln.x1 == ln.x2 for ln in group)
+    if horizontal:
+        y = float(np.average([ln.y1 for ln in group], weights=lengths + 1e-6))
+        p, q = (min(pts[:, 0]), y), (max(pts[:, 0]), y)
+    elif vertical:
+        x = float(np.average([ln.x1 for ln in group], weights=lengths + 1e-6))
+        p, q = (x, min(pts[:, 1])), (x, max(pts[:, 1]))
+    width = float(np.average([ln.width for ln in group], weights=lengths + 1e-6))
+    return Line(float(p[0]), float(p[1]), float(q[0]), float(q[1]), width, group[0].dashed)
 
 
 def close_corners(lines: list[Line], tol: float = 1.0) -> list[Line]:

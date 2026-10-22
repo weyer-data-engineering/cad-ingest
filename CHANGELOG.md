@@ -81,11 +81,28 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 - Symbol recognition is faster on dense sheets. A symbol with a single connected port is only looked for at pipe
   ends (straight lines from 4 mm), not at the ends of the short strokes of letters, which also gives fewer false
   symbols on text; and candidates are checked with one search for nearby ink instead of two.
+- Lines on scans and photos come out in one piece more often, and curves as true arcs, so that a conversion needs less
+  rework (see `docs/photos-and-scans.md#how-it-works`):
+  - Each traced stroke is cut into the fewest straight lines and arcs that follow it: a vessel head, a bend or the
+    round end of a line-number box is one arc or a few tangent ones, not a chain of short lines. Arcs of one circle
+    that a crossing or touching line cut apart become one arc again, also within a polyline.
+  - A gap of up to 5 mm in a line is closed where the grey image shows the stroke along it (a faint stretch, a
+    crossing that cut it), and a branch that stops short of the pipe it points at is extended onto it. Gaps of bare
+    paper, such as dashes, stay open.
+  - Faint stretches of horizontal and vertical lines (a pale pen, a line that came out dotted) count as ink.
+  - A pipe end is snapped onto a symbol port only if it points at it, and each port takes one end, so two parallel
+    pipes beside a port are no longer turned onto it.
+- Benchmark: new metrics for what makes rework tedious, `breaks_per_m` (places per metre of reference linework where
+  the output stops although the line runs on), `curve_pieces` and `curves_as_arcs`, in a new report section.
 
 ### Fixed
 
 - A P&ID with more vertical pipe labels than horizontal text was turned by 90 degrees. The rotation check now scores
   each rotation by horizontal text the right way up together with vertical text reading bottom to top.
+- The round ends of a line-number box and rounded corners between two lines were read as brackets, so they were
+  missing from the drawing and garbled the text next to them. They are now kept from text recognition.
+- A circle in a box (a shared display instrument) was missed when OCR read its quarters as brackets, and the round
+  end of a line-number box could be taken for a circle.
 - A P&ID listing areas in m² was taken for a floor plan. The drawing type now weighs the
   room areas and the building scale against nominal sizes, instrument bubbles and a title such as "R&I" or "R+I".
 
