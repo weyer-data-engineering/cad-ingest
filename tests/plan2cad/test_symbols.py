@@ -193,6 +193,14 @@ def test_a_straight_symbol_on_the_round_end_of_a_line_number_box_is_rejected():
     assert not symbols._rounded(hit, [Arc(99, 50, 0.5, 270, 90)], frame)  # the curve of a letter inside
 
 
+def test_ink_on_a_small_closed_box_is_marked_as_boxed():
+    box = [Line(20, 20, 25, 20), Line(25, 20, 25, 25), Line(25, 25, 20, 25), Line(20, 25, 20, 20)]
+    room = [Line(60, 20, 90, 20), Line(90, 20, 90, 50), Line(90, 50, 60, 50), Line(60, 50, 60, 20)]  # larger than BOX
+    points = np.array([(22.5, 20.1), (24.9, 23), (22.5, 22.5), (75, 20), (40, 40)])
+    ink = symbols._Ink(points, np.tile((1.0, 0.0), (5, 1)), np.zeros(5), np.zeros(5, bool))
+    assert symbols._boxed(Drawing(100, 60, lines=box + room), ink).tolist() == [True, True, False, False, False]
+
+
 def test_dxf_holds_the_library_blocks_with_attributes():
     s = place(LIBRARY["PUMP"], 100, 50, angle=90)
     s.attributes = {"TAG": Text(100, 65, 3, "P-101")}

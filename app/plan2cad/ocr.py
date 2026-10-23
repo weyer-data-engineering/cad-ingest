@@ -47,6 +47,7 @@ def find_texts(ink: np.ndarray, gray: np.ndarray, ppm: float, rotation_check: bo
     which may enclose a single letter (see _framed)."""
     cc = Components(ink, gray)
     cand = np.flatnonzero((np.maximum(cc.w, cc.h) <= 7.5 * ppm) & (cc.area >= 3))
+    cand = np.setdiff1d(cand, _enclosing(cc, cand, ppm))
     h_groups, singles = _group(cc, cand, horizontal=True)
     framed = _framed(cc, singles, h_groups, ppm, frame)  # before vertical lines: a bubble's letter above its stem
     v_groups, _ = _group(cc, np.setdiff1d(singles, framed), horizontal=False)
@@ -75,6 +76,22 @@ def find_texts(ink: np.ndarray, gray: np.ndarray, ppm: float, rotation_check: bo
     for k, (_, g) in enumerate(found, 1):
         lut[np.array(g, np.int64) + 1] = k
     return [t for t, _ in found], lut[cc.lab], rotation
+
+
+def _enclosing(cc: Components, cand: np.ndarray, ppm: float) -> np.ndarray:
+    """The candidates that enclose a letter-sized one at most half their height, such as the box around a line size
+    or the ring of a bubble: a frame, not a character, and read together with its letters it spoils their reading."""
+    x0, y0, x1, y1 = cc.x[cand], cc.y[cand], cc.x[cand] + cc.w[cand], cc.y[cand] + cc.h[cand]
+    centres = np.column_stack([x0 + x1, y0 + y1]) / 2
+    tree = cKDTree(centres)
+    out = []
+    for k in np.flatnonzero(cc.h[cand] >= ppm):
+        near = np.array(tree.query_ball_point(centres[k], max(cc.w[cand[k]], cc.h[cand[k]])))
+        inner = (x0[near] > x0[k]) & (x1[near] < x1[k]) & (y0[near] > y0[k]) & (y1[near] < y1[k])
+        sized = (cc.h[cand[near]] >= 0.5 * ppm) & (2 * cc.h[cand[near]] <= cc.h[cand[k]])
+        if (inner & sized).any():
+            out.append(cand[k])
+    return np.array(out, np.int64)
 
 
 def _framed(cc: Components, alone: np.ndarray, groups: list[list[int]], ppm: float,

@@ -93,6 +93,18 @@ def test_a_stroke_beside_a_text_is_not_read_as_part_of_it():
     assert not labels[140:160, 253:258].any()  # the stroke stays linework
 
 
+def test_letters_in_small_boxes_are_read_without_the_boxes():
+    corners = [(0, 0), (5, 0), (5, 5), (0, 5), (0, 0)]  # two 5 mm boxes side by side, as line sizes are drawn
+    boxes = [Line(x + p[0], 12.5 + p[1], x + q[0], 12.5 + q[1], 0.35)
+             for x in (15, 21.5) for p, q in zip(corners, corners[1:])]
+    texts = [Text(17.5, 15, 1.4, "K7"), Text(24, 15, 1.4, "M3"), Text(45, 15, 1.8, "LINE 101")]
+    d = Drawing(60, 30, lines=boxes, texts=texts)
+    gray = render(d, 10)
+    texts, labels, _ = find_texts((gray < 128).astype(np.uint8), gray, 10)
+    assert sorted(t.text for t in texts) == ["K7", "LINE 101", "M3"]
+    assert not labels[123:127].any()  # the boxes stay linework
+
+
 @pytest.mark.parametrize("text, scale", [("Maßstab 1:50", 50), ("M 1:100", 100), ("Matstab 1 50", 50),
                                          ("Maßstab 1 SO", 50), ("Maßstab I:1O0", 100), ("1 SO", None),
                                          ("Blatt 1/1", None), ("PID 1 50", None),

@@ -49,7 +49,8 @@ job handler in `app/scan.py`.
    bottom to top, so a P&ID full of vertical pipe labels is not taken for a sideways sheet. A single character is
    read where it stands alone in a frame, such as the loop letter of an instrument bubble or an interlock diamond;
    elsewhere a lone stroke of that size is as likely part of a symbol. The text in circles that hold text is read a
-   second time without the ring and the line across a shared display, so letters that touch them are not lost. A bar
+   second time without the ring and the line across a shared display, so letters that touch them are not lost. A box
+   or ring around letters, such as the box of a line size, is no character: read with them, it garbled them. A bar
    read at either end of a line ("| LT"), the end of a leader beside the text, stays linework. The scale is read from
    the title block. The drawing type weighs room areas (m²) and a building scale against nominal sizes (DN),
    instrument bubbles and a title such as "R&I". Text that cannot be read reliably stays a text (a
@@ -187,6 +188,8 @@ its outline on text that reads as words or a code (anything but the circles and 
 or "101"). And the frame around a text (the box of a line number, an interlock diamond, the end of a label) is only
 taken as a symbol that holds text inside its outline, such as an instrument bubble. A symbol drawn without curves
 is not placed on a round stroke of its size: the round end of a line-number box is no off-page connector or arrow.
+Nor is a symbol without a rectangle of its own placed with more than half of its linework on a small closed box (sides
+2 to 15 mm): where the text in such a box was not read, its sides fit the ring of a bubble and its letters a valve.
 
 Libraries whose symbols are drawn at the printed size (P&ID symbols, unlike fixtures) are drawn larger or smaller on
 some sheets, for example a large drawing printed on a smaller sheet. The converter takes the size from the text: where

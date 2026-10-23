@@ -60,6 +60,8 @@ ONE_SIZE = 1.4  # symbols drawn at the printed size are at most this factor larg
 ONE_SIZE_LEAST = 12  # symbols that must be found before their size counts as the sheet's
 FRAMED = 0.3  # a symbol not holding text may explain at most this share of its linework on a frame around a text
 ASPECT = 0.15  # a rectangle may be this much more stretched than the one of the symbol it fits (real objects vary)
+BOX = (2.0, 15.0)  # mm: sides of the closed boxes of a drawing, such as the frame of a line size or a tag ...
+BOXED = 0.5  # ... on which at most this share of the linework of a symbol without a rectangle may lie
 
 
 @dataclass
@@ -139,8 +141,10 @@ def recognise(d: Drawing, library: dict[str, Template], ink: tuple | None = None
     hits = _one_size(hits, len(ink.points))
     block = _title_block(d)  # small unread text there looks like symbols
     arcs = d.arcs + [q for pl in d.polylines for q in pl.parts() if isinstance(q, Arc)]
+    boxed = _boxed(d, ink)
     found = [_centred(h, d.circles) for h in _select(hits, len(ink.points))
-             if not (block and _within(h.pose[:2], block)) and not _rounded(h, arcs, ink)]
+             if not (block and _within(h.pose[:2], block)) and not _rounded(h, arcs, ink)
+             and (len(h.shape.rects) or boxed[h.claim].mean() <= BOXED)]
     _remove(d, pieces, found)
     placed = [place(h.shape.t, *h.pose) for h in found]
     d.symbols += placed
@@ -600,6 +604,19 @@ def _rounded(h: _Hit, arcs: list[Arc], ink: _Ink) -> bool:
         if outline.query(middle)[0].min() <= 2 * TOL and near and ink.frame[near].mean() > 0.5:
             return True
     return False
+
+
+def _boxed(d: Drawing, ink: _Ink) -> np.ndarray:
+    """Whether each ink point lies on a closed box of the drawing (sides BOX). A box whose text was not read, such as
+    a line size, otherwise passes for a symbol: its sides for the ring of a bubble, its letters for a valve."""
+    rects = _rectangles(_segments(d), *BOX)
+    if not len(rects):
+        return np.zeros(len(ink.points), bool)
+    sides = []
+    for cx, cy, w, h in rects:
+        c = np.array([(-w, -h), (w, -h), (w, h), (-w, h), (-w, -h)]) / 2 + (cx, cy)
+        sides += [np.linspace(p, q, int(np.hypot(*(q - p)) / STEP) + 2) for p, q in zip(c, c[1:])]
+    return cKDTree(np.vstack(sides)).query(ink.points, distance_upper_bound=TOL)[0] <= TOL
 
 
 def _centred(h: _Hit, circles: list[Circle]) -> _Hit:

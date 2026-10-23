@@ -130,6 +130,10 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   one another less than 0.7 mm apart are still one stroke.
 - A letter touching the round end of a line-number box was kept from text recognition with it.
 - The frame of a long line-number box holding several texts was not found, so symbols could be placed on it.
+- Letters in a small box, such as a line size, were read together with the box: the reading was garbled and the box
+  went missing. A box or ring around letters is no longer taken for a character.
+- A symbol could be placed on a small closed box whose text was not read, such as an instrument bubble on its sides
+  or a valve on its letters. A symbol without a rectangle of its own no longer lies mostly on such a box.
 - A P&ID listing areas in m² was taken for a floor plan. The drawing type now weighs the
   room areas and the building scale against nominal sizes, instrument bubbles and a title such as "R&I" or "R+I".
 

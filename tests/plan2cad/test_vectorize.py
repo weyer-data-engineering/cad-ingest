@@ -70,6 +70,13 @@ def test_rounded_corner_becomes_line_arc_line():
     assert out[1].r / ppm == pytest.approx(5, abs=0.2)
 
 
+def test_closed_box_with_uneven_corners_keeps_its_sides():
+    corners = [(0, 2), (1, 0), (40, 0), (40, 38), (38, 40), (2, 40), (0, 38), (0, 2)]  # a hand-drawn 5 mm box
+    pts = np.vstack([np.linspace(p, q, 40, endpoint=False) for p, q in zip(corners, corners[1:])] + [[corners[0]]])
+    out = _pieces(pts, True, 8.0)
+    assert sum(isinstance(q, Line) and math.dist((q.x1, q.y1), (q.x2, q.y2)) > 30 for q in out) == 4
+
+
 def test_half_ellipse_is_a_few_arcs_not_a_chain_of_lines():
     t = np.linspace(np.pi, 2 * np.pi, 400)
     pts = np.column_stack([300 + 170 * np.cos(t), 300 + 50 * np.sin(t)])

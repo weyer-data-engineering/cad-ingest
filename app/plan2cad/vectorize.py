@@ -387,9 +387,9 @@ def _pieces(pts: np.ndarray, closed: bool, ppm: float, width: float = 0.0) -> li
         pts = np.vstack([ring[k:], ring[:k], ring[k:k + 1]])
         p32 = pts.astype(np.float32)
     corners = cv2.approxPolyDP(p32, fine, False)[:, 0, :]
-    # indices of the corners along the path
+    # indices of the corners along the path; on a closed path the end, being the start, is not among the corners
     idx = [0]
-    for c in corners[1:-1]:
+    for c in corners[1:]:
         j = idx[-1] + int(np.argmin(np.hypot(*(pts[idx[-1]:] - c).T)))
         if j > idx[-1]:
             idx.append(j)
