@@ -1,12 +1,13 @@
 import math
 
+import cv2
 import numpy as np
 import pytest
 
 from app.plan2cad.model import Arc, Circle, Drawing, Line
 from app.plan2cad.render import render
-from app.plan2cad.vectorize import (_circle_fit, _pieces, axis_lines, bridge, circles, close_corners, merge_arcs,
-                                    merge_lines)
+from app.plan2cad.vectorize import (_circle_fit, _pieces, axis_lines, bridge, circles, close_corners, joints, links,
+                                    merge_arcs, merge_lines)
 
 
 def test_regular_dashes_merge_into_one_dashed_line():
@@ -121,3 +122,48 @@ def test_bridge_joins_a_dotted_line_but_not_the_two_sides_of_a_valve():
     dots = [Line(2 + 2 * k, 5, 3.4 + 2 * k, 5) for k in range(8)]
     out = bridge(dots + [Line(20, 12, 22.9, 12), Line(23.1, 12, 26, 12)], [], norm, ppm)
     assert sorted((round(ln.x1, 1), round(ln.x2, 1)) for ln in out) == [(2.0, 17.4), (20.0, 22.9), (23.1, 26.0)]
+
+
+def test_merge_lines_keeps_parallel_lines_at_their_places():
+    # a pipe running into the box of its line number, with short strokes of the letters in between: offsets that
+    # chain from one line to the next must not pull the lines onto one averaged line
+    box = [Line(10, 5.1, 26, 5.1), Line(10, 7.4, 26, 7.4)]
+    pipe = [Line(0, 6.3, 9.5, 6.3), Line(26.5, 6.3, 40, 6.3)]
+    letters = [Line(12 + k, 5.4 + 0.3 * k, 12.3 + k, 5.4 + 0.3 * k) for k in range(7)]
+    out = merge_lines(box + pipe + letters)
+    ys = sorted({round(ln.y1, 1) for ln in out if abs(ln.x2 - ln.x1) > 5})
+    assert ys == [5.1, 6.3, 7.4]
+
+
+def test_a_short_dashed_link_between_two_symbols_becomes_one_dashed_line():
+    # two dashes from an instrument bubble to the side of a box: too few for merge_lines to call them dashed
+    dashes = [Line(14.0, 10, 14.8, 10), Line(16.0, 10, 16.8, 10)]
+    box, bubble = Line(18.5, 5, 18.5, 15), Circle(10, 10, 3)
+    norm = render(Drawing(30, 20, lines=dashes + [box], circles=[bubble]), 10)
+    out = links(dashes + [box], [], [bubble], norm, 10)
+    link = [ln for ln in out if ln.dashed]
+    assert len(out) == 2 and len(link) == 1
+    assert (link[0].x1, link[0].x2, link[0].y1) == pytest.approx((13, 18.5, 10), abs=0.1)
+
+
+def test_dashes_that_lead_nowhere_and_pipe_ends_at_a_flange_stay_as_they_are():
+    dashes = [Line(14.0, 10, 14.8, 10), Line(16.0, 10, 16.8, 10)]
+    norm = render(Drawing(30, 20, lines=dashes), 10)
+    assert links(list(dashes), [], [], norm, 10) == dashes
+    # two short pipe pieces between two strokes, with the bars of a flange across their ends
+    pipe = [Line(10, 10, 12.5, 10), Line(13.3, 10, 15.8, 10), Line(9.5, 7, 9.5, 13), Line(16.3, 7, 16.3, 13)]
+    flange = [Line(12.5, 9.2, 12.5, 10.8), Line(13.3, 9.2, 13.3, 10.8)]
+    norm = render(Drawing(30, 20, lines=pipe + flange), 10)
+    assert not any(ln.dashed for ln in links(pipe + flange, [], [], norm, 10))
+
+
+def test_a_letter_touching_the_round_end_of_a_box_is_read_but_not_the_round_end():
+    box = [Line(10, 10, 30, 10, 0.35), Line(10, 13, 30, 13, 0.35)]
+    end = Arc(30, 11.5, 1.5, 270, 90, 0.35)
+    letter = Line(29.7, 10.8, 29.7, 12.2, 0.35)  # the stem of a letter that runs into the round end
+    ink = (render(Drawing(40, 20, lines=box + [letter], arcs=[end]), 10) < 128).astype(np.uint8)
+    hv, used, _ = axis_lines(ink, 10)
+    rem = ink & (1 - cv2.dilate(used, np.ones((3, 3), np.uint8)))
+    mask = joints(rem, hv, 10)
+    assert mask[110:120, 312:317].any()  # the round end
+    assert not mask[110:120, 295:299].any()  # the letter

@@ -94,6 +94,25 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   - Faint stretches of horizontal and vertical lines (a pale pen, a line that came out dotted) count as ink.
   - Of parallel pipes that end beside one symbol port, only the one pointing at it is snapped onto it, so the others
     are no longer turned onto the port.
+  - Two or three dashes that run from one stroke to another, such as a short signal line between an instrument bubble
+    and the symbol it acts on, become one dashed line; a short dash on its own is no longer dropped as a speck, and a
+    dashed line is never dropped as a crumb.
+- Text on scans and photos is read more completely:
+  - A single character is read where it stands alone in a frame, such as the loop letter of an instrument bubble or
+    an interlock diamond.
+  - The text in circles that hold text is read a second time without the ring and the line across a shared display,
+    so letters that touch them are no longer lost.
+  - A text line read with low confidence stays a marked text also where the scan merged touching letters, as long as
+    as many characters were read as its length holds.
+  - A bar read at either end of a text line ("| LT"), the end of a leader beside it, stays linework.
+- Symbols on scans and photos:
+  - Nothing is placed in a strip of notes and tables below a line across the whole frame (revision table, issue
+    record, title block).
+  - A symbol drawn around a circle is centred on the circle found in the scan, and a symbol a little beside the pipes
+    that end at its ports is moved onto them. A pipe end is snapped onto a port only where the port lies on its course,
+    so that no pipe is turned askew.
+  - A symbol drawn without curves, such as an off-page connector or a flow arrow, is not placed on the round end of a
+    line-number box.
 - Benchmark: new metrics for what makes rework tedious, `breaks_per_m` (places per metre of reference linework where
   the output stops although the line runs on), `curve_pieces` and `curves_as_arcs`, in a new report section.
 
@@ -105,6 +124,12 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   missing from the drawing and garbled the text next to them. They are now kept from text recognition.
 - A circle in a box (a shared display instrument) was missed when OCR read its quarters as brackets, and the round
   end of a line-number box could be taken for a circle.
+- Parallel lines close together, such as a pipe running into the box of its line number, could be pulled onto one
+  averaged line when short strokes between them (letters touching the lines) chained them, so lines were shifted and
+  box sides went missing. A piece now joins the line it continues at that line's own offset; pieces running beside
+  one another less than 0.7 mm apart are still one stroke.
+- A letter touching the round end of a line-number box was kept from text recognition with it.
+- The frame of a long line-number box holding several texts was not found, so symbols could be placed on it.
 - A P&ID listing areas in m² was taken for a floor plan. The drawing type now weighs the
   room areas and the building scale against nominal sizes, instrument bubbles and a title such as "R&I" or "R+I".
 

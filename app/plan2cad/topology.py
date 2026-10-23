@@ -149,7 +149,7 @@ class _Graph:
         for e in alive:
             total[top(self.node(e, 0))] = total.get(top(self.node(e, 0)), 0.0) + self.length(e)
         for e in alive:
-            if total[top(self.node(e, 0))] < crumb:
+            if total[top(self.node(e, 0))] < crumb and not self.dashed[e]:  # a short dashed link is drawn on purpose
                 self.alive[e] = False
 
     def _positions(self) -> dict[int, tuple[float, float]]:

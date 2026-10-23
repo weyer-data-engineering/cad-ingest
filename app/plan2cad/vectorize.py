@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 
 import cv2
 import numpy as np
@@ -106,18 +107,38 @@ JOINT = 8.0  # mm: the largest stroke between two line ends that is kept from te
 def joints(rem: np.ndarray, lines: list[Line], ppm: float) -> np.ndarray:
     """The mask of the small strokes in ``rem`` that join the ends of two of the axis ``lines``: the round ends of a
     line-number box or a rounded corner. Without their lines they look like brackets, and text recognition would
-    take them for letters."""
+    take them for letters. Only the part beyond the two line ends: a letter that touches the round end from inside
+    the box is still read."""
     tips = np.zeros(rem.shape, np.int32)
     for i, ln in enumerate(lines, 1):
         for x, y in ((ln.x1, ln.y1), (ln.x2, ln.y2)):
             cv2.circle(tips, (round(x * ppm), round(y * ppm)), round((0.5 + ln.width) * ppm), i, -1)
-    n, lab, stats, _ = cv2.connectedComponentsWithStats(rem, connectivity=8)
+    n, lab, stats, cent = cv2.connectedComponentsWithStats(rem, connectivity=8)
     hit = (lab > 0) & (tips > 0)
-    ids, count = np.unique(np.unique(np.stack([lab[hit], tips[hit]]), axis=1)[0], return_counts=True)
-    keep = np.zeros(n, np.uint8)
-    keep[ids[count >= 2]] = 1
-    keep &= np.maximum(stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]) <= JOINT * ppm
-    return keep[lab]
+    touching: dict[int, list[int]] = {}
+    for c, i in np.unique(np.stack([lab[hit], tips[hit]]), axis=1).T:
+        touching.setdefault(int(c), []).append(int(i) - 1)
+    out = np.zeros(rem.shape, np.uint8)
+    for c, ids in touching.items():
+        x0, y0, w, h = stats[c, :4]
+        if len(ids) < 2 or max(w, h) > JOINT * ppm:
+            continue
+        (a, ua), (b, ub) = (_tip(lines[i], cent[c] / ppm) for i in ids[:2])
+        normal = np.array([a[1] - b[1], b[0] - a[0]])
+        ys, xs = np.nonzero(lab[y0:y0 + h, x0:x0 + w] == c)
+        side = (np.column_stack([xs + x0, ys + y0]) / ppm - a) @ normal * np.sign(normal @ (ua + ub) or 1.0)
+        margin = (0.5 * max(lines[ids[0]].width, lines[ids[1]].width) + 0.15) * float(np.hypot(*normal))
+        keep = side <= margin  # beyond the chord between the line ends, away from the lines, or on it
+        out[ys[keep] + y0, xs[keep] + x0] = 1
+    return out
+
+
+def _tip(ln: Line, near: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The end of the line nearest to ``near`` (mm) and the direction from it into the line."""
+    p, q = np.array([ln.x1, ln.y1]), np.array([ln.x2, ln.y2])
+    if np.hypot(*(q - near)) < np.hypot(*(p - near)):
+        p, q = q, p
+    return p, (q - p) / max(float(np.hypot(*(q - p))), 1e-9)
 
 
 def circles(ink: np.ndarray, ppm: float, text: np.ndarray | None = None,
@@ -310,9 +331,11 @@ def shapes(polylines: list[tuple[np.ndarray, float]], ppm: float) -> tuple[list[
     sag = max(2.0, 0.25 * ppm)  # an arc must bulge at least 0.25 mm from its chord
     tol = max(0.6, 0.05 * ppm)
     min_len = max(3.0, 0.4 * ppm)
+    ends = Counter((round(x), round(y)) for pts, _ in polylines for x, y in (pts[0], pts[-1]))
     for pts, width in polylines:
         seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
-        if seg.sum() < min_len:
+        alone = ends[round(pts[0][0]), round(pts[0][1])] == ends[round(pts[-1][0]), round(pts[-1][1])] == 1
+        if seg.sum() + (0.5 * width if alone else 0.0) < min_len:  # a short dash on its own is longer than its skeleton
             continue
         w = width / ppm
         closed = len(pts) > 3 and np.allclose(pts[0], pts[-1])
@@ -555,30 +578,39 @@ def merge_lines(lines: list[Line], tol: float = 0.35, gap: float = 0.6, dash_gap
     while i < len(items):
         j = i + 1
         while j < len(items) and abs(items[j][0] - items[i][0]) < math.radians(1.0) \
-                and abs(items[j][1] - items[j - 1][1]) < tol:  # neighbours, so pixel steps do not split a line
+                and abs(items[j][1] - items[j - 1][1]) < 2 * tol:  # neighbours, so pixel steps do not split a line
             j += 1
-        out += _merge_group(items[i:j], gap, dash_gap)
+        out += _merge_group(items[i:j], gap, dash_gap, tol)
         i = j
     return out
 
 
-def _merge_group(group, gap, dash_gap) -> list[Line]:
+def _merge_group(group, gap, dash_gap, tol: float) -> list[Line]:
+    """Joins the parallel pieces of one direction into runs along their length. A piece joins a run that it continues
+    (within ``dash_gap``) at the offset of the run's last piece from 1 mm (within ``tol``), or that it runs beside
+    within twice ``tol`` (two strokes that close are one). So a line on a photo may drift a little along its length,
+    while two lines a millimetre apart, such as a pipe and the box of its line number, stay apart and keep their
+    places, and short strokes between them, such as letters touching both, do not pull them together. Each run takes
+    the length-weighted offset of its pieces."""
     th = group[0][0]
     c, s = math.cos(th), math.sin(th)
-    length = np.array([g[3] - g[2] for g in group]) + 1e-6
-    rho = float(np.average([g[1] for g in group], weights=length))
-    group = sorted(group, key=lambda g: g[2])
-    runs, cur = [], [group[0]]
-    for g in group[1:]:
-        if g[2] - max(x[3] for x in cur) <= dash_gap:
-            cur.append(g)
+    runs: list[list] = []  # [pieces, weighted offset sum, length sum, end, offset of its last piece from 1 mm]
+    for g in sorted(group, key=lambda g: g[2]):
+        length = g[3] - g[2] + 1e-6
+        fits = [r for r in runs if g[2] - r[3] <= dash_gap and abs(g[1] - r[4]) < (2 * tol if g[2] < r[3] else tol)]
+        if fits:
+            r = min(fits, key=lambda r: abs(g[1] - r[4]))
+            r[0].append(g)
+            r[1] += g[1] * length
+            r[2] += length
+            r[3] = max(r[3], g[3])
+            r[4] = g[1] if length >= 1.0 else r[4]
         else:
-            runs.append(cur)
-            cur = [g]
-    runs.append(cur)
+            runs.append([[g], g[1] * length, length, g[3], g[1]])
     out = []
-    for run in runs:
-        pieces = _solid_pieces(run, gap)
+    for members, weighted, total, _, _ in runs:
+        rho = weighted / total
+        pieces = _solid_pieces(members, gap)
         if _dashed(pieces):
             pieces = [(pieces[0][0], pieces[-1][1], max(p[2] for p in pieces), True)]
         for t1, t2, w, dashed in pieces:
@@ -815,6 +847,137 @@ def _stroked(darkness: np.ndarray, p: np.ndarray, q: np.ndarray, heading: float,
     side = np.array([-u[1], u[0]]) * (width / 2 + 2.0 / ppm)
     beside = np.maximum(dark(path[faint] + side, 0), dark(path[faint] - side, 0))
     return bool(np.mean(along[faint] - beside >= 0.15 * ref) >= 0.8)
+
+
+LINK_DASH = 3.0  # mm: the longest dash of a short dashed link
+LINK_GAP = (0.3, 2.0)  # mm: the gaps between its dashes
+
+
+def links(lines: list[Line], arcs: list[Arc], circles: list[Circle], norm: np.ndarray, ppm: float) -> list[Line]:
+    """Short dashed links, such as a signal line of two or three dashes between an instrument and the symbol it acts
+    on: too few dashes for merge_lines to tell them from a broken line. Two or more short pieces in line with gaps of
+    bare paper between them become one dashed line if the run leads from one stroke to another: each end reaches the
+    stroke it points at within two gaps and a dash (the last dash often runs into it). Runs that lead nowhere, such as
+    the strokes of unread letters, stay as they are."""
+    short = [i for i, ln in enumerate(lines) if not ln.dashed and 0.3 <= _length(ln) <= LINK_DASH]
+    if len(short) < 2:
+        return lines
+    runs = _runs_of_dashes(lines, short)
+    if not runs:
+        return lines
+    pts, of = _samples(lines, arcs, circles)
+    tree = cKDTree(pts)
+    darkness = 255.0 - norm.astype(np.float32)
+    out, dropped = [], set()
+    for run in runs:
+        link = _link(lines, run, tree, of, darkness, ppm)
+        if link is not None:
+            out.append(link)
+            dropped |= set(run)
+    return [ln for i, ln in enumerate(lines) if i not in dropped] + out
+
+
+def _runs_of_dashes(lines: list[Line], short: list[int]) -> list[list[int]]:
+    """Groups of two or more short pieces that follow one another in line with a gap of LINK_GAP between them."""
+    ends = np.array([[(lines[i].x1, lines[i].y1), (lines[i].x2, lines[i].y2)] for i in short]).reshape(-1, 2)
+    parent = list(range(len(short)))
+
+    def root(k: int) -> int:
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    for a, b in cKDTree(ends).query_pairs(LINK_GAP[1]):
+        i, j = a // 2, b // 2
+        if i == j or not LINK_GAP[0] <= math.dist(ends[a], ends[b]) or not _in_row(lines[short[i]], lines[short[j]]):
+            continue
+        if min(math.dist(p, q) for p in ends[2 * i:2 * i + 2] for q in ends[2 * j:2 * j + 2]) < LINK_GAP[0]:
+            continue  # touching or overlapping: one stroke, not two dashes
+        parent[root(i)] = root(j)
+    groups: dict[int, list[int]] = {}
+    for k in range(len(short)):
+        groups.setdefault(root(k), []).append(short[k])
+    return [g for g in groups.values() if len(g) >= 2]
+
+
+def _in_row(a: Line, b: Line, tol: float = 0.35) -> bool:
+    """Each end of one piece within ``tol`` mm of the other's axis, both ways (pieces in one row)."""
+    def near(p: Line, q: Line) -> bool:
+        ux, uy = (p.x2 - p.x1) / _length(p), (p.y2 - p.y1) / _length(p)
+        return all(abs((x - p.x1) * uy - (y - p.y1) * ux) <= tol for x, y in ((q.x1, q.y1), (q.x2, q.y2)))
+    return near(a, b) and near(b, a)
+
+
+def _link(lines: list[Line], run: list[int], tree: cKDTree, of: np.ndarray, darkness: np.ndarray, ppm: float
+          ) -> Line | None:
+    """The dashed line of a run of dashes from the stroke before it to the stroke after it, or None."""
+    pts = np.array([p for i in run for p in ((lines[i].x1, lines[i].y1), (lines[i].x2, lines[i].y2))])
+    c = pts.mean(axis=0)
+    u = np.linalg.svd(pts - c)[2][0]
+    if abs(u[0]) >= math.cos(AXIS_SNAP) or abs(u[1]) >= math.cos(AXIS_SNAP):
+        u = np.round(u)
+    t = (pts - c) @ u
+    if np.abs((pts - c) @ np.array([-u[1], u[0]])).max() > 0.3:
+        return None  # not one straight row
+    spans = sorted((min(t[2 * k], t[2 * k + 1]), max(t[2 * k], t[2 * k + 1])) for k in range(len(run)))
+    gaps = [b[0] - a[1] for a, b in zip(spans, spans[1:])]
+    if min(gaps) < LINK_GAP[0] or max(gaps) > LINK_GAP[1]:
+        return None
+    others = np.isin(of, run, invert=True)
+
+    n = np.array([-u[1], u[0]])
+
+    def touched(m: np.ndarray) -> bool:  # another stroke at m, or ink beside it (a flange mark across a pipe end)
+        return any(others[k] for k in tree.query_ball_point(m, 0.35)) or \
+            max(_dark_at(darkness, m + n * s, ppm) for s in (-0.6, -0.45, 0.45, 0.6)) > 100
+
+    for a, b in zip(spans, spans[1:]):  # a gap of bare paper between free dash ends, not two pipe ends at a flange
+        m = c + u * (a[1] + b[0]) / 2
+        if _dark_at(darkness, m, ppm) > 100 or touched(m) or touched(c + u * a[1]) or touched(c + u * b[0]):
+            return None
+    reach = 2 * float(np.median(gaps)) + float(np.median([b - a for a, b in spans]))
+    start = _reach(c + u * spans[0][0], -u, reach, tree, others)
+    end = _reach(c + u * spans[-1][1], u, reach, tree, others)
+    if start is None or end is None:
+        return None
+    width = float(np.median([lines[i].width for i in run]))
+    return Line(float(start[0]), float(start[1]), float(end[0]), float(end[1]), width, True)
+
+
+def _reach(p: np.ndarray, u: np.ndarray, reach: float, tree: cKDTree, others: np.ndarray) -> np.ndarray | None:
+    """Where the ray from p along u first meets another stroke within ``reach`` mm (on the stroke's centre), or None."""
+    for t in np.arange(0.0, reach + 1e-6, 0.05):
+        near = [k for k in tree.query_ball_point(p + u * t, 0.2) if others[k]]
+        if near:
+            return p + u * max(t, float((tree.data[near] - p).mean(axis=0) @ u))
+    return None
+
+
+def _samples(lines: list[Line], arcs: list[Arc], circles: list[Circle], step: float = 0.1
+             ) -> tuple[np.ndarray, np.ndarray]:
+    """Points every ``step`` mm along the linework and the index of the line each comes from (-1: an arc or circle)."""
+    pts, of = [], []
+    for k, ln in enumerate(lines):
+        n = max(2, int(_length(ln) / step) + 1)
+        pts.append(np.linspace((ln.x1, ln.y1), (ln.x2, ln.y2), n))
+        of.append(np.full(n, k))
+    for cx, cy, r, a0, sweep in [(a.cx, a.cy, a.r, a.start, (a.end - a.start) % 360) for a in arcs] + \
+            [(c.cx, c.cy, c.r, 0.0, 360.0) for c in circles]:
+        t = np.radians(a0 + np.linspace(0, sweep, max(2, int(math.radians(sweep) * r / step) + 1)))
+        pts.append(np.c_[cx + r * np.cos(t), cy + r * np.sin(t)])
+        of.append(np.full(len(t), -1))
+    return np.vstack(pts), np.concatenate(of)
+
+
+def _dark_at(darkness: np.ndarray, p: np.ndarray, ppm: float) -> float:
+    """The darkest grey within a pixel of p (mm)."""
+    x, y = int(round(p[0] * ppm)), int(round(p[1] * ppm))
+    return float(darkness[max(0, y - 1):y + 2, max(0, x - 1):x + 2].max(initial=0.0))
+
+
+def _length(ln: Line) -> float:
+    return math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1)
 
 
 def _in_line(a: Line, b: Line) -> bool:

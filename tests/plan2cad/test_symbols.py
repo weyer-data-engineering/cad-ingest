@@ -9,7 +9,7 @@ from synth import Pen
 from app.plan2cad import symbols
 from app.plan2cad.export import to_dxf
 from app.plan2cad.library import FLOOR_PLAN, combine, load, place, read
-from app.plan2cad.model import Drawing, Line, Polyline, Text
+from app.plan2cad.model import Arc, Circle, Drawing, Line, Polyline, Text
 from app.plan2cad.pipeline import convert
 from app.plan2cad.render import render
 
@@ -150,6 +150,47 @@ def test_nothing_is_placed_in_the_title_block():
     d = Drawing(297, 210, lines=strokes.lines + block + pipes, polylines=[frame])
     symbols.recognise(d, LIBRARY)
     assert [(s.name, round(s.x), round(s.y)) for s in d.symbols] == [("GATE_VALVE", 100, 100)]
+
+
+def test_nothing_is_placed_in_the_strip_of_tables_below_a_line_across_the_frame():
+    frame = Polyline([(10, 10), (287, 10), (287, 200), (10, 200)], [0] * 4, closed=True, kind="frame")
+    strip = [Line(10, 160, 287, 160), Line(100, 160, 100, 200)]  # notes and revision table below the drawing
+    pipes = [Line(x, y, x + 37.5, y, 0.5) for x, y in [(60, 100), (102.5, 100), (150, 180), (192.5, 180)]]
+    strokes = Drawing(297, 210, symbols=[place(LIBRARY["GATE_VALVE"], 100, 100),
+                                         place(LIBRARY["GATE_VALVE"], 190, 180)]).flat()
+    d = Drawing(297, 210, lines=strokes.lines + strip + pipes, polylines=[frame])
+    symbols.recognise(d, LIBRARY)
+    assert [(s.name, round(s.x), round(s.y)) for s in d.symbols] == [("GATE_VALVE", 100, 100)]
+
+
+def test_a_symbol_beside_its_pipe_is_moved_onto_it_and_the_pipe_stays_straight():
+    pipes = [Line(60, 50, 97.5, 50, 0.5), Line(102.5, 50, 140, 50, 0.5)]
+    d = drawn(place(LIBRARY["GATE_VALVE"], 100, 50.4), lines=pipes)  # drawn a little off the pipe
+    symbols.recognise(d, LIBRARY)
+    assert [(s.name, round(s.y, 2)) for s in d.symbols] == [("GATE_VALVE", 50.0)]
+    assert all(ln.y1 == ln.y2 == 50 for ln in d.lines)
+    assert sorted((ln.x1, ln.x2) for ln in d.lines) == [(60, pytest.approx(97.5, abs=0.3)),
+                                                         (pytest.approx(102.5, abs=0.3), 140)]
+
+
+def test_a_symbol_with_a_ring_is_centred_on_the_circle_found():
+    hit = symbols._Hit(symbols._shape(LIBRARY["INSTRUMENT"]), (100.3, 49.8, 0.0, False, 1.0), 1.0, np.array([]))
+    ring = max((q for q in LIBRARY["INSTRUMENT"].parts if isinstance(q, Circle)), key=lambda q: q.r)
+    x, y, _, _, scale = symbols._centred(hit, [Circle(100 + ring.cx, 50 + ring.cy, 1.05 * ring.r)]).pose
+    assert (x, y, scale) == pytest.approx((100, 50, 1.05))
+
+
+def test_a_straight_symbol_on_the_round_end_of_a_line_number_box_is_rejected():
+    hit = symbols._Hit(symbols._shape(LIBRARY["OFF_PAGE_CONNECTOR"]), (100, 50, 0.0, False, 1.0), 1.0, np.array([]))
+    end = Arc(103.5, 50, 3, 270, 90)  # the box ends in a half circle where the tip is
+    t = np.radians(np.arange(270, 451, 5))
+    points = np.column_stack([103.5 + 3 * np.cos(t), 50 + 3 * np.sin(t)])
+    heading = np.column_stack([-np.sin(t), np.cos(t)])
+    frame = symbols._Ink(points, heading, np.zeros(len(points)), np.zeros(len(points), bool), np.ones(len(points), bool))
+    assert symbols._rounded(hit, [end], frame)
+    stroke = symbols._Ink(points, heading, np.zeros(len(points)), np.zeros(len(points), bool))
+    assert not symbols._rounded(hit, [end], stroke)  # a round stroke that frames no text
+    assert not symbols._rounded(hit, [Arc(99, 50, 0.5, 270, 90)], frame)  # the curve of a letter inside
 
 
 def test_dxf_holds_the_library_blocks_with_attributes():

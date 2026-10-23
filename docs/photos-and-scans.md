@@ -25,11 +25,16 @@ job handler in `app/scan.py`.
    becomes one arc; one that runs straight and then bends is cut into the fewest straight lines and true arcs that
    follow it, so a rounded corner, a vessel head or the round end of a line-number box is one arc or a few tangent
    ones, not a chain of short lines. Arcs that lie on one circle and were cut apart by a line become one arc again.
-   Collinear pieces are joined, regular pieces become dashed lines, corners are closed. A gap of up to 5 mm in a line
+   Collinear pieces are joined: a piece joins the line it continues at that line's own offset, so short strokes
+   between two parallel lines, such as letters touching a pipe and the box of its line number, do not pull them onto
+   one line. Regular pieces become dashed lines, corners are closed. Two or three dashes that run from
+   one stroke to another, such as a short signal line between an instrument bubble and the symbol it acts on, become
+   one dashed line; a short dash on its own is kept, not dropped as a speck. A gap of up to 5 mm in a line
    is closed where the grey image shows a stroke along it (a faint stretch darker than the paper beside it, a
    crossing that cut it), and a branch that stops short of the pipe it points at is extended onto it; gaps of bare
-   paper, such as dashes and line jumps, and the inside of a small symbol stay open. The round ends of a line-number box and rounded corners between two lines are kept from
-   text recognition, which would read them as brackets.
+   paper, such as dashes and line jumps, and the inside of a small symbol stay open. The round ends of a line-number
+   box and rounded corners between two lines are kept from text recognition, which would read them as brackets; only
+   the part beyond the two line ends, so a letter touching a round end from inside the box is still read.
 4. **Objects**: pieces that meet end to end become one polyline (a wall outline, a pipe run through its bends, a vessel
    with its heads); slivers and loose specks from the tracing are dropped. Floor plans get door swings (leaf and quarter
    arc) and walls, P&IDs equipment (large closed outlines), signal lines (dashed or ending at an instrument bubble) and
@@ -41,10 +46,16 @@ job handler in `app/scan.py`.
    zero of a plotter font reads as 8, 9 or B now and then, but as 0 mostly. In a code, an O or I next to a digit is a
    0 or 1 (`PN16`, `C=01XY2Z`). The sheet is turned if its text
    reads better turned: each rotation counts horizontal text the right way up together with vertical text reading
-   bottom to top, so a P&ID full of vertical pipe labels is not taken for a sideways sheet. The scale is read from
+   bottom to top, so a P&ID full of vertical pipe labels is not taken for a sideways sheet. A single character is
+   read where it stands alone in a frame, such as the loop letter of an instrument bubble or an interlock diamond;
+   elsewhere a lone stroke of that size is as likely part of a symbol. The text in circles that hold text is read a
+   second time without the ring and the line across a shared display, so letters that touch them are not lost. A bar
+   read at either end of a line ("| LT"), the end of a leader beside the text, stays linework. The scale is read from
    the title block. The drawing type weighs room areas (m²) and a building scale against nominal sizes (DN),
    instrument bubbles and a title such as "R&I". Text that cannot be read reliably stays a text (a
-   guess on its own layer to check) instead of turning into a heap of short strokes.
+   guess on its own layer to check) instead of turning into a heap of short strokes, also where the scan merged
+   touching letters, as long as as many characters were read as the line's length holds (a valve read as two large
+   letters stays linework).
 6. **Symbols**: valves, pumps and instruments on P&IDs (and on drawings of unknown kind), toilets, washbasins, bathtubs
    and other fixtures on floor plans are looked up in symbol libraries and placed as their CAD blocks instead of loose
    strokes, see below.
@@ -132,8 +143,11 @@ A PDF page that is a scan, or a drawing flattened to an image, takes the image r
 
 Recognised symbols become references (`INSERT`) to the blocks of a symbol library on the layer `P2C-SYMBOL`, with
 their texts as attributes (the tag of a pump, the letters and number of an instrument), so the DXF holds a valve as a
-valve, not as six strokes, and a washbasin as a washbasin. Pipe ends are snapped onto the ports of the symbols they
-lead to; of parallel pipes ending beside one port, only the one pointing at it, so that the others are not turned.
+valve, not as six strokes, and a washbasin as a washbasin. A symbol drawn around a circle, such as an instrument
+bubble, is centred on the circle found in the scan, and a symbol a little beside the pipes that end at its ports is
+moved across onto them. Pipe ends are snapped onto the ports of the symbols they lead to where the port lies on the
+pipe's course (within 0.5 mm), so that no pipe is turned askew; of parallel pipes ending beside one port, only the
+one pointing at it.
 
 The symbols come from symbol libraries: DXF files with one block per symbol, with points where pipes connect and the
 places of their attributes. Each library is for P&IDs or for floor plans, and only used on its kind of drawing. Two
@@ -162,7 +176,8 @@ positions. Of overlapping candidates the one explaining the most ink wins. A sym
 way or mirrored; it takes the pose in which most of its attribute positions have a text, and then the one with its
 back on the wall: a fixture's insertion point is in the middle of its back, and the linework left around it continues
 that side. Nothing is placed in the title block in the bottom right corner of the frame, whose small text would
-otherwise look like symbols.
+otherwise look like symbols, nor in a strip of notes and tables below a line across the whole frame (revision table,
+issue record, title block), whose grid looks like valves and arrows.
 
 OCR often reads small fixtures at 1:100 as letters (a washbasin as "IOl"). So two opposite sides of a rectangle are
 enough as a candidate, text may stand in for the outer outline and for small closed shapes such as a bowl or a
@@ -170,7 +185,8 @@ hotplate, and a text made of the strokes of a symbol is dropped once the symbol 
 must not make a symbol: on a dense P&ID, a V or an X in a pipe label fits a valve. A symbol may find at most 30 % of
 its outline on text that reads as words or a code (anything but the circles and bars a symbol reads as, such as "oo"
 or "101"). And the frame around a text (the box of a line number, an interlock diamond, the end of a label) is only
-taken as a symbol that holds text inside its outline, such as an instrument bubble.
+taken as a symbol that holds text inside its outline, such as an instrument bubble. A symbol drawn without curves
+is not placed on a round stroke of its size: the round end of a line-number box is no off-page connector or arrow.
 
 Libraries whose symbols are drawn at the printed size (P&ID symbols, unlike fixtures) are drawn larger or smaller on
 some sheets, for example a large drawing printed on a smaller sheet. The converter takes the size from the text: where

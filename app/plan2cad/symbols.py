@@ -42,8 +42,10 @@ SIZES = (1.0, 0.87, 1.15)  # sizes tried around a size estimated from line ends 
 SMALL = 25.0  # mm: groups of strokes up to this size (bounding box diagonal) can be a symbol
 STUB = 4.0  # mm: straight lines of the drawing longer than this are pipes, not parts of a symbol
 SNAP = 1.5  # mm: line ends this close to a port are moved onto it
+SNAP_ASIDE = 0.5  # mm: ... if the port lies on the line's course; further aside, the line would be turned askew
 SNAP_PARALLEL = math.radians(15)  # ... but of parallel lines arriving at one port, only the one pointing at it
 BLOCK = (200.0, 120.0)  # mm: largest title block (width, height)
+ROUND_END = 1.0  # mm: the smallest radius of the round end of a box that a symbol without curves must not lie on
 REACH = 4.0  # mm: a text this close to an attribute position becomes the attribute
 SAME = 1.5 * TOL  # mm: a symbol turned or mirrored with its outline this close to the original fits the same strokes
 TAKEN = 0.3  # a hit is dropped if this share of the linework it explains belongs to a better one
@@ -136,7 +138,9 @@ def recognise(d: Drawing, library: dict[str, Template], ink: tuple | None = None
     hits += _fitted(_leftover(d, shapes, ink, _select(hits, len(ink.points))), ink)
     hits = _one_size(hits, len(ink.points))
     block = _title_block(d)  # small unread text there looks like symbols
-    found = [h for h in _select(hits, len(ink.points)) if not (block and _within(h.pose[:2], block))]
+    arcs = d.arcs + [q for pl in d.polylines for q in pl.parts() if isinstance(q, Arc)]
+    found = [_centred(h, d.circles) for h in _select(hits, len(ink.points))
+             if not (block and _within(h.pose[:2], block)) and not _rounded(h, arcs, ink)]
     _remove(d, pieces, found)
     placed = [place(h.shape.t, *h.pose) for h in found]
     d.symbols += placed
@@ -463,7 +467,9 @@ def _ends(d: Drawing, bend: float, shortest: float = 0.0) -> list[tuple[np.ndarr
 
 def _title_block(d: Drawing) -> tuple[float, float, float, float] | None:
     """The title block in the bottom right corner of the frame (ISO 5457): its left edge runs up from the bottom of the
-    frame, its top edge from there to the right of the frame. (left, top, right, bottom), None if there is none."""
+    frame, its top edge from there to the right of the frame. Where a line runs across the whole frame above it, the
+    strip below that line instead: notes, revision table and title block, whose grids look like symbols as well.
+    (left, top, right, bottom), None if there is none."""
     frame = [pl.points for pl in d.polylines if pl.kind == "frame"]
     rights = [max(x for x, _ in pts) for pts in frame if max(x for x, _ in pts) > d.width / 2]
     bottoms = [max(y for _, y in pts) for pts in frame if max(y for _, y in pts) > d.height / 2]
@@ -472,6 +478,11 @@ def _title_block(d: Drawing) -> tuple[float, float, float, float] | None:
     right, bottom = min(rights), min(bottoms)  # the inner line of a double frame
     segments = [(q.x1, q.y1, q.x2, q.y2) for pl in d.polylines if pl.kind != "frame" for q in pl.parts()
                 if isinstance(q, Line)] + [(q.x1, q.y1, q.x2, q.y2) for q in d.lines]
+    sides = [min(x for x, _ in pts) for pts in frame if min(x for x, _ in pts) < d.width / 2]
+    across = [y1 for x1, y1, x2, y2 in segments if sides and abs(y2 - y1) < TOL and abs(min(x1, x2) - max(sides)) < SNAP
+              and abs(max(x1, x2) - right) < SNAP and bottom - BLOCK[1] < y1 < bottom - 5]
+    if across:
+        return max(sides), min(across), right, bottom
     lefts = [x1 for x1, y1, x2, y2 in segments if abs(x2 - x1) < TOL and abs(max(y1, y2) - bottom) < SNAP
              and min(y1, y2) > bottom - BLOCK[1] and right - BLOCK[0] < x1 < right - 5]
     for left in sorted(lefts):
@@ -570,6 +581,45 @@ def _fit(s: _Shape, pose, radius: float, ink: _Ink) -> _Hit | None:
     # linework explained, minus the outline missing and the linework inside left unexplained, in mm
     score = (len(claim) - MISSING * (1 - coverage) * len(s.pts) * scale - clutter) * STEP
     return _Hit(s, (float(xy[0]), float(xy[1]), angle % 360, mirror, scale), score, claim)
+
+
+def _rounded(h: _Hit, arcs: list[Arc], ink: _Ink) -> bool:
+    """Whether a symbol drawn without curves lies on the round end of the frame around a text, such as an off-page
+    connector or a flow arrow on the end of a line-number box. Only symbols on pipes (with ports): a fixture's oval
+    bowl may come from a library as short straight lines."""
+    if not h.shape.t.ports or any(isinstance(q, (Arc, Circle)) for q in h.shape.t.parts):
+        return False
+    outline = cKDTree(h.shape.pts @ _matrix(*h.pose[2:]).T + h.pose[:2])
+    for a in arcs:
+        sweep = (a.end - a.start) % 360
+        if sweep < 90 or a.r < max(ROUND_END, 0.15 * h.shape.radius) * h.pose[4] or not _contains(h, (a.cx, a.cy)):
+            continue  # a bend, the curve of a letter or the blunt tip of an arrow, or a curve beside the symbol
+        t = np.radians(a.start + np.linspace(0.2, 0.8, 4) * sweep)  # along its middle, not at its ends
+        middle = np.column_stack([a.cx + a.r * np.cos(t), a.cy + a.r * np.sin(t)])
+        near = [k for p in middle for k in ink.tree.query_ball_point(p, TOL)]
+        if outline.query(middle)[0].min() <= 2 * TOL and near and ink.frame[near].mean() > 0.5:
+            return True
+    return False
+
+
+def _centred(h: _Hit, circles: list[Circle]) -> _Hit:
+    """The hit moved and scaled so that the circle of its symbol, such as the ring of an instrument bubble, is the
+    circle found in the scan: the fit moves in quarter millimetres, and the text inside pulls it aside. Only symbols
+    drawn around one circle, not a hob with its hotplates or a shower tray with its drain."""
+    rings = [q for q in h.shape.t.parts if isinstance(q, Circle)]
+    if len(rings) != 1 or rings[0].r < 0.5 * h.shape.radius or not circles:
+        return h
+    ring = rings[0]
+    x, y, angle, mirror, scale = h.pose
+    cx, cy = transform(x, y, angle, mirror, scale)(ring.cx, ring.cy)
+    r = ring.r * scale
+    near = [c for c in circles if math.hypot(c.cx - cx, c.cy - cy) < max(0.5, 0.25 * r) and abs(c.r - r) < 0.15 * r]
+    if not near:
+        return h
+    c = min(near, key=lambda c: math.hypot(c.cx - cx, c.cy - cy))
+    scale *= c.r / r
+    ox, oy = transform(0.0, 0.0, angle, mirror, scale)(ring.cx, ring.cy)
+    return _Hit(h.shape, (c.cx - ox, c.cy - oy, angle, mirror, scale), h.score, h.claim)
 
 
 def _one_size(hits: list[_Hit], n: int) -> list[_Hit]:
@@ -737,10 +787,16 @@ def _length(pl: Polyline) -> float:
 
 
 def _snap(d: Drawing) -> None:
-    """Moves line ends close to a port onto it, so that the line is connected to the symbol. Of parallel lines that
+    """Moves line ends close to a port onto it, so that the line is connected to the symbol, if the port lies on the
+    line's course: a port beside it belongs to another line or a misplaced symbol. Of parallel lines that
     end beside one port (two pipes running past a valve), only the one pointing at it is moved, so the other is not
     turned onto it. A short line with both ends at the same symbol is left over from its strokes and dropped: snapped,
     it would join the symbol to itself."""
+    ends = [(ln, k) for ln in d.lines for k in (0, 1)] + [(pl, k) for pl in d.polylines if not pl.closed for k in (0, 1)]
+    if ends:
+        at = cKDTree([_end(*item)[0] for item in ends])
+        for sym in d.symbols:
+            _onto_lines(sym, ends, at)
     ports = [p for s in d.symbols for p in s.ports]
     if not ports:
         return
@@ -762,14 +818,48 @@ def _snap(d: Drawing) -> None:
     for item in [(ln, k) for ln in d.lines for k in (0, 1)] + [(pl, k) for pl in d.polylines if not pl.closed
                                                                 for k in (0, 1)]:
         p, q = _end(*item)
-        if (i := port(p)) is not None:
-            offers.append((_aside(p, q, ports[i]), i, math.atan2(p[1] - q[1], p[0] - q[0]), item))
+        if (i := port(p)) is not None and (aside := _aside(p, q, ports[i])) <= SNAP_ASIDE:
+            offers.append((aside, i, math.atan2(p[1] - q[1], p[0] - q[0]), item))
     taken: dict[int, list[float]] = {}
     for _, i, heading, (obj, k) in sorted(offers, key=lambda o: o[0]):
         if any(abs(math.remainder(heading - h, 2 * math.pi)) < SNAP_PARALLEL for h in taken.get(i, [])):
             continue  # a parallel line that points at the port more closely has it
         taken.setdefault(i, []).append(heading)
         _set_end(obj, k, tuple(map(float, ports[i])))
+
+
+def _onto_lines(sym: Symbol, ends: list, at: cKDTree) -> None:
+    """Moves a symbol across the lines that end at its ports (``ends``, located by ``at``) so that the ports lie on
+    their course: the fit is only good to half a millimetre or so, and a pipe end moved onto a port beside it would be
+    turned askew. A symbol placed on a circle stays (see _centred)."""
+    if not sym.ports or any(isinstance(q, Circle) for q in sym.parts):
+        return
+    normals, offsets = [], []
+    for port in sym.ports:
+        best = None  # the line end pointing at the port most closely
+        for j in at.query_ball_point(port, SNAP):
+            p, q = _end(*ends[j])
+            length = math.dist(p, q)
+            if length == 0:
+                continue
+            u = (np.array(p) - np.array(q)) / length
+            if u @ (np.array(port) - np.array(p)) < -SNAP_ASIDE:
+                continue  # the port lies behind the end: the line runs past it
+            n = np.array([-u[1], u[0]])
+            off = float(n @ (np.array(p) - np.array(port)))  # how far the port is off the line's course
+            if best is None or abs(off) < abs(best[1]):
+                best = (n, off)
+        if best is not None:
+            normals.append(best[0])
+            offsets.append(best[1])
+    if not normals:
+        return
+    n, off = np.array(normals), np.array(offsets)
+    shift = np.linalg.lstsq(n, off, rcond=None)[0]  # the smallest move that puts the ports on all those courses
+    if np.hypot(*shift) > SNAP or np.abs(n @ shift - off).max() > SNAP_ASIDE:
+        return  # the lines disagree: not the symbol's pipes, or a misplaced symbol
+    moved = place(sym.template, sym.x + float(shift[0]), sym.y + float(shift[1]), sym.angle, sym.mirror, sym.scale)
+    sym.x, sym.y, sym.parts, sym.ports = moved.x, moved.y, moved.parts, moved.ports
 
 
 def _end(obj: Line | Polyline, k: int) -> tuple[tuple[float, float], tuple[float, float]]:

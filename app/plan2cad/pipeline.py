@@ -12,7 +12,7 @@ import numpy as np
 import pypdfium2 as pdfium
 
 from . import library, markup, objects, ocr, pdfvector, sheet, symbols, topology, vectorize
-from .model import PAPER, Drawing, Line, Text
+from .model import PAPER, Circle, Drawing, Line, Text
 
 MAX_PIXELS = 80e6  # upper bound for the rectified sheet image
 PDF_PPM = 300 / 25.4  # resolution of the review image of a vector PDF page
@@ -166,13 +166,15 @@ def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, che
     k = np.ones((2 * round(0.15 * ppm) + 1,) * 2, np.uint8)
     rem = ink & (1 - cv2.dilate(used, k))
     timer.lap("lines")
-    texts, labels, rotation = ocr.find_texts(rem & (1 - vectorize.joints(rem, hv, ppm)), norm, ppm, check_rotation)
+    readable = rem & (1 - vectorize.joints(rem, hv, ppm))
+    texts, labels, rotation = ocr.find_texts(readable, norm, ppm, check_rotation, ink)
     if rotation is None:
         rotation = title_block_rotation(hv, ink.shape[1] / ppm, ink.shape[0] / ppm)
     if rotation:
         return rotation
-    timer.lap("text")
     round_, rings = vectorize.circles(ink, ppm, (labels > 0).astype(np.uint8), hv)
+    texts, labels = _in_circles(texts, labels, readable, ink, round_, rings, norm, ppm)
+    timer.lap("text")
     words = np.uint8([0] + [ocr.worded(t.text) for t in texts])[labels]
     texts, text_mask = _off_rings(texts, labels, rings)
     frame = ocr.frames(ink, labels * text_mask * words, ppm)  # not around a symbol's circles read as "oo"
@@ -181,8 +183,44 @@ def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, che
     lines, arcs, circles = vectorize.shapes(vectorize.trace(linework & (1 - text_mask) & (1 - rings), ppm), ppm)
     arcs, more = vectorize.merge_arcs(arcs)
     lines = vectorize.bridge(vectorize.close_corners(vectorize.merge_lines(hv + lines)), arcs, norm, ppm)
+    lines = vectorize.links(lines, arcs, round_ + circles + more, norm, ppm)
     timer.lap("vectorize")
     return polygons, lines, arcs, round_ + circles + more, texts, (linework, text_mask * (1 + words), hv, frame)
+
+
+def _in_circles(texts: list[Text], labels: np.ndarray, readable: np.ndarray, ink: np.ndarray, circles: list[Circle],
+                rings: np.ndarray, norm: np.ndarray, ppm: float) -> tuple[list[Text], np.ndarray]:
+    """Reads the text in circles that hold text, such as instrument bubbles, a second time without the ring and the
+    line across a shared display: letters that touch either were taken for part of the symbol. Texts read again
+    replace the first reading of the same letters. Circles without text, such as the hotplates of a hob, stay as they
+    are."""
+    inner = np.zeros(readable.shape, np.uint8)
+    for c in circles:
+        x, y, r = round(c.cx * ppm), round(c.cy * ppm), round(c.r * ppm)
+        x0, y0 = max(0, x - r), max(0, y - r)
+        x1, y1 = min(inner.shape[1], x + r + 1), min(inner.shape[0], y + r + 1)
+        disk = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        cv2.circle(disk, (x - x0, y - y0), r, 1, -1)
+        if (labels[y0:y1, x0:x1][disk > 0] > 0).any():
+            inner[y0:y1, x0:x1] |= disk
+    if not inner.any():
+        return texts, labels
+    mask = readable & inner & (1 - rings)
+    across = cv2.getStructuringElement(cv2.MORPH_RECT, (max(3, round(2.5 * ppm)), 1))  # longer than any letter stroke
+    mask &= 1 - cv2.morphologyEx(mask, cv2.MORPH_OPEN, across)
+    first = np.bincount(labels[inner > 0], minlength=len(texts) + 1)
+    whole = np.bincount(labels.ravel(), minlength=len(texts) + 1)
+    outside = np.flatnonzero(first < 0.9 * whole)  # texts that run out of a circle keep their first reading
+    mask[np.isin(labels, outside[outside > 0])] = 0
+    more, more_labels, _ = ocr.find_texts(mask, norm, ppm, frame=ink)
+    if not more:
+        return texts, labels
+    redone = set(np.unique(labels[more_labels > 0]).tolist()) - {0}
+    keep = [k for k in range(1, len(texts) + 1) if k not in redone]
+    lut = np.zeros(len(texts) + 1, np.int32)
+    lut[keep] = np.arange(1, len(keep) + 1)
+    out = np.where(more_labels > 0, more_labels.astype(np.int32) + len(keep), lut[labels])
+    return [texts[k - 1] for k in keep] + more, out
 
 
 def _printed(texts: list[Text]) -> float:
