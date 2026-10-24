@@ -51,6 +51,17 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
     `P2C-HIGHLIGHT` and what Tesseract reads of the handwriting, as a guess, on `P2C-MARKUP-TEXT`.
   - `report.json` lists them under `markups` (kind, box, colour, reading and the printed texts and symbol tags they cover), the ZIP
     holds an image `markup-k.png` of each one, and the markdown has a section on them.
+- Text spotting on photos and scans: a learned text detector and recogniser (PP-OCRv6 small, Apache-2.0 models run by
+  RapidOCR on ONNX Runtime, on the CPU) reads the sheet after the character grouping and replaces the texts whose
+  letters lie in the lines it finds. It finds letters that touch lines and bubble rings, and reads plotter fonts, the
+  slashed zero and touching letters much better than Tesseract. New text needs a score of 0.8 (0.9 for one or two
+  characters, which must also be no taller than the usual text), less sure replacements are marked for review, and
+  characters both readers confuse go to the vote of their look-alikes. Lines cut by a tile edge are read again whole,
+  and wide spaces the recogniser dropped are put back. The image fetches and checks the models when it is built. New
+  dependencies: `rapidocr`, `onnxruntime`.
+- Benchmark: exact texts by kind (codes such as tags and line numbers, numbers, words), errors left unmarked (texts
+  read wrong without a review mark in their place), and connections between symbols (pairs joined by linework, found
+  and correct).
 
 ### Changed
 

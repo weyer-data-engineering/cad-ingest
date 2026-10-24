@@ -157,10 +157,11 @@ the title block.*
 
 The pipeline in `app/plan2cad` finds the sheet in the photo and removes the perspective. It evens out shadows and
 glare and traces the linework into lines, arcs, circles, dashed lines and filled areas. Pieces that belong together
-are joined into walls, pipes and equipment outlines. Texts are read with Tesseract OCR, and the scale is taken from
-the title block. Symbols are matched against DXF symbol libraries and placed as their blocks: valves, pumps and
-instruments on P&IDs, with their tags as attributes, and toilets, washbasins, bathtubs and other fixtures on floor
-plans. Two starter libraries are built in: 18 P&ID symbols after DIN EN ISO 10628-2 and seven floor plan fixtures.
+are joined into walls, pipes and equipment outlines. Texts are found and read by a learned text spotter (PP-OCRv6,
+on the CPU) together with Tesseract OCR, and the scale is taken from the title block. Symbols are matched against
+DXF symbol libraries and placed as their blocks: valves, pumps and instruments on P&IDs, with their tags as
+attributes, and toilets, washbasins, bathtubs and other fixtures on floor plans. Two starter libraries are built in:
+18 P&ID symbols after DIN EN ISO 10628-2 and seven floor plan fixtures.
 
 Your own symbols plug in as a library: a folder with your CAD blocks and a short `library.toml`. The DXF then holds
 your original blocks, with your layers and attribute names. Install libraries on the server, or let each job bring
@@ -328,6 +329,9 @@ The container image bundles third-party software under its own licences:
 | pi-heif (libheif, libde265) | BSD 3-clause (LGPL 3 shared libraries) | HEIC decoding only, without the GPL x265 encoder |
 | Tesseract, pytesseract | Apache 2.0 | separate command-line process |
 | Tesseract models `tessdata_best` 4.1.0 (German, English) | Apache 2.0 | data files read by Tesseract |
+| RapidOCR, ONNX Runtime | Apache 2.0 / MIT | libraries that run the text spotting models |
+| PaddleOCR models PP-OCRv6 small (text detection, recognition) and the mobile v2.0 text direction classifier | Apache 2.0 | data files, fetched and checked when the image is built |
+| pyclipper, Shapely, OmegaConf, colorlog, PyYAML, six, requests, tqdm | MIT / BSD 3-clause / Apache 2.0 / MPL 2.0 and MIT (tqdm) | libraries RapidOCR uses |
 | OpenCV, pypdfium2 (PDFium) | Apache 2.0 / BSD 3-clause | Python extensions |
 | scikit-image, SciPy, RQ | BSD 3-clause / BSD 2-clause | libraries |
 | matplotlib | PSF-compatible (BSD-style) | PDF rendering |

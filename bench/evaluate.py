@@ -259,14 +259,23 @@ def _box(t: Text, margin: float) -> tuple[float, float, float, float]:
         (t.x - half_l, t.y - half_h, t.x + half_l, t.y + half_h)
 
 
+def _kind(s: str) -> str:
+    """codes (tags, line numbers: letters and digits), numbers (sizes, dimensions) or words (notes, names)."""
+    digits, letters = any(c.isdigit() for c in s), any(c.isalpha() for c in s)
+    return "codes" if digits and letters else "numbers" if digits else "words"
+
+
 def texts(gt: Drawing, pred: Drawing) -> dict:
     """Per ground-truth text, all recognised texts whose centre lies in its box are joined in
-    reading order and compared. Recognised texts that match nothing count as false positives."""
+    reading order and compared. Recognised texts that match nothing count as false positives. A text read wrong is
+    flagged if a text marked for review lies in its box; the others are errors nobody is pointed to."""
     if not gt.texts:
         return {}
     review = sum(t.uncertain for t in pred.texts)  # marked as unread: not counted as read text
+    marked = [t for t in pred.texts if t.uncertain]
     pred = Drawing(pred.width, pred.height, texts=[t for t in pred.texts if not t.uncertain])
-    used, cers, exact = set(), [], 0
+    used, cers, exact, unflagged = set(), [], 0, 0
+    kinds = defaultdict(lambda: [0, 0])  # kind: [exact, all]
     for t in gt.texts:
         x0, y0, x1, y1 = _box(t, 1.0)
         inside = [i for i, q in enumerate(pred.texts) if x0 <= q.x <= x1 and y0 <= q.y <= y1 and q.angle == t.angle]
@@ -275,8 +284,13 @@ def texts(gt: Drawing, pred: Drawing) -> dict:
         read = " ".join(pred.texts[i].text for i in sorted(inside, key=key))
         cers.append(min(1.0, _cer(t.text, read)))
         exact += read == t.text
+        kinds[_kind(t.text)][0] += read == t.text
+        kinds[_kind(t.text)][1] += 1
+        unflagged += read != t.text and not any(x0 <= q.x <= x1 and y0 <= q.y <= y1 for q in marked)
     return {"text_cer": float(np.mean(cers)), "text_exact": exact / len(gt.texts),
-            "text_false_positives": len(pred.texts) - len(used), "text_review": review}
+            "text_false_positives": len(pred.texts) - len(used), "text_review": review,
+            "text_unflagged": unflagged / len(gt.texts)} | \
+        {f"text_exact_{k}": kinds[k][0] / kinds[k][1] if kinds[k][1] else None for k in ("codes", "numbers", "words")}
 
 
 def symbols(gt: Drawing, pred: Drawing) -> dict:
@@ -296,9 +310,56 @@ def symbols(gt: Drawing, pred: Drawing) -> dict:
             "symbol_attributes": read / len(attributes) if attributes else None}
 
 
+def _linked(d: Drawing, tol: float = 0.5) -> set[frozenset]:
+    """Pairs of symbols joined by linework. Lines, arcs and polylines that meet end to end, or with an end on another
+    one (a branch), form one net; a symbol belongs to every net that reaches one of its ports."""
+    nets = [[q] for q in d.lines + d.arcs] + [pl.parts() for pl in d.polylines if pl.kind != "frame"]
+    sampled = [_sampled(parts)[0] for parts in nets]
+    if not d.symbols or not any(len(p) for p in sampled):
+        return set()
+    points = np.vstack([p for p in sampled if len(p)])
+    owner = np.concatenate([np.full(len(p), i) for i, p in enumerate(sampled) if len(p)])
+    tree = cKDTree(points)
+    parent = list(range(len(nets)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i, p in enumerate(sampled):
+        for end in (p[:1], p[-1:]) if len(p) else ():
+            for j in tree.query_ball_point(end[0], tol):
+                parent[root(owner[j])] = root(i)
+    members = defaultdict(set)
+    for k, s in enumerate(d.symbols):
+        for port in s.ports:
+            for j in tree.query_ball_point(port, tol):
+                members[root(owner[j])].add(k)
+    return {frozenset((a, b)) for m in members.values() for a in m for b in m if a < b}
+
+
+def connectivity(gt: Drawing, pred: Drawing) -> dict:
+    """Symbols joined by linework in the reference and in the output; output symbols count as the reference symbol of
+    the same name within 1.5 mm. A broken pipe loses a connection, a wrong junction adds one."""
+    ref = _linked(gt)
+    if not ref:
+        return {}
+    same = {}
+    for k, q in enumerate(pred.symbols):
+        near = [(math.hypot(s.x - q.x, s.y - q.y), i) for i, s in enumerate(gt.symbols) if s.name == q.name]
+        near = [n for n in near if n[0] <= 1.5]
+        same[k] = min(near)[1] if near else -1 - k
+    found = {frozenset(same[k] for k in pair) for pair in _linked(pred)}
+    found = {pair for pair in found if len(pair) == 2}
+    hit = len(ref & found)
+    return {"connection_recall": hit / len(ref), "connection_precision": hit / max(1, len(found))}
+
+
 def evaluate(gt: Drawing, pred: Drawing) -> dict:
     flat_gt, flat_pred = gt.flat(), pred.flat()
     out = geometry(flat_gt, flat_pred) | circles(flat_gt, flat_pred) | texts(flat_gt, flat_pred) | objects(gt, pred)
-    out |= continuity(gt, pred) | symbols(gt, pred)
+    out |= continuity(gt, pred) | symbols(gt, pred) | connectivity(gt, pred)
     out["scale_ok"] = pred.scale == gt.scale if gt.scale else None
     return out
