@@ -173,6 +173,29 @@ def test_a_symbol_beside_its_pipe_is_moved_onto_it_and_the_pipe_stays_straight()
                                                          (pytest.approx(102.5, abs=0.3), 140)]
 
 
+def test_a_flow_arrow_on_a_pipe_that_goes_on_is_found_and_moved_onto_it():
+    d = drawn(place(LIBRARY["FLOW_ARROW"], 100, 50.6), lines=[Line(40, 50, 160, 50, 0.5)])  # a little off the pipe
+    symbols.recognise(d, LIBRARY)
+    assert [(s.name, round(s.y, 2)) for s in d.symbols] == [("FLOW_ARROW", 50.0)]
+
+
+def test_a_flow_arrow_needs_its_pipe_to_go_on_past_both_ends():
+    d = drawn(place(LIBRARY["FLOW_ARROW"], 100, 50), lines=[Line(98.8, 50, 160, 50, 0.5)])  # it starts at the tail
+    symbols.recognise(d, LIBRARY)
+    assert "FLOW_ARROW" not in [s.name for s in d.symbols]  # where an arc runs into a line, it looks like this
+
+
+def test_a_stroke_left_inside_a_valve_does_not_join_the_pipes_on_either_side():
+    left, stub = Line(60, 50, 97.5, 50, 0.5), Line(97.5, 50, 100, 50, 0.5)  # a pipe and a stroke up to the middle
+    right = Polyline([(100, 50), (102.5, 50), (140, 50)], [0.0, 0.0], width=0.5)  # traced from the middle on
+    d = drawn(place(LIBRARY["GATE_VALVE"], 100, 50), lines=[left, stub])
+    d.polylines = [right]
+    symbols.recognise(d, LIBRARY)
+    assert [s.name for s in d.symbols] == ["GATE_VALVE"]
+    ends = [x for ln in d.lines for x in (ln.x1, ln.x2)] + [p[0] for pl in d.polylines for p in pl.points]
+    assert not any(98 < x < 102 for x in ends)  # nothing left between the ports
+
+
 def test_a_symbol_with_a_ring_is_centred_on_the_circle_found():
     hit = symbols._Hit(symbols._shape(LIBRARY["INSTRUMENT"]), (100.3, 49.8, 0.0, False, 1.0), 1.0, np.array([]))
     ring = max((q for q in LIBRARY["INSTRUMENT"].parts if isinstance(q, Circle)), key=lambda q: q.r)
@@ -199,6 +222,18 @@ def test_ink_on_a_small_closed_box_is_marked_as_boxed():
     points = np.array([(22.5, 20.1), (24.9, 23), (22.5, 22.5), (75, 20), (40, 40)])
     ink = symbols._Ink(points, np.tile((1.0, 0.0), (5, 1)), np.zeros(5), np.zeros(5, bool))
     assert symbols._boxed(Drawing(100, 60, lines=box + room), ink).tolist() == [True, True, False, False, False]
+
+
+def test_a_ball_valve_whose_ball_is_filled_in_is_no_gate_valve():
+    d = Drawing(297, 210)
+    p = Pen(d)
+    p.line(20, 50, 72.5, 50, 0.5)
+    p.symbol("GATE_VALVE", 75, 50)
+    p.fill([(75 + 1.1 * np.cos(a), 50 + 1.1 * np.sin(a)) for a in np.linspace(0, 2 * np.pi, 24, endpoint=False)])
+    p.line(77.5, 50, 130, 50, 0.5)
+    img = cv2.cvtColor(render(d, 150 / 25.4), cv2.COLOR_GRAY2BGR)  # coarse, as a photo: no ring left, a blob
+    r = convert(img, paper="A4", dpi=150, drawing="pid")
+    assert [s.name for s in r.drawing.symbols] == ["BALL_VALVE"]
 
 
 def test_dxf_holds_the_library_blocks_with_attributes():
