@@ -72,6 +72,11 @@ job handler in `app/scan.py`.
    mistakes. A line longer than the overlap of the tiles comes in pieces cut by a tile edge; the pieces of one line
    are read again as one. Where the characters map one to one to the glyphs, a space the recogniser dropped is put
    back at a gap 2.5 times as wide as the line's usual one ("11,56m²").
+   Last, marks the readers confuse are put right where the sheet itself shows how it writes them. On a sheet with at
+   least three pipe sizes in inches before their specification or in a reducer (`2" -AB12`, `4"x3"`), the mark after
+   such a size, or after a nominal pipe size on its own, is an inch mark, whatever was read for it (`2°-AB12`, `2'`);
+   angles (`45°`), temperatures (`60°C`) and feet and inches (`12'-6"`) keep theirs. On a sheet with at least two
+   key=value labels (`PN=16`), a colon between a short key and its value (`PN:16`) is the equals sign.
 6. **Symbols**: valves, pumps and instruments on P&IDs (and on drawings of unknown kind), toilets, washbasins, bathtubs
    and other fixtures on floor plans are looked up in symbol libraries and placed as their CAD blocks instead of loose
    strokes, see below.

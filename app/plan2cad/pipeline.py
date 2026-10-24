@@ -175,6 +175,7 @@ def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, che
     round_, rings = vectorize.circles(ink, ppm, (labels > 0).astype(np.uint8), hv)
     texts, labels = _in_circles(texts, labels, readable, ink, round_, rings, norm, ppm)
     texts, labels = ocr.spotted(texts, labels, readable, norm, spotting.spot(norm, ppm), ppm)
+    texts = ocr.grammar(texts)
     timer.lap("text")
     words = np.uint8([0] + [ocr.worded(t.text) for t in texts])[labels]
     texts, text_mask = _off_rings(texts, labels, rings)

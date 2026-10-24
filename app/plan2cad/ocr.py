@@ -373,6 +373,38 @@ def fix(s: str) -> str:
     return re.sub(r"(?<=\d)[OoIl]+|[OoIl]+(?=\d)", lambda m: m.group(0).translate(_DIGITS), s)
 
 
+# A pipe size before its specification ("2" -AB12") or in a reducer ("4"x3""): there the mark after the number is an
+# inch mark, whatever was read for it. A sheet with a few of these writes pipe sizes in inches, so there a nominal size
+# with any mark on its own ("2'", "1/2°") is one too; other numbers keep theirs ("45°", feet and inches "12'-6"").
+MARK = r"(?:''|[\"'’°])"
+SIZED = re.compile(r"\d\s?" + MARK + r"\s?(?:-\s?[A-Z]{2}\d|[x/]\s?\d)")
+SIZE = re.compile(r"(\d+(?:/\d+)?)\s?" + MARK + r"(?!\s?[CF]\b)(?!\s?-\s?\d)(?=(\s?(?:-\s?[A-Z]{2}\d|[x/]\s?\d))?)")
+NPS = {"1/8", "1/4", "3/8", "1/2", "3/4", "1", "2", "3", "4", "5", "6", "8", "10", "12", "14", "16", "18", "20", "22",
+       "24", "26", "28", "30", "32", "34", "36", "42", "48"}  # nominal pipe sizes in inches
+KEYED = re.compile(r"\b[A-Z]{1,3}=[A-Z0-9]")  # a key and its value ("PN=16"), as attribute labels are written
+COLON = re.compile(r"\b([A-Z]{1,3}):(?=[A-Z0-9])")  # ... and its equals sign read as a colon
+EVIDENCE = (3, 2)  # texts that show the sheet writes inch sizes, key=value labels
+
+
+def grammar(texts: list[Text]) -> list[Text]:
+    """Marks the readers confuse, put right where the sheet itself shows how it writes them: inch marks read as a
+    foot mark or a degree sign ("2°-AB12", "4'x3'"), and the equals sign of a key=value label read as a colon
+    ("PN:16"). A rule applies only on a sheet with enough texts that show the notation (EVIDENCE), so the angles of a
+    floor plan and the colons of a note stay as they are; temperatures ("60°C") always do."""
+    inches = sum(bool(SIZED.search(t.text)) for t in texts) >= EVIDENCE[0]
+    keyed = sum(bool(KEYED.search(t.text)) for t in texts) >= EVIDENCE[1]
+
+    def inch(m: re.Match) -> str:
+        return m.group(1) + '"' if m.group(2) or m.group(1) in NPS else m.group(0)
+
+    out = []
+    for t in texts:
+        s = SIZE.sub(inch, t.text) if inches else t.text
+        s = COLON.sub(r"\1=", s) if keyed else s
+        out.append(t if s == t.text else replace(t, text=s))
+    return out
+
+
 def _group(cc: Components, idx: np.ndarray, horizontal: bool) -> tuple[list[list[int]], np.ndarray]:
     """Links neighbouring characters of one text line (union-find). Characters of similar height are linked first;
     then small marks (hyphens, dots, inch marks, the pieces of a broken character) join a line of two or more

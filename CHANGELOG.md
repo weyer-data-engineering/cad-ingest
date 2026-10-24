@@ -59,6 +59,8 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   characters both readers confuse go to the vote of their look-alikes. Lines cut by a tile edge are read again whole,
   and wide spaces the recogniser dropped are put back. The image fetches and checks the models when it is built. New
   dependencies: `rapidocr`, `onnxruntime`.
+- Sheet grammar for texts on photos and scans: inch marks read as foot marks or degree signs after pipe sizes, and the
+  equals sign of key=value labels read as a colon, are put right where the sheet shows enough of these notations.
 - Benchmark: exact texts by kind (codes such as tags and line numbers, numbers, words), errors left unmarked (texts
   read wrong without a review mark in their place), and connections between symbols (pairs joined by linework, found
   and correct).
