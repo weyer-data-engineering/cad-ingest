@@ -51,6 +51,7 @@ def _authorized(authorization: str = Header(default="")) -> None:
 
 jobs = APIRouter(prefix="/jobs", dependencies=[Depends(_authorized)])
 LibraryId = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")]  # as plan2cad.library.ID
+HeaderName = Annotated[str, Field(pattern=r"^[A-Za-z0-9-]{1,100}$")]
 Url = Annotated[str, Field(pattern=r"^https?://")]
 
 
@@ -75,6 +76,9 @@ class Reviewer(BaseModel):
     base_url: Url  # where /chat/completions is, e.g. https://llm.example.com/v1
     api_key: str = Field(min_length=1, max_length=1000, repr=False)
     model: str = Field(min_length=1, max_length=200)
+    # Further headers of each call, such as the customer a LiteLLM proxy books the call to
+    headers: dict[HeaderName, Annotated[str, Field(max_length=1000)]] | None = Field(default=None, max_length=10,
+                                                                                     repr=False)
 
 
 class JobRequest(BaseModel):

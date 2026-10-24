@@ -36,7 +36,7 @@ JSON. If `API_TOKEN` is set, every `/jobs` call needs `Authorization: Bearer <to
 | `library_urls` | optional, only with `vectorize`: presigned `GET`s of symbol libraries the job brings along, a library ZIP or a DXF (at most 10, each up to `MAX_LIBRARY_SIZE_BYTES`). They come before the installed `libraries`; the default libraries are only used when the job names none at all. See [Symbol libraries](symbol-libraries.md) |
 | `callback_url` | optional, see Callback |
 | `priority` | `interactive` (default) or `bulk` |
-| `reviewer` | optional, only with `vectorize`: a vision model behind an OpenAI-compatible endpoint (`base_url` up to `/v1`, `api_key`, `model`), such as a LiteLLM proxy, that is asked about the texts and symbols to check. It sees only a crop around each of them (at most 40 per page). The key is kept only until the job ends; it is never returned or logged. See `review` below |
+| `reviewer` | optional, only with `vectorize`: a vision model behind an OpenAI-compatible endpoint (`base_url` up to `/v1`, `api_key`, `model`, optionally further `headers` such as the customer a LiteLLM proxy books the calls to), such as a LiteLLM proxy, that is asked about the texts and symbols to check. It sees only a crop around each of them (at most 40 per page). The key is kept only until the job ends; it is never returned or logged. See `review` below |
 
 Answers: `202 {"id","status":"queued"}`; `200` with the existing job for a repeated `external_id`; `400` invalid body
 (`{"detail": "..."}`), also for a library in `options.libraries` that the workers do not have; `401`; `415` unsupported extension, or `vectorize` missing for a photo or given for a CAD file; `503` with `Retry-After: 15` when Redis is unavailable or

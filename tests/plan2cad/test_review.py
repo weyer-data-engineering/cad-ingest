@@ -28,6 +28,7 @@ def model():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             state["requests"].append((self.path, self.headers["Authorization"], body))
+            state["customer"] = self.headers.get("x-litellm-customer-id")
             prompt = body["messages"][0]["content"][0]["text"]
             answer = next(a for key, a in state["answers"] if key in prompt)
             data = json.dumps({"choices": [{"message": {"role": "assistant", "content": answer}}]}).encode()
@@ -38,7 +39,8 @@ def model():
 
     server = ThreadingHTTPServer(("127.0.0.1", free_port()), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    state["reviewer"] = {"base_url": f"http://127.0.0.1:{server.server_port}/v1", "api_key": "sk-test", "model": "m"}
+    state["reviewer"] = {"base_url": f"http://127.0.0.1:{server.server_port}/v1", "api_key": "sk-test", "model": "m",
+                         "headers": {"x-litellm-customer-id": "tenant:someone"}}
     yield state
     server.shutdown()
 
@@ -62,6 +64,7 @@ def test_the_reviewer_reads_the_text_and_confirms_the_symbol(model):
     assert [(t.text, t.uncertain) for t in r.drawing.texts] == [("V-101", False)]
     assert [s.doubt for s in r.drawing.symbols] == [None, None]
     assert {(path, auth) for path, auth, _ in model["requests"]} == {("/v1/chat/completions", "Bearer sk-test")}
+    assert model["customer"] == "tenant:someone"
     images = sorted(sum(c["type"] == "image_url" for c in body["messages"][0]["content"])
                     for _, _, body in model["requests"])
     assert images == [1, 2]  # the text's crop; the symbol's crop and its drawing in the library, nothing else

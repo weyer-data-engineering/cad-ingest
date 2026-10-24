@@ -64,9 +64,9 @@ def _ask(e: Text | Symbol, r: Result, reviewer: dict) -> str | None:
     content = [{"type": "text", "text": prompt}] + [
         {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64encode(png).decode()}}
         for png in images]
+    headers = (reviewer.get("headers") or {}) | {"Authorization": f"Bearer {reviewer['api_key']}"}
     try:
-        response = httpx.post(reviewer["base_url"].rstrip("/") + "/chat/completions", timeout=TIMEOUT,
-                              headers={"Authorization": f"Bearer {reviewer['api_key']}"},
+        response = httpx.post(reviewer["base_url"].rstrip("/") + "/chat/completions", timeout=TIMEOUT, headers=headers,
                               json={"model": reviewer["model"], "temperature": 0, "max_tokens": 100,
                                     "messages": [{"role": "user", "content": content}]})
         response.raise_for_status()
@@ -132,5 +132,5 @@ def _extent(s: Symbol) -> tuple[float, float, float, float]:
 
 def _png(a: np.ndarray) -> bytes:
     f = max(1.0, SIDE / max(1, min(a.shape[:2])))
-    return cv2.imencode(".png", cv2.resize(np.ascontiguousarray(a), None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC))[1]\
-        .tobytes()
+    a = cv2.resize(np.ascontiguousarray(a), None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
+    return cv2.imencode(".png", a)[1].tobytes()
