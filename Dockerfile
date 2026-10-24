@@ -36,8 +36,12 @@ RUN apt-get update \
 	&& apt-get install -y --no-install-recommends python3.12 python3.12-venv ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
+# The PP-OCRv6 text detection and recognition models (Apache 2.0) are fetched and checked (SHA-256) by RapidOCR while
+# building, into the venv: a conversion never downloads anything.
+COPY app/plan2cad/spotting.py /tmp/spotting.py
 RUN python3.12 -m venv /opt/venv \
-	&& /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+	&& /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
+	&& /opt/venv/bin/python -c "import sys; sys.path.insert(0, '/tmp'); import spotting; spotting._engine()"
 
 FROM ubuntu:24.04 AS base
 LABEL org.opencontainers.image.title="cad-ingest" \

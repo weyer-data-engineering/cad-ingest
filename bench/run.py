@@ -48,9 +48,10 @@ CASES = [  # name, drawing, paper, image, seeds
 SWEEP = [3, 4, 5, 6, 8, 10]  # px/mm on the A0 P&ID
 KEYS = ["recall_1mm", "precision_1mm", "recall_05mm", "precision_05mm", "deviation_mm", "dashed_recall_1mm",
         "circle_recall", "circle_precision", "text_exact", "text_cer", "text_false_positives", "text_review",
+        "text_unflagged", "text_exact_codes", "text_exact_numbers", "text_exact_words",
         "pieces_per_object", "objects_whole", "entities", "reference_objects", "short_pieces",
         "breaks_per_m", "curve_pieces", "curves_as_arcs",
-        "symbol_recall", "symbol_precision", "symbol_attributes",
+        "symbol_recall", "symbol_precision", "symbol_attributes", "connection_recall", "connection_precision",
         "scale_ok", "seconds", "source_ppm"]
 
 
@@ -210,13 +211,24 @@ def report(results: dict) -> str:
     for c in results["cases"]:
         lines.append(f"| {c['name']} | {num(c.get('breaks_per_m'), 1)} | {num(c.get('curve_pieces'))} "
                      f"| {pct(c.get('curves_as_arcs'))} |")
+    lines += ["", "## Texts by kind and errors left unmarked", "",
+              "Exact texts among codes (letters and digits: tags, line numbers), numbers and words. Unmarked errors: "
+              "reference texts read wrong without a text marked for review in their place, so nobody is pointed to "
+              "them.", "",
+              "| Case | Codes exact | Numbers exact | Words exact | Unmarked errors |", "|---|---|---|---|---|"]
+    for c in results["cases"]:
+        lines.append(f"| {c['name']} | {pct(c.get('text_exact_codes'))} | {pct(c.get('text_exact_numbers'))} "
+                     f"| {pct(c.get('text_exact_words'))} | {pct(c.get('text_unflagged'), 1)} |")
     lines += ["", "## Symbols as CAD blocks", "",
-              "Reference symbols placed as a block of the right kind at the right place (≤ 1.5 mm).", "",
-              "| Case | Symbols found | Symbols correct | Attributes read |", "|---|---|---|---|"]
+              "Reference symbols placed as a block of the right kind at the right place (≤ 1.5 mm). Connections: "
+              "pairs of symbols joined by linework, found / correct.", "",
+              "| Case | Symbols found | Symbols correct | Attributes read | Connections found / correct |",
+              "|---|---|---|---|---|"]
     for c in results["cases"]:
         if c["symbol_recall"] is not None:
             lines.append(f"| {c['name']} | {pct(c['symbol_recall'], 1)} | {pct(c['symbol_precision'], 1)} "
-                         f"| {pct(c['symbol_attributes'])} |")
+                         f"| {pct(c['symbol_attributes'])} "
+                         f"| {pct(c.get('connection_recall'))} / {pct(c.get('connection_precision'))} |")
     if results["sweep"]:
         lines += ["", "## Resolution (P&ID A0, scan-like)", "",
                   "| px/mm | Lines found | Lines correct | Circles | Texts exact | Character error rate |",

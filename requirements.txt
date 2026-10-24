@@ -24,3 +24,6 @@ scipy==1.18.1
 pytesseract==0.3.13
 pi-heif==1.4.0
 pypdfium2==5.14.0
+# Text spotting on photos and scans: PP-OCRv6 models (Apache 2.0) run by RapidOCR (Apache 2.0) on ONNX Runtime (MIT)
+rapidocr==3.10.0
+onnxruntime==1.31.0
