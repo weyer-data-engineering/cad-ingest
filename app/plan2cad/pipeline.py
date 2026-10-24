@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 import pypdfium2 as pdfium
 
-from . import library, markup, objects, ocr, pdfvector, sheet, symbols, topology, vectorize
+from . import library, markup, objects, ocr, pdfvector, sheet, spotting, symbols, topology, vectorize
 from .model import PAPER, Circle, Drawing, Line, Text
 
 MAX_PIXELS = 80e6  # upper bound for the rectified sheet image
@@ -174,6 +174,8 @@ def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, che
         return rotation
     round_, rings = vectorize.circles(ink, ppm, (labels > 0).astype(np.uint8), hv)
     texts, labels = _in_circles(texts, labels, readable, ink, round_, rings, norm, ppm)
+    texts, labels = ocr.spotted(texts, labels, readable, norm, spotting.spot(norm, ppm), ppm)
+    texts = ocr.grammar(texts)
     timer.lap("text")
     words = np.uint8([0] + [ocr.worded(t.text) for t in texts])[labels]
     texts, text_mask = _off_rings(texts, labels, rings)

@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from app.plan2cad.model import Circle, Drawing, Line, Polyline, Text
-from app.plan2cad.ocr import Components, _group, _voted, find_texts, fix, frames
+from app.plan2cad.ocr import Components, _group, _voted, find_texts, fix, frames, grammar
 from app.plan2cad.pipeline import detect_scale
 from app.plan2cad.render import render
 
@@ -111,3 +111,18 @@ def test_letters_in_small_boxes_are_read_without_the_boxes():
                                          ("12,50 m", None), ("15.62 m’", None)])
 def test_detect_scale(text, scale):
     assert detect_scale([Text(0, 0, 2.5, text)]) == scale
+
+
+def read(*texts):
+    return [t.text for t in grammar([Text(10, 10, 2.5, s) for s in texts])]
+
+
+def test_inch_marks_are_put_right_on_a_sheet_that_writes_pipe_sizes_in_inches():
+    sheet = ["2° -AB12", "4'x3'", '6" -CD34', "1/2'PIPE", "2'", "45°", "60°C", "12'-6\""]
+    assert read(*sheet) == ['2" -AB12', '4"x3"', '6" -CD34', '1/2"PIPE', '2"', "45°", "60°C", "12'-6\""]
+    assert read("2'", "45°", "4'x3'") == ["2'", "45°", "4'x3'"]  # one size is no evidence: a floor plan's feet
+
+
+def test_a_colon_in_a_key_value_label_is_its_equals_sign_where_the_sheet_writes_such_labels():
+    assert read("PN=16", "M=XY", "T:AB", "NOTE: SEE", "NAME : X") == ["PN=16", "M=XY", "T=AB", "NOTE: SEE", "NAME : X"]
+    assert read("PN=16", "T:AB") == ["PN=16", "T:AB"]

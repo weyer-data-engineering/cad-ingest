@@ -15,17 +15,25 @@ from dataclasses import replace
 import cv2
 import numpy as np
 import pytesseract
+from scipy import ndimage
 from scipy.ndimage import find_objects
 from scipy.spatial import cKDTree
 
 from ..config import Settings
 from .model import Text
+from .spotting import Spot
 
 os.environ.setdefault("OMP_THREAD_LIMIT", "1")  # parallelism comes from the batches, not from Tesseract
 
 LANG = Settings.from_env().ocr_languages
 CAP_PX = 32  # cap height in pixels that Tesseract reads well
 MOSAIC_H = 6000
+UNSURE = 0.8  # spotted lines the recogniser is less sure of are marked for review
+SHORT = 2  # characters: a spotted line this short is new text only if the recogniser is SURE of it
+SURE = 0.9
+TALL = 1.6  # nor much higher than the usual text of the sheet (two stacked circles read as "8")
+SPACE = 2.5
+LATIN = 0x24F  # last code point of the Latin scripts; the recogniser also knows Chinese, Korean, ...
 
 
 class Components:
@@ -148,6 +156,85 @@ def _unbarred(cc: Components, g: list[int], vertical: bool, s: str) -> tuple[str
     if len(s) > 1 and s[-1] in BARS and len(glyphs) > 1 and apart(glyphs[-2], glyphs[-1]):
         drop, s = drop + glyphs[-1], s[:-1].rstrip()
     return s, [i for i in g if i not in drop]
+
+
+def spotted(texts: list[Text], labels: np.ndarray, ink: np.ndarray, gray: np.ndarray, spots: list[Spot], ppm: float
+            ) -> tuple[list[Text], np.ndarray]:
+    """The texts with the spotted lines (see spotting.py): a line replaces the texts whose letters lie in its box and
+    takes those letters as its pixels; texts no line covers stay as they were read. Letters are the components of
+    ``ink`` wholly in the box and as high as most of them, so a pipe or the ring of a bubble that touches the line, a
+    dash or a line that crosses it stays linework. Where no text was found before, a reading must not be UNSURE, and
+    one of one or two characters must be SURE and no TALLer than the usual text: such a reading is as likely a symbol,
+    a valve read as "D8" or a fixture as "8". Characters both readers confuse are put to the vote of their look-alikes
+    on the sheet (see _voted), with the first reading of the texts a line replaces among them: the readers make
+    different mistakes. Wide spaces the recogniser dropped are put back (see _spaced). A line that runs across part of a
+    longer text written the other way is a misreading and leaves it; where the first reading is the shorter one, it is
+    usually the misreading (a vertical "mm" read as "33")."""
+    cc = Components(ink, gray)
+    old = np.zeros(cc.n, np.int64)  # the text of each component
+    if cc.n:
+        old[:] = ndimage.maximum(labels, cc.lab, np.arange(1, cc.n + 1))
+    taken = np.zeros(cc.n, bool)
+    usual = float(np.median([t.height for t in texts])) * ppm if texts else np.inf
+    lines, claimed = [], set()
+    for s in spots:
+        text = fix(" ".join(s.text.split()))
+        if not any(ch.isalnum() for ch in text) or any(ord(ch) > LATIN and ch not in "€–’“”" for ch in text):
+            continue  # nothing to read, or read in a script the sheet is not written in
+        near, letters, cap = _in_line(cc, s, old, taken)
+        owners = set(old[letters].tolist()) - {0}
+        n, angle = sum(ch.isalnum() for ch in text), 90.0 if s.vertical else 0.0
+        if any(texts[k - 1].angle != angle and sum(ch.isalnum() for ch in texts[k - 1].text) > n
+               and not np.isin(np.flatnonzero(old == k), letters).all() for k in owners):
+            continue  # a shorter reading across part of a text written the other way: a vertical "8,82" as "82", "8"
+        short = n <= SHORT
+        if not owners and (s.score < UNSURE or short and (s.score < SURE or cap > TALL * usual)):
+            continue
+        taken[letters] = True
+        claimed |= owners
+        lines.append((s, text, near, letters, cap))
+    groups = [(np.flatnonzero(old == k).tolist(), t.angle == 90) for k, t in enumerate(texts, 1)]
+    groups += [(near.tolist(), s.vertical) for s, _, near, _, _ in lines]
+    read = _voted(cc, groups, [(t.text, t.confidence) for t in texts] + [(t, 100 * s.score) for s, t, _, _, _ in lines])
+    keep = [k for k in range(1, len(texts) + 1) if k not in claimed]
+    kind = np.min_scalar_type(len(keep) + len(lines))
+    ids = np.zeros(len(texts) + 1, kind)
+    ids[keep] = np.arange(1, len(keep) + 1)
+    line = np.zeros(cc.n + 1, kind)
+    out = [texts[k - 1] for k in keep]
+    for (s, _, near, letters, cap), (text, _) in zip(lines, read[len(texts):]):
+        out.append(Text((s.x0 + s.x1) / 2 / ppm, (s.y0 + s.y1) / 2 / ppm, cap / ppm,
+                        _spaced(cc, near, s.vertical, text), 90.0 if s.vertical else 0.0, round(100 * s.score, 1),
+                        s.score < UNSURE))
+        line[letters + 1] = len(out)
+    take = line[cc.lab]
+    return out, np.where(take > 0, take, ids[labels])
+
+
+def _spaced(cc: Components, near: np.ndarray, vertical: bool, text: str) -> str:
+    """The reading with a space added where the gap between two glyphs is wide (the recogniser drops some wide spaces:
+    "11,56m²"), if its characters map one to one to the glyphs. Wide is SPACE times the line's usual gap."""
+    glyphs = _glyphs(cc, near.tolist(), vertical)
+    chars = [(j > 0 and text[j - 1] == " ", ch) for j, ch in enumerate(text) if ch != " "]  # (space before, char)
+    if len(glyphs) != len(chars) or len(chars) < 3:
+        return text
+    a, la = (cc.y, cc.h) if vertical else (cc.x, cc.w)
+    gaps = [min(a[i] for i in g) - max(a[i] + la[i] for i in p) for p, g in zip(glyphs, glyphs[1:])]
+    wide = max(SPACE * max(float(np.median(gaps)), 1.0), 0.25 * float(np.median([max(cc.w[i], cc.h[i]) for i in near])))
+    return chars[0][1] + "".join((" " if space or gap > wide else "") + ch for gap, (space, ch) in zip(gaps, chars[1:]))
+
+
+def _in_line(cc: Components, s: Spot, old: np.ndarray, taken: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """The components wholly in a spotted line's box (not given to another line), its letters among them, and their
+    height across the line (pixels)."""
+    across, size = (s.x1 - s.x0, cc.w) if s.vertical else (s.y1 - s.y0, cc.h)
+    m = 0.1 * across
+    near = np.flatnonzero((cc.x >= s.x0 - m) & (cc.x + cc.w <= s.x1 + m) & (cc.y >= s.y0 - m)
+                          & (cc.y + cc.h <= s.y1 + m) & ~taken)
+    sizes = size[near]
+    tall = sizes[sizes >= 0.25 * across]
+    cap = float(np.median(tall)) if len(tall) else across / 2
+    return near, near[((sizes >= 0.5 * cap) & (sizes <= 1.5 * cap)) | (old[near] > 0)], cap  # and what was text
 
 
 def frames(ink: np.ndarray, labels: np.ndarray, ppm: float) -> np.ndarray:
@@ -284,6 +371,38 @@ def fix(s: str) -> str:
     s = re.sub(r"\bDN([0-9OoSIlBZ]+)\b", lambda m: "DN" + m.group(1).translate(_DIGITS), s)
     # in a code an O or I next to a digit is a 0 or 1: PN16, CS31, C=01XY2Z (not the I of I/P or TIC)
     return re.sub(r"(?<=\d)[OoIl]+|[OoIl]+(?=\d)", lambda m: m.group(0).translate(_DIGITS), s)
+
+
+# A pipe size before its specification ("2" -AB12") or in a reducer ("4"x3""): there the mark after the number is an
+# inch mark, whatever was read for it. A sheet with a few of these writes pipe sizes in inches, so there a nominal size
+# with any mark on its own ("2'", "1/2°") is one too; other numbers keep theirs ("45°", feet and inches "12'-6"").
+MARK = r"(?:''|[\"'’°])"
+SIZED = re.compile(r"\d\s?" + MARK + r"\s?(?:-\s?[A-Z]{2}\d|[x/]\s?\d)")
+SIZE = re.compile(r"(\d+(?:/\d+)?)\s?" + MARK + r"(?!\s?[CF]\b)(?!\s?-\s?\d)(?=(\s?(?:-\s?[A-Z]{2}\d|[x/]\s?\d))?)")
+NPS = {"1/8", "1/4", "3/8", "1/2", "3/4", "1", "2", "3", "4", "5", "6", "8", "10", "12", "14", "16", "18", "20", "22",
+       "24", "26", "28", "30", "32", "34", "36", "42", "48"}  # nominal pipe sizes in inches
+KEYED = re.compile(r"\b[A-Z]{1,3}=[A-Z0-9]")  # a key and its value ("PN=16"), as attribute labels are written
+COLON = re.compile(r"\b([A-Z]{1,3}):(?=[A-Z0-9])")  # ... and its equals sign read as a colon
+EVIDENCE = (3, 2)  # texts that show the sheet writes inch sizes, key=value labels
+
+
+def grammar(texts: list[Text]) -> list[Text]:
+    """Marks the readers confuse, put right where the sheet itself shows how it writes them: inch marks read as a
+    foot mark or a degree sign ("2°-AB12", "4'x3'"), and the equals sign of a key=value label read as a colon
+    ("PN:16"). A rule applies only on a sheet with enough texts that show the notation (EVIDENCE), so the angles of a
+    floor plan and the colons of a note stay as they are; temperatures ("60°C") always do."""
+    inches = sum(bool(SIZED.search(t.text)) for t in texts) >= EVIDENCE[0]
+    keyed = sum(bool(KEYED.search(t.text)) for t in texts) >= EVIDENCE[1]
+
+    def inch(m: re.Match) -> str:
+        return m.group(1) + '"' if m.group(2) or m.group(1) in NPS else m.group(0)
+
+    out = []
+    for t in texts:
+        s = SIZE.sub(inch, t.text) if inches else t.text
+        s = COLON.sub(r"\1=", s) if keyed else s
+        out.append(t if s == t.text else replace(t, text=s))
+    return out
 
 
 def _group(cc: Components, idx: np.ndarray, horizontal: bool) -> tuple[list[list[int]], np.ndarray]:
