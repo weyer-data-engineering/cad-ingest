@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 
 import cv2
@@ -68,6 +68,8 @@ BARB = 1.5  # mm: strokes this close beside a pipe may be the barbs of a flow ar
 PIPE = 10.0  # mm: ... a pipe at least this long; the letters of a word traced as a line are shorter
 SMALL_CIRCLE = 1.5  # mm: a circle up to this radius may be filled, by the drawing or by blur (the ball of a valve)
 BLOB = 1.5  # ... and then its ink is at least this many times as thick as the usual stroke of the sheet
+SURE = 0.9  # a symbol with less of its outline found is one to check
+RIVAL = 0.9  # ... and so is one that a symbol of another kind fits with at least this share of its score
 
 
 @dataclass
@@ -98,6 +100,7 @@ class _Hit:
     pose: tuple[float, float, float, bool, float]  # x, y, angle, mirror, scale
     score: float
     claim: np.ndarray  # indices of the ink points it explains
+    found: float = 1.0  # share of the outline found
 
     def explains(self, points: np.ndarray, oriented: np.ndarray, tol: float = 2 * TOL) -> np.ndarray:
         """Which of the points (with their oriented form) lie on the symbol's outline (within ``tol``; the symbol is
@@ -152,11 +155,13 @@ def recognise(d: Drawing, library: dict[str, Template], ink: tuple | None = None
     arcs = d.arcs + [q for pl in d.polylines for q in pl.parts() if isinstance(q, Arc)]
     boxed = _boxed(d, ink)
     twins = _twins(shapes)
-    found = [_circled(_centred(h, d.circles), twins, ink) for h in _select(hits, len(ink.points))
-             if not (block and _within(h.pose[:2], block)) and not _rounded(h, arcs, ink)
-             and (len(h.shape.rects) or boxed[h.claim].mean() <= BOXED)]
+    chosen = [h for h in _select(hits, len(ink.points)) if not (block and _within(h.pose[:2], block))
+              and not _rounded(h, arcs, ink) and (len(h.shape.rects) or boxed[h.claim].mean() <= BOXED)]
+    found = [_circled(_centred(h, d.circles), twins, ink) for h in chosen]
     _remove(d, pieces, found)
     placed = [place(h.shape.t, *h.pose) for h in found]
+    for s, h, first in zip(placed, found, chosen):
+        s.confidence, s.doubt = round(100 * h.found, 1), _doubt(h, first, hits)
     d.symbols += placed
     _snap(d)
     _attributes(d, placed)
@@ -639,7 +644,7 @@ def _fit(s: _Shape, pose, radius: float, ink: _Ink) -> _Hit | None:
         return None  # the frame around a text (a line number's box), which only a symbol holding text may be
     # linework explained, minus the outline missing and the linework inside left unexplained, in mm
     score = (len(claim) - MISSING * (1 - coverage) * len(s.pts) * scale - clutter) * STEP
-    return _Hit(s, (float(xy[0]), float(xy[1]), angle % 360, mirror, scale), score, claim)
+    return _Hit(s, (float(xy[0]), float(xy[1]), angle % 360, mirror, scale), score, claim, float(coverage))
 
 
 def _rounded(h: _Hit, arcs: list[Arc], ink: _Ink) -> bool:
@@ -691,7 +696,7 @@ def _centred(h: _Hit, circles: list[Circle]) -> _Hit:
     c = min(near, key=lambda c: math.hypot(c.cx - cx, c.cy - cy))
     scale *= c.r / r
     ox, oy = transform(0.0, 0.0, angle, mirror, scale)(ring.cx, ring.cy)
-    return _Hit(h.shape, (c.cx - ox, c.cy - oy, angle, mirror, scale), h.score, h.claim)
+    return replace(h, pose=(c.cx - ox, c.cy - oy, angle, mirror, scale))
 
 
 def _twins(shapes: list[_Shape]) -> dict[int, list]:
@@ -718,7 +723,7 @@ def _circled(h: _Hit, twins: dict[int, list], ink: _Ink) -> _Hit:
     m = _matrix(angle, mirror, scale)
     for t, centres, radii in twins.get(id(h.shape), []):
         if all(_round_mark(m @ c + (x, y), r * scale, ink) for c, r in zip(centres, radii)):
-            return _Hit(t, h.pose, h.score, h.claim)
+            return replace(h, shape=t)
     return h
 
 
@@ -735,6 +740,20 @@ def _round_mark(c: np.ndarray, r: float, ink: _Ink) -> bool:
     # nearly r: the middle of a filled circle; the crossing in a gate valve's middle reaches about 0.7 r
     blob = (dist <= 0.5 * r) & (ink.thick[near] >= max(0.9 * r, BLOB * ink.usual))
     return rim.sum() * STEP >= 0.5 * 2 * math.pi * r or blob.any()
+
+
+def _doubt(h: _Hit, first: _Hit, hits: list[_Hit]) -> str | None:
+    """Why a symbol found (``h``, found as ``first`` before its circles were looked at) should be checked: a symbol of
+    another kind fits its place almost as well (not its twin, which its circles decide), or little of its outline was
+    found."""
+    own = {h.shape.t.name, first.shape.t.name}
+    rival = max((g for g in hits if g.shape.t.name not in own and _overlap(g, first)), key=lambda g: g.score,
+                default=None)
+    if rival and rival.score >= RIVAL * first.score:
+        return f"{rival.shape.t.description} fits almost as well"
+    if h.found < SURE:
+        return f"only {math.floor(100 * h.found)} % of its outline found"
+    return None
 
 
 def _one_size(hits: list[_Hit], n: int) -> list[_Hit]:

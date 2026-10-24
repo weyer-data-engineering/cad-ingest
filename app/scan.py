@@ -130,6 +130,8 @@ def _warnings(r: Result) -> list[str]:
         out.append("No sheet edge was found; the whole image was used and the sizes may be off")
     if unsure := sum(t.uncertain for t in r.drawing.texts):
         out.append(f"{unsure} texts could not be read reliably; they are on the layer P2C-TEXT-CHECK")
+    if unsure := sum(bool(s.doubt) for s in r.drawing.symbols):
+        out.append(f"{unsure} symbols may be the wrong ones; they are on the layer P2C-SYMBOL-CHECK")
     return out
 
 
@@ -154,14 +156,24 @@ def _libraries(options: dict, own: list[library.Library] | tuple) -> list[librar
 
 
 def _report(d) -> dict:
-    """Texts, symbols with their library, attributes and ports, and the lines joining two symbol ports (by index)."""
+    """Texts, symbols with their library, attributes and ports, the lines joining two symbol ports (by index), and
+    what to check."""
     placed = [{"name": s.name, "library": s.template.library.id, "x": s.x, "y": s.y, "angle": s.angle,
                "mirror": s.mirror, "scale": s.scale, "attributes": {tag: t.text for tag, t in s.attributes.items()},
-               "ports": s.ports} for s in d.symbols]
+               "ports": s.ports, "confidence": s.confidence, "doubt": s.doubt} for s in d.symbols]
     marked = [{"kind": m.kind, "box_mm": [round(v, 1) for v in m.box], "color": list(m.color), "reading": m.reading,
                "texts": m.texts, "image": f"markup-{k}.png"} for k, m in enumerate(d.markups, 1)]
     return {"texts": [asdict(t) for t in d.texts], "symbols": placed, "connections": symbols.connections(d),
-            "markups": marked}
+            "markups": marked, "review": _review(d)}
+
+
+def _review(d) -> list[dict]:
+    """The texts and symbols to check, least confident first: what was recognised, where (sheet mm) and why."""
+    items = [{"kind": "text", "what": t.text, "why": "uncertain reading", "x": round(t.x, 1), "y": round(t.y, 1),
+              "confidence": t.confidence} for t in d.texts if t.uncertain]
+    items += [{"kind": "symbol", "what": s.name, "why": s.doubt, "x": round(s.x, 1), "y": round(s.y, 1),
+               "confidence": s.confidence} for s in d.symbols if s.doubt]
+    return sorted(items, key=lambda c: c["confidence"])
 
 
 def _markdown(name: str, pages: list[tuple[int, dict, Drawing]], total: int) -> str:
@@ -184,10 +196,12 @@ def _page_markdown(info: dict, d: Drawing, heading: str) -> list[str]:
         found = Counter(t.text for t in reading_order if t.uncertain == unsure)
         if found:
             lines += ["", f"{heading} {title}", ""] + _count_lines(found)
-    found = Counter(" ".join([s.template.description] + [t.text for t in s.attributes.values()])
-                    for s in sorted(d.symbols, key=lambda s: (round(s.y / 5), s.x)))
-    if found:
-        lines += ["", f"{heading} Symbols", ""] + _count_lines(found)
+    in_order = sorted(d.symbols, key=lambda s: (round(s.y / 5), s.x))
+    for title, unsure in (("Symbols", False), ("Symbols to check (uncertain recognition)", True)):
+        found = Counter(" ".join([s.template.description] + [t.text for t in s.attributes.values()]
+                                 + [f"({s.doubt})"] * unsure) for s in in_order if bool(s.doubt) == unsure)
+        if found:
+            lines += ["", f"{heading} {title}", ""] + _count_lines(found)
     notes = [_markup_line(m) for m in d.markups]
     if notes:
         lines += ["", f"{heading} Markups (added by hand in colour)", ""] + notes

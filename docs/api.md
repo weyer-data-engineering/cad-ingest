@@ -116,6 +116,14 @@ curl -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '
 The `report.json` in the ZIP of `vectorize` lists the libraries that were used for the kind of drawing (`libraries`:
 id and version) and, for every placed symbol, the library it came from.
 
+What a person should check is listed under `review`, least confident first: texts that could not be read reliably
+and symbols that may be the wrong ones, each with its `kind` (`text` or `symbol`), `what` was recognised (the text or
+the symbol's name), `why` it is doubtful, where it is (`x`, `y` in sheet millimetres) and its `confidence` (0 to 100).
+Every symbol has its `confidence` (the share of its outline found in the scan, in percent) and its `doubt` (`null`, or
+why to check it); in the DXF a symbol to check is on the layer `P2C-SYMBOL-CHECK`, and the markdown has a section
+`Symbols to check (uncertain recognition)`. The fields, the layer and the section are new; a client that does not know
+them can ignore them.
+
 Markups added by hand in colour on a black and white print (pen notes, clouds, strike-outs, highlighter) are kept
 apart from the drawing (see [Markups](photos-and-scans.md#markups)): the DXF has them on the layers `P2C-MARKUP`,
 `P2C-HIGHLIGHT` and `P2C-MARKUP-TEXT`, `report.json` lists them under `markups` (`kind` `note` or `highlight`,

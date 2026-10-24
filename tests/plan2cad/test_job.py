@@ -33,7 +33,8 @@ def test_scan_becomes_dxf_with_markdown_and_preview(api, origin, worker, plan_sc
     files = zipfile.ZipFile(io.BytesIO(data))
     assert content_type == "application/zip"
     assert set(files.namelist()) == {"plan.dxf", "plan.pdf", "overlay.png", "underlay.png", "report.json"}
-    assert json.loads(files.read("report.json"))["scale"] == 50
+    report = json.loads(files.read("report.json"))
+    assert report["scale"] == 50 and isinstance(report["review"], list)
     assert not ezdxf.read(io.StringIO(files.read("plan.dxf").decode())).audit().has_errors
     assert origin.previews["plan.png"][0].startswith(b"%PDF")
 

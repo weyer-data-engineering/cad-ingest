@@ -120,6 +120,8 @@ class Symbol:
     ports: list[tuple[float, float]] = field(default_factory=list)
     attributes: dict[str, Text] = field(default_factory=dict)  # attribute tag -> its text on the sheet
     template: Any = field(default=None, repr=False, compare=False)  # the library.Template it was placed from
+    confidence: float = 100.0  # share of its outline found in the scan, in percent
+    doubt: str | None = None  # why to check it, as for an uncertain text: a symbol that may be the wrong one
 
 
 @dataclass

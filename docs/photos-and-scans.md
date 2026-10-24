@@ -87,12 +87,21 @@ job handler in `app/scan.py`.
 
 The ZIP holds `plan.dxf` (real-world millimetres, one layer per kind of object: `P2C-WALL`, `P2C-DOOR`, `P2C-PIPE`,
 `P2C-EQUIPMENT`, `P2C-SIGNAL`, `P2C-FRAME`, `P2C-LINE`, `P2C-DASH`, `P2C-CURVE`, `P2C-FILL`, `P2C-TEXT`,
-`P2C-TEXT-CHECK`, and for markups `P2C-MARKUP`, `P2C-HIGHLIGHT` and `P2C-MARKUP-TEXT`; ISO line weights, the
+`P2C-TEXT-CHECK`, `P2C-SYMBOL`, `P2C-SYMBOL-CHECK`, and for markups `P2C-MARKUP`, `P2C-HIGHLIGHT` and
+`P2C-MARKUP-TEXT`; ISO line weights, the
 straightened photo `underlay.png` as raster underlay on `P2C-UNDERLAY`),
 `plan.pdf` (vector, on the paper size), `overlay.png` (the recognised vectors in colour on the faded photo, symbols in
 teal, for checking), `markup-k.png` for each markup and `report.json` (sheet, resolution, drawing type, scale, counts, timings, all texts, the symbols
-with their attributes and ports, the lines joining two symbol ports and the markups). `extract` lists the recognised
-texts, symbols (with their tags) and markups as markdown, so photographed plans become searchable too.
+with their attributes and ports, the lines joining two symbol ports, the markups and what to check). `extract` lists
+the recognised texts, symbols (with their tags) and markups as markdown, so photographed plans become searchable too.
+
+`report.json` lists what to check under `review`, least confident first: texts that could not be read
+reliably (on `P2C-TEXT-CHECK`) and symbols that may be the wrong ones (on `P2C-SYMBOL-CHECK`, and in magenta in
+`overlay.png` like the texts to check). A symbol is one to check where less than 90 % of its outline was found, or where
+a symbol of another kind fits its place almost as well (with at least 90 % of its score); a ball valve and a gate
+valve do not count as such, as the ball decides between them. Each entry says what was recognised, why it is
+doubtful, where it is on the sheet and how confident the recognition is, so a person, or later a model, can look at
+just these places instead of the whole sheet.
 
 Scans often arrive as PDFs or TIFFs with several pages. Every page is converted on its own (one at a time, so memory
 stays that of one page): the first page with a drawing at the root of the ZIP, every further page n in `page-n/` with

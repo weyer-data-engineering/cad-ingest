@@ -294,7 +294,9 @@ def texts(gt: Drawing, pred: Drawing) -> dict:
 
 
 def symbols(gt: Drawing, pred: Drawing) -> dict:
-    """Symbols placed as library blocks: the right one within 1.5 mm of the reference, and its attributes read."""
+    """Symbols placed as library blocks: the right one within 1.5 mm of the reference, and its attributes read. And
+    the symbols marked to check, and the wrong ones left unmarked (share of the reference symbols): nobody is pointed
+    to those."""
     if not gt.symbols:
         return {}
 
@@ -306,8 +308,10 @@ def symbols(gt: Drawing, pred: Drawing) -> dict:
     attributes = [(s, tag, t.text) for s in gt.symbols for tag, t in s.attributes.items()]
     read = sum(any(match(s, q) and getattr(q.attributes.get(tag), "text", None) == text for q in pred.symbols)
                for s, tag, text in attributes)
+    unflagged = sum(not q.doubt and not any(match(s, q) for s in gt.symbols) for q in pred.symbols)
     return {"symbol_recall": hit / len(gt.symbols), "symbol_precision": ok / max(1, len(pred.symbols)),
-            "symbol_attributes": read / len(attributes) if attributes else None}
+            "symbol_attributes": read / len(attributes) if attributes else None,
+            "symbol_review": sum(bool(q.doubt) for q in pred.symbols), "symbol_unflagged": unflagged / len(gt.symbols)}
 
 
 def _linked(d: Drawing, tol: float = 0.5) -> set[frozenset]:
