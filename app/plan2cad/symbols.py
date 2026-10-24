@@ -65,6 +65,7 @@ BOX = (2.0, 15.0)  # mm: sides of the closed boxes of a drawing, such as the fra
 BOXED = 0.5  # ... on which at most this share of the linework of a symbol without a rectangle may lie
 CONTINUED = 1.0  # mm: a line that runs through a symbol (the pipe under a flow arrow) goes on at least this far
 BARB = 1.5  # mm: strokes this close beside a pipe may be the barbs of a flow arrow drawn on it
+PIPE = 10.0  # mm: ... a pipe at least this long; the letters of a word traced as a line are shorter
 SMALL_CIRCLE = 1.5  # mm: a circle up to this radius may be filled, by the drawing or by blur (the ball of a valve)
 BLOB = 1.5  # ... and then its ink is at least this many times as thick as the usual stroke of the sheet
 
@@ -360,10 +361,11 @@ def _on_pipes(d: Drawing, shapes: list[_Shape], ink: _Ink):
     if not on or not len(beside):
         return
     tree = cKDTree(beside)
-    for ln in d.lines + [q for pl in d.polylines for q in pl.parts() if isinstance(q, Line)]:
+    pipes = [q for pl in d.polylines if pl.kind != "frame" and not pl.dashed for q in pl.parts() if isinstance(q, Line)]
+    for ln in [q for q in d.lines if not q.dashed] + pipes:  # not the frame or signal lines
         a, b = np.array([ln.x1, ln.y1]), np.array([ln.x2, ln.y2])
         length = float(np.hypot(*(b - a)))
-        if length < STUB:
+        if length < PIPE:
             continue
         u = (b - a) / length
         near = beside[tree.query_ball_point((a + b) / 2, length / 2 + BARB)]

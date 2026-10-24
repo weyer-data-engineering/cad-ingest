@@ -191,8 +191,9 @@ ends; this fixes position, turn and size), from rectangles whose proportions fit
 a washbasin, whose back may be the face of the wall it hangs on), from circles (pumps, instruments, hotplates) and,
 where nothing was found yet, from single pipe ends (straight lines from 4 mm; shorter strokes are mostly letters) and
 from groups of small strokes. A symbol drawn on a pipe that goes on, such as a flow arrow, is tried where strokes
-stand within 1.5 mm beside a straight line, both ways along it: the pipe joins such strokes into one large group, so
-they are not found as a group of their own. Each candidate is matched against the image itself (the centre lines of
+stand within 1.5 mm beside a straight line of at least 10 mm (a word traced as a line is shorter; not the frame or a
+signal line), both ways along it: the pipe joins such strokes into one large group, so they are not found as a group
+of their own. Each candidate is matched against the image itself (the centre lines of
 the ink, not the traced vectors, which round off arrowheads and springs): a point of the symbol counts as found where
 ink runs close by in the same direction. A symbol needs 80 % of its outline and half of each of its parts (a ball
 valve needs its ball), a line leaving at least one port and, if it has one, a line through it that goes on for at
