@@ -165,10 +165,12 @@ A PDF page that is a scan, or a drawing flattened to an image, takes the image r
 Recognised symbols become references (`INSERT`) to the blocks of a symbol library on the layer `P2C-SYMBOL`, with
 their texts as attributes (the tag of a pump, the letters and number of an instrument), so the DXF holds a valve as a
 valve, not as six strokes, and a washbasin as a washbasin. A symbol drawn around a circle, such as an instrument
-bubble, is centred on the circle found in the scan, and a symbol a little beside the pipes that end at its ports is
-moved across onto them. Pipe ends are snapped onto the ports of the symbols they lead to where the port lies on the
-pipe's course (within 0.5 mm), so that no pipe is turned askew; of parallel pipes ending beside one port, only the
-one pointing at it.
+bubble, is centred on the circle found in the scan, and a symbol a little beside the pipes that end at its ports, or
+beside the pipe that runs through two of them (a flow arrow on its pipe), is moved across onto them. Pipe ends are
+snapped onto the ports of the symbols they lead to where the port lies on the pipe's course (within 0.5 mm), so that no
+pipe is turned askew; of parallel pipes ending beside one port, only the one pointing at it. Strokes left wholly inside
+a symbol with ports, such as the one between the two triangles of a gate valve, are dropped: they would join the pipes
+on either side through the valve.
 
 The symbols come from symbol libraries: DXF files with one block per symbol, with points where pipes connect and the
 places of their attributes. Each library is for P&IDs or for floor plans, and only used on its kind of drawing. Two
@@ -184,21 +186,28 @@ starter libraries are built in, written by `bench/make_library.py`:
 A company adds its own blocks as a library of its own, installed on the server or brought along by a job; [Symbol
 libraries](symbol-libraries.md) explains the format and the tools that check and build one.
 
-How a symbol is found: candidates come from two line ends that two ports of a symbol fit (a valve between two pipe ends;
-this fixes position, turn and size), from rectangles whose proportions fit a rectangle of the symbol (the box of a
-washbasin, whose back may be the face of the wall it hangs on), from circles (pumps, instruments, hotplates) and, where
-nothing was found yet, from single pipe ends (straight lines from 4 mm; shorter strokes are mostly letters) and from
-groups of small strokes. Each candidate is matched against the
-image itself (the centre lines of the ink, not the traced vectors, which round off arrowheads and springs): a point of
-the symbol counts as found where ink runs close by in the same direction. A symbol needs 80 % of its outline and half
-of each of its parts (a ball valve needs its ball), a line leaving at least one port and, if it has one, a straight
-line through it. Ink inside the symbol that it does not explain counts against it, except for text at its attribute
-positions. Of overlapping candidates the one explaining the most ink wins. A symmetric symbol fits as well turned half
-way or mirrored; it takes the pose in which most of its attribute positions have a text, and then the one with its
-back on the wall: a fixture's insertion point is in the middle of its back, and the linework left around it continues
-that side. Nothing is placed in the title block in the bottom right corner of the frame, whose small text would
-otherwise look like symbols, nor in a strip of notes and tables below a line across the whole frame (revision table,
-issue record, title block), whose grid looks like valves and arrows.
+How a symbol is found: candidates come from two line ends that two ports of a symbol fit (a valve between two pipe
+ends; this fixes position, turn and size), from rectangles whose proportions fit a rectangle of the symbol (the box of
+a washbasin, whose back may be the face of the wall it hangs on), from circles (pumps, instruments, hotplates) and,
+where nothing was found yet, from single pipe ends (straight lines from 4 mm; shorter strokes are mostly letters) and
+from groups of small strokes. A symbol drawn on a pipe that goes on, such as a flow arrow, is tried where strokes
+stand within 1.5 mm beside a straight line of at least 10 mm (a word traced as a line is shorter; not the frame or a
+signal line), both ways along it: the pipe joins such strokes into one large group, so they are not found as a group
+of their own. Each candidate is matched against the image itself (the centre lines of
+the ink, not the traced vectors, which round off arrowheads and springs): a point of the symbol counts as found where
+ink runs close by in the same direction. A symbol needs 80 % of its outline and half of each of its parts (a ball
+valve needs its ball), a line leaving at least one port and, if it has one, a line through it that goes on for at
+least a millimetre past both ends: where an arc runs into a line, the bend looks like an arrowhead, but no pipe goes
+on past it. A symbol drawn the same as another one plus a small circle (a ball valve and a gate valve) is the one with
+the circle where half of the circle's rim is there, or a blob as thick as the circle and one and a half times as thick
+as the usual stroke of the sheet: a filled ball leaves that, and so does a ring that blur has filled in on a photo,
+but not the crossing of two strokes. Ink inside the symbol that it does not explain counts against it, except for text
+at its attribute positions. Of overlapping candidates the one explaining the most ink wins. A symmetric symbol fits as
+well turned half way or mirrored; it takes the pose in which most of its attribute positions have a text, and then the
+one with its back on the wall: a fixture's insertion point is in the middle of its back, and the linework left around
+it continues that side. Nothing is placed in the title block in the bottom right corner of the frame, whose small text
+would otherwise look like symbols, nor in a strip of notes and tables below a line across the whole frame (revision
+table, issue record, title block), whose grid looks like valves and arrows.
 
 OCR often reads small fixtures at 1:100 as letters (a washbasin as "IOl"). So two opposite sides of a rectangle are
 enough as a candidate, text may stand in for the outer outline and for small closed shapes such as a bowl or a

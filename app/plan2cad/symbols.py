@@ -21,6 +21,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from itertools import pairwise
 
+import cv2
 import numpy as np
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
@@ -62,6 +63,11 @@ FRAMED = 0.3  # a symbol not holding text may explain at most this share of its 
 ASPECT = 0.15  # a rectangle may be this much more stretched than the one of the symbol it fits (real objects vary)
 BOX = (2.0, 15.0)  # mm: sides of the closed boxes of a drawing, such as the frame of a line size or a tag ...
 BOXED = 0.5  # ... on which at most this share of the linework of a symbol without a rectangle may lie
+CONTINUED = 1.0  # mm: a line that runs through a symbol (the pipe under a flow arrow) goes on at least this far
+BARB = 1.5  # mm: strokes this close beside a pipe may be the barbs of a flow arrow drawn on it
+PIPE = 10.0  # mm: ... a pipe at least this long; the letters of a word traced as a line are shorter
+SMALL_CIRCLE = 1.5  # mm: a circle up to this radius may be filled, by the drawing or by blur (the ball of a valve)
+BLOB = 1.5  # ... and then its ink is at least this many times as thick as the usual stroke of the sheet
 
 
 @dataclass
@@ -74,6 +80,7 @@ class _Shape:
     group: np.ndarray  # the part of the symbol each point belongs to
     rim: np.ndarray  # where text may stand in for a stroke: the outer outline (convex hull), circles, small closed shapes
     through: np.ndarray  # points (and directions, oriented form) along lines that must run through the symbol
+    beyond: list[np.ndarray]  # ... and along their continuation past each end
     hull: np.ndarray  # half-planes (nx, ny, offset) of the convex hull: inside where nx * x + ny * y + offset <= 0
     at: np.ndarray  # the ports
     ports: np.ndarray  # unit vectors from the origin towards the ports
@@ -109,8 +116,10 @@ class _Ink:
     points may complete a symbol's outline (a misread arrow tip) but never count against it (letters in a bubble)."""
 
     def __init__(self, points: np.ndarray, heading: np.ndarray, text: np.ndarray, straight: np.ndarray,
-                 frame: np.ndarray | None = None):
-        self.points, self.oriented = points, _oriented(points, heading)
+                 frame: np.ndarray | None = None, thick: np.ndarray | None = None):
+        self.points, self.heading, self.oriented = points, heading, _oriented(points, heading)
+        self.thick = np.zeros(len(points)) if thick is None else thick  # half the width of the ink there (mm)
+        self.usual = float(np.median(self.thick[self.thick > 0])) if (self.thick > 0).any() else 0.0  # ... mostly
         self.text, self.straight = text > 0, straight  # on text, on long straight lines (pipes)
         self.words = text > 1  # on text that reads as words or a code (see ocr.worded)
         self.frame = np.zeros(len(points), bool) if frame is None else frame  # on the frame around a text
@@ -136,13 +145,14 @@ def recognise(d: Drawing, library: dict[str, Template], ink: tuple | None = None
         return
     shapes = [_shape(t) for t in library.values()]
     # Symbols between line ends, at rectangles and at circles first, then the rest only where no symbol was found yet
-    hits = _fitted(_anchored(d, shapes), ink)
+    hits = _fitted(_anchored(d, shapes), ink) + _fitted(_on_pipes(d, shapes, ink), ink)  # apart: not merged as one
     hits += _fitted(_leftover(d, shapes, ink, _select(hits, len(ink.points))), ink)
     hits = _one_size(hits, len(ink.points))
     block = _title_block(d)  # small unread text there looks like symbols
     arcs = d.arcs + [q for pl in d.polylines for q in pl.parts() if isinstance(q, Arc)]
     boxed = _boxed(d, ink)
-    found = [_centred(h, d.circles) for h in _select(hits, len(ink.points))
+    twins = _twins(shapes)
+    found = [_circled(_centred(h, d.circles), twins, ink) for h in _select(hits, len(ink.points))
              if not (block and _within(h.pose[:2], block)) and not _rounded(h, arcs, ink)
              and (len(h.shape.rects) or boxed[h.claim].mean() <= BOXED)]
     _remove(d, pieces, found)
@@ -158,7 +168,8 @@ def ink_samples(mask: np.ndarray, text: np.ndarray, ppm: float, lines: list[Line
     """Points about every quarter millimetre along the centre lines of an ink mask (0/1, ``ppm`` pixels per mm), the
     stroke direction there (from the neighbouring points) and whether they lie on text (``text`` mask: 1, or 2 on text
     that reads as words, see ocr.worded), in sheet mm, plus points along ``lines`` (flagged as straight), and whether
-    each lies on the frame around a text (``frame`` mask, see ocr.frames). Symbols are matched on the image like this,
+    each lies on the frame around a text (``frame`` mask, see ocr.frames), and half the width of the ink there (a
+    filled circle is as thick as its radius). Symbols are matched on the image like this,
     not on the traced vectors, which may have rounded off small shapes such as arrowheads and springs. The mask should not hold the long
     straight lines (given as ``lines``): where a stroke meets a pipe at a sharp angle, as an arrowhead does, both would
     merge into one thick stroke with a bent centre line."""
@@ -170,7 +181,8 @@ def ink_samples(mask: np.ndarray, text: np.ndarray, ppm: float, lines: list[Line
     xs, ys = xs[first], ys[first]
     points = (np.column_stack([xs, ys]) + 0.5) / ppm
     if len(points) < 5:
-        return *exact, np.zeros(len(exact[0]), bool), np.ones(len(exact[0]), bool), _on(frame, exact[0], ppm)
+        return *exact, np.zeros(len(exact[0]), bool), np.ones(len(exact[0]), bool), _on(frame, exact[0], ppm), \
+            np.zeros(len(exact[0]))
     near = points[cKDTree(points).query(points, k=5)[1]]  # the point and its four neighbours
     off = near - near.mean(axis=1, keepdims=True)
     cxx, cyy, cxy = (off[..., 0] ** 2).sum(1), (off[..., 1] ** 2).sum(1), (off[..., 0] * off[..., 1]).sum(1)
@@ -178,7 +190,9 @@ def ink_samples(mask: np.ndarray, text: np.ndarray, ppm: float, lines: list[Line
     every = np.vstack([points, exact[0]])
     return (every, np.vstack([np.column_stack([np.cos(along), np.sin(along)]), exact[1]]),
             np.concatenate([text[ys, xs], np.zeros(len(exact[0]), np.uint8)]),
-            np.concatenate([np.zeros(len(points), bool), np.ones(len(exact[0]), bool)]), _on(frame, every, ppm))
+            np.concatenate([np.zeros(len(points), bool), np.ones(len(exact[0]), bool)]), _on(frame, every, ppm),
+            np.concatenate([cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 5)[ys, xs] / ppm,
+                            np.zeros(len(exact[0]))]))
 
 
 def _on(mask: np.ndarray | None, points: np.ndarray, ppm: float) -> np.ndarray:
@@ -253,6 +267,7 @@ def _shape(t: Template) -> _Shape:
     rim = ((pts @ hull[:, :2].T + hull[:, 2]).max(axis=1) > -2 * STEP) | circle | np.isin(group, _letters(t, sampled))
     lines = [_sample(q) for q in t.through]
     through = np.vstack([np.hstack(q) for q in lines]) if lines else np.zeros((0, 4))
+    beyond = [np.hstack(_sample(q)) for ln in t.through for q in _continued(ln)]
     ports = np.array(t.ports, float).reshape(-1, 2)
     units = ports / np.maximum(np.linalg.norm(ports, axis=1, keepdims=True), 1e-9)
     variants, seen = [], []
@@ -267,8 +282,15 @@ def _shape(t: Template) -> _Shape:
     gaps = [cKDTree(pts[group == a]).query(pts[group == b])[0].min() for a in set(group) for b in set(group) if a < b]
     smallest = TOL / min([g for g in gaps if g > STEP] or [np.inf])
     holds_text = any((np.array(p, float) @ hull[:, :2].T + hull[:, 2]).max() <= 0 for p in t.tags.values())
-    return _Shape(t, pts, heading, group, rim, through, hull, ports, units, float(np.linalg.norm(pts, axis=1).max()), smallest,
-                  variants, ring, rectangles(t), holds_text)
+    return _Shape(t, pts, heading, group, rim, through, beyond, hull, ports, units,
+                  float(np.linalg.norm(pts, axis=1).max()), smallest, variants, ring, rectangles(t), holds_text)
+
+
+def _continued(ln: Line) -> tuple[Line, Line]:
+    """The continuation of a line CONTINUED mm past each of its ends."""
+    length = math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1) or 1.0
+    ux, uy = CONTINUED * (ln.x2 - ln.x1) / length, CONTINUED * (ln.y2 - ln.y1) / length
+    return Line(ln.x1 - ux, ln.y1 - uy, ln.x1, ln.y1), Line(ln.x2, ln.y2, ln.x2 + ux, ln.y2 + uy)
 
 
 def _letters(t: Template, sampled: list) -> list[int]:
@@ -330,6 +352,37 @@ def _anchored(d: Drawing, shapes: list[_Shape]):
                     yield s, (*(np.array([c.cx, c.cy]) - m @ s.ring[0]), 90 * k, mirror, c.r / s.ring[1]), 0.5, (1.0,)
 
 
+def _on_pipes(d: Drawing, shapes: list[_Shape], ink: _Ink):
+    """(shape, pose, search radius in mm, sizes to try) for the symbols drawn on a pipe that goes on (a flow arrow, an
+    orifice): where strokes stand beside a straight line, as the barbs of an arrowhead do, the symbol along it, both
+    ways. The pipe joins such strokes into one large group, so they are not found as a group of their own."""
+    on = [s for s in shapes if len(s.through)]
+    beside = ink.points[~ink.text & ~ink.straight]
+    if not on or not len(beside):
+        return
+    tree = cKDTree(beside)
+    pipes = [q for pl in d.polylines if pl.kind != "frame" and not pl.dashed for q in pl.parts() if isinstance(q, Line)]
+    for ln in [q for q in d.lines if not q.dashed] + pipes:  # not the frame or signal lines
+        a, b = np.array([ln.x1, ln.y1]), np.array([ln.x2, ln.y2])
+        length = float(np.hypot(*(b - a)))
+        if length < PIPE:
+            continue
+        u = (b - a) / length
+        near = beside[tree.query_ball_point((a + b) / 2, length / 2 + BARB)]
+        along, across = (near - a) @ u, np.abs((near - a) @ np.array([-u[1], u[0]]))
+        along = np.sort(along[(along > 0) & (along < length) & (across > TOL) & (across < BARB)])
+        for group in np.split(along, np.flatnonzero(np.diff(along) > 1.0) + 1):
+            if len(group) < 4:
+                continue  # a speck
+            centre = a + u * (group[0] + group[-1]) / 2
+            for s in on:
+                mid = s.through[:, :2].mean(0)
+                for turn in (math.atan2(u[1], u[0]), math.atan2(-u[1], -u[0])):
+                    c, sn = math.cos(turn), math.sin(turn)
+                    origin = centre - np.array([c * mid[0] - sn * mid[1], sn * mid[0] + c * mid[1]])
+                    yield s, (*origin, math.degrees(turn), False, 1.0), 1.0, SIZES
+
+
 def _leftover(d: Drawing, shapes: list[_Shape], ink: _Ink, found: list[_Hit]):
     """(shape, pose, search radius in mm, sizes to try) where no symbol was found yet: a port at a single line end (an
     off-page connector at the end of a pipe), at the library size, and groups of small strokes."""
@@ -337,7 +390,7 @@ def _leftover(d: Drawing, shapes: list[_Shape], ink: _Ink, found: list[_Hit]):
     def free(p):
         return not any(_contains(h, p) for h in found)  # not inside a symbol found already
 
-    ports = [transform(*h.pose)(*q) for h in found for q in h.shape.t.ports]
+    ports = [transform(*h.pose)(*q) for h in found if not len(h.shape.through) for q in h.shape.t.ports]
     connected = cKDTree(ports) if ports else None
     shape, mirror, pa, _ = _port_choices(shapes, 1)
     for p, e in _ends(d, bend=45, shortest=STUB):  # pipe ends
@@ -563,10 +616,12 @@ def _fit(s: _Shape, pose, radius: float, ink: _Ink) -> _Hit | None:
         return None
     if np.mean(ink.unworded.query(outline, distance_upper_bound=TOL)[0] <= TOL) < coverage - LETTERS:
         return None  # made of letters: words may stand in for a stroke or two (a misread arrow tip), not for a symbol
-    if len(s.through):  # the straight line running through the symbol, e.g. the pipe under a flow arrow
-        line = _oriented(s.through[:, :2] @ m.T + xy[:2], s.through[:, 2:] @ m.T / scale)
-        if not ink.lines.n or np.mean(ink.lines.query(line, distance_upper_bound=TOL)[0] <= TOL) < COVERAGE:
-            return None
+    if len(s.through):  # the line running through the symbol, e.g. the pipe under a flow arrow, and on past both ends
+        def on(q):
+            line = _oriented(q[:, :2] @ m.T + xy[:2], q[:, 2:] @ m.T / scale)
+            return np.mean(ink.strokes.query(line, distance_upper_bound=TOL)[0] <= TOL)
+        if on(s.through) < COVERAGE or min(map(on, s.beyond)) < COVERAGE:
+            return None  # not on a pipe: a bend where an arc runs into a line looks like an arrowhead
     near = np.array(ink.tree.query_ball_point(xy[:2], s.radius * scale + REACH), int)
     q = (ink.points[near] - xy[:2]) @ np.linalg.inv(m).T  # in the symbol's own coordinates
     if len(s.ports) and not _attached(s, q[~ink.text[near]], scale):
@@ -637,6 +692,49 @@ def _centred(h: _Hit, circles: list[Circle]) -> _Hit:
     scale *= c.r / r
     ox, oy = transform(0.0, 0.0, angle, mirror, scale)(ring.cx, ring.cy)
     return _Hit(h.shape, (c.cx - ox, c.cy - oy, angle, mirror, scale), h.score, h.claim)
+
+
+def _twins(shapes: list[_Shape]) -> dict[int, list]:
+    """For each symbol, the symbols drawn the same with a small circle or two more (a gate valve and a ball valve):
+    {id(shape): [(twin, circle centres, radii)]}."""
+    out = defaultdict(list)
+    for t in shapes:
+        small = [q for q in t.t.parts if isinstance(q, Circle) and q.r <= SMALL_CIRCLE]
+        rest = [q for q in t.t.parts if not (isinstance(q, Circle) and q.r <= SMALL_CIRCLE)]
+        if not small or not rest:
+            continue
+        pts = np.vstack([_sample(q)[0] for q in rest])
+        for s in shapes:
+            if s is not t and len(s.pts) and cKDTree(pts).query(s.pts)[0].max() < STEP and \
+                    cKDTree(s.pts).query(pts)[0].max() < STEP:
+                out[id(s)].append((t, np.array([(q.cx, q.cy) for q in small]), np.array([q.r for q in small])))
+    return out
+
+
+def _circled(h: _Hit, twins: dict[int, list], ink: _Ink) -> _Hit:
+    """The twin of a symbol found where its small circles are there (see _twins): as a ring, or as a blob as thick as
+    the circle, which is what a filled circle leaves, or one that blur has filled in on a photo."""
+    x, y, angle, mirror, scale = h.pose
+    m = _matrix(angle, mirror, scale)
+    for t, centres, radii in twins.get(id(h.shape), []):
+        if all(_round_mark(m @ c + (x, y), r * scale, ink) for c, r in zip(centres, radii)):
+            return _Hit(t, h.pose, h.score, h.claim)
+    return h
+
+
+def _round_mark(c: np.ndarray, r: float, ink: _Ink) -> bool:
+    """Whether a circle of radius r around c is drawn: half of its rim, running round it, or a blob that thick and
+    much thicker than the strokes of the sheet (where two strokes cross, blur thickens the ink too)."""
+    near = np.array(ink.tree.query_ball_point(c, r + TOL), int)
+    if not len(near):
+        return False
+    off = ink.points[near] - c
+    dist = np.hypot(off[:, 0], off[:, 1])
+    radial = np.abs(np.einsum("ij,ij->i", off, ink.heading[near])) / np.maximum(dist, 1e-9)
+    rim = (np.abs(dist - r) <= TOL) & (radial < 0.5) & ~ink.text[near]  # running round, not through the centre
+    # nearly r: the middle of a filled circle; the crossing in a gate valve's middle reaches about 0.7 r
+    blob = (dist <= 0.5 * r) & (ink.thick[near] >= max(0.9 * r, BLOB * ink.usual))
+    return rim.sum() * STEP >= 0.5 * 2 * math.pi * r or blob.any()
 
 
 def _one_size(hits: list[_Hit], n: int) -> list[_Hit]:
@@ -809,11 +907,14 @@ def _snap(d: Drawing) -> None:
     end beside one port (two pipes running past a valve), only the one pointing at it is moved, so the other is not
     turned onto it. A short line with both ends at the same symbol is left over from its strokes and dropped: snapped,
     it would join the symbol to itself."""
+    _inside_dropped(d)
     ends = [(ln, k) for ln in d.lines for k in (0, 1)] + [(pl, k) for pl in d.polylines if not pl.closed for k in (0, 1)]
+    runs = np.array([(q.x1, q.y1, q.x2, q.y2) for q in d.lines + [q for pl in d.polylines for q in pl.parts()
+                                                                   if isinstance(q, Line)]]).reshape(-1, 4)
     if ends:
         at = cKDTree([_end(*item)[0] for item in ends])
         for sym in d.symbols:
-            _onto_lines(sym, ends, at)
+            _onto_lines(sym, ends, at, runs)
     ports = [p for s in d.symbols for p in s.ports]
     if not ports:
         return
@@ -845,13 +946,40 @@ def _snap(d: Drawing) -> None:
         _set_end(obj, k, tuple(map(float, ports[i])))
 
 
-def _onto_lines(sym: Symbol, ends: list, at: cKDTree) -> None:
-    """Moves a symbol across the lines that end at its ports (``ends``, located by ``at``) so that the ports lie on
+def _inside_dropped(d: Drawing) -> None:
+    """Drops the pieces of linework that lie wholly inside a symbol with ports, such as the stroke left between the
+    two triangles of a gate valve: it is no pipe, and it would join the pipes on either side through the valve. A
+    symbol a line runs through (a flow arrow on its pipe) keeps it."""
+    hulls = []
+    for sym in d.symbols:
+        if len(sym.ports) < 2 or sym.template.through:
+            continue
+        pts = np.vstack([_sample(q)[0] for q in sym.parts])
+        try:
+            hulls.append(ConvexHull(pts).equations)
+        except QhullError:
+            continue
+    if not hulls:
+        return
+
+    def inside(*points) -> bool:
+        p = np.array(points, float)
+        return any(np.all(p @ h[:, :2].T + h[:, 2] <= TOL, axis=1).all() for h in hulls)
+
+    d.lines = [ln for ln in d.lines if not inside((ln.x1, ln.y1), (ln.x2, ln.y2))]
+    d.polylines = [q for pl in d.polylines
+                   for q in _split(pl, {j for j in range(len(pl.bulges)) if not pl.closed
+                                        and inside(pl.points[j], pl.points[j + 1])})]
+
+
+def _onto_lines(sym: Symbol, ends: list, at: cKDTree, runs: np.ndarray) -> None:
+    """Moves a symbol across the lines that end at its ports (``ends``, located by ``at``), or that run through two of
+    them (``runs``, straight lines: a flow arrow or a valve drawn on a pipe that goes on), so that the ports lie on
     their course: the fit is only good to half a millimetre or so, and a pipe end moved onto a port beside it would be
     turned askew. A symbol placed on a circle stays (see _centred)."""
     if not sym.ports or any(isinstance(q, Circle) for q in sym.parts):
         return
-    normals, offsets = [], []
+    normals, offsets = _through(sym.ports, runs)
     for port in sym.ports:
         best = None  # the line end pointing at the port most closely
         for j in at.query_ball_point(port, SNAP):
@@ -877,6 +1005,28 @@ def _onto_lines(sym: Symbol, ends: list, at: cKDTree) -> None:
         return  # the lines disagree: not the symbol's pipes, or a misplaced symbol
     moved = place(sym.template, sym.x + float(shift[0]), sym.y + float(shift[1]), sym.angle, sym.mirror, sym.scale)
     sym.x, sym.y, sym.parts, sym.ports = moved.x, moved.y, moved.parts, moved.ports
+
+
+def _through(ports: list, runs: np.ndarray) -> tuple[list, list]:
+    """The normal of a straight line that runs past two of the ports, along the line between them and within SNAP of
+    each, and how far each port lies off it; nothing if there is none."""
+    for a, b in ((a, b) for i, a in enumerate(ports) for b in ports[i + 1:]):
+        axis = np.subtract(b, a)
+        if not len(runs) or not (span := float(np.hypot(*axis))):
+            continue
+        u = np.c_[runs[:, 2] - runs[:, 0], runs[:, 3] - runs[:, 1]]
+        length = np.hypot(u[:, 0], u[:, 1])
+        u = u / np.maximum(length, 1e-9)[:, None]
+        n = np.c_[-u[:, 1], u[:, 0]]
+        ok = np.abs(u @ axis) >= span * math.cos(SNAP_PARALLEL)
+        for p in (a, b):
+            rel = np.asarray(p) - runs[:, :2]
+            along = np.einsum("ij,ij->i", rel, u)
+            ok &= (np.abs(np.einsum("ij,ij->i", rel, n)) <= SNAP) & (along >= 0) & (along <= length)
+        if ok.any():
+            k = int(np.flatnonzero(ok)[0])
+            return [n[k], n[k]], [float(n[k] @ (runs[k, :2] - np.asarray(p))) for p in (a, b)]
+    return [], []
 
 
 def _end(obj: Line | Polyline, k: int) -> tuple[tuple[float, float], tuple[float, float]]:
