@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 import pypdfium2
 
+from . import review
 from .config import Settings
 from .drawing import _count_lines
 from .errors import ConversionError, JobError
@@ -30,10 +31,11 @@ SHEETS = {"paper": "paper edges", "frame": "drawing frame", "image": "whole imag
 
 def vectorize(path: str, name: str, options: dict, result: str, preview: str | None,
               own_libraries: list[library.Library] | tuple = (),
-              deadline: float | None = None) -> tuple[str, list[str]]:
+              deadline: float | None = None, reviewer: dict | None = None) -> tuple[str, list[str]]:
     """Recognises the drawing on each page of the photo or scan at `path` (a PDF or TIFF may have several), writes the
     ZIP to `result` and the PDF to `preview`. `own_libraries` are symbol libraries the job brought along. Pages that
-    would end after the `deadline` (time.monotonic) are left out. Returns the markdown and the warnings.
+    would end after the `deadline` (time.monotonic) are left out. A `reviewer` (see review.py) is asked about what to
+    check. Returns the markdown and the warnings.
 
     The first page with a drawing goes to the root of the ZIP, any further page n to the folder page-n/."""
     libraries = _libraries(options, own_libraries)
@@ -57,10 +59,12 @@ def vectorize(path: str, name: str, options: dict, result: str, preview: str | N
                 warnings.append(f"Page {n}: no drawing was recognised")
                 continue
             folder = f"page-{n}/" if done else ""
+            reviewed, notes = review.check(r, reviewer) if reviewer else ({}, [])
             pdfs.append(_write(z, folder, r))
-            reports.append((folder, r.info | _report(r.drawing) | {"page": n}))
+            reports.append((folder, r.info | _report(r.drawing) | {"page": n}
+                            | ({"reviewer": reviewed} if reviewed else {})))
             done.append((n, r.info, r.drawing))
-            warnings += [f"Page {n}: {w}" if total > 1 else w for w in _warnings(r)]
+            warnings += [f"Page {n}: {w}" if total > 1 else w for w in notes + _warnings(r)]
         if not done:
             raise ConversionError("No drawing was recognised on any page")
         for folder, report in reports:

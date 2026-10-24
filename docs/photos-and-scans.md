@@ -100,8 +100,10 @@ reliably (on `P2C-TEXT-CHECK`) and symbols that may be the wrong ones (on `P2C-S
 `overlay.png` like the texts to check). A symbol is one to check where less than 90 % of its outline was found, or where
 a symbol of another kind fits its place almost as well (with at least 90 % of its score); a ball valve and a gate
 valve do not count as such, as the ball decides between them. Each entry says what was recognised, why it is
-doubtful, where it is on the sheet and how confident the recognition is, so a person, or later a model, can look at
-just these places instead of the whole sheet.
+doubtful, where it is on the sheet and how confident the recognition is, so a person can look at just these places
+instead of the whole sheet. A job can also have a vision model look at them first (`reviewer` in the [job
+API](api.md)): it sees only a crop around each, and its answer is taken only where it fits the reading or the
+library's symbol.
 
 Scans often arrive as PDFs or TIFFs with several pages. Every page is converted on its own (one at a time, so memory
 stays that of one page): the first page with a drawing at the root of the ZIP, every further page n in `page-n/` with

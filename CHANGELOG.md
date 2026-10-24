@@ -68,6 +68,10 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   `overlay.png`; `report.json` has the new list `review` of the texts and symbols to check, least confident first, and
   each symbol its `confidence` and `doubt`; the markdown has a section `Symbols to check`. The benchmark counts the
   symbols marked and the wrong ones left unmarked.
+- Reviewer model for `vectorize`: a job may name a vision model behind an OpenAI-compatible endpoint (`reviewer`:
+  `base_url`, `api_key`, `model`), such as a LiteLLM proxy. It is asked about the texts and symbols to check, sees only
+  a crop around each, and its answers are taken where they fit; `report.json` counts them under `reviewer`. The key is
+  dropped when the job ends and never returned or logged.
 - Sheet grammar for texts on photos and scans: inch marks read as foot marks or degree signs after pipe sizes, and the
   equals sign of key=value labels read as a colon, are put right where the sheet shows enough of these notations.
 - Benchmark: exact texts by kind (codes such as tags and line numbers, numbers, words), errors left unmarked (texts
