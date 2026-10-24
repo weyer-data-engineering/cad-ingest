@@ -120,7 +120,7 @@ def requeue(doc: dict, delay: int) -> None:
 
 def finish(job_id: str, status: str, **fields) -> dict | None:
     """Ends a running job and sends the callback. Returns None if the job was cancelled meanwhile."""
-    doc = update(job_id, ACTIVE, status=status, **fields)
+    doc = update(job_id, ACTIVE, status=status, reviewer=None, **fields)  # its key is not kept beyond the job
     if doc and doc.get("callback_url"):
         s = Settings.from_env()
         delays = [s.retry_delay_seconds * 2**i for i in range(6)]  # about 30 minutes in total

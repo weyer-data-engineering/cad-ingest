@@ -51,6 +51,7 @@ def _authorized(authorization: str = Header(default="")) -> None:
 
 jobs = APIRouter(prefix="/jobs", dependencies=[Depends(_authorized)])
 LibraryId = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")]  # as plan2cad.library.ID
+HeaderName = Annotated[str, Field(pattern=r"^[A-Za-z0-9-]{1,100}$")]
 Url = Annotated[str, Field(pattern=r"^https?://")]
 
 
@@ -68,6 +69,18 @@ class VectorizeOptions(BaseModel):
     pages: list[Annotated[int, Field(ge=1)]] | None = Field(default=None, min_length=1, max_length=1000)
 
 
+class Reviewer(BaseModel):
+    """A vision model behind an OpenAI-compatible endpoint, such as a LiteLLM proxy, that is asked about what the
+    recognition of a photo or scan is unsure of (operation "vectorize"). It sees only crops of those places."""
+
+    base_url: Url  # where /chat/completions is, e.g. https://llm.example.com/v1
+    api_key: str = Field(min_length=1, max_length=1000, repr=False)
+    model: str = Field(min_length=1, max_length=200)
+    # Further headers of each call, such as the customer a LiteLLM proxy books the call to
+    headers: dict[HeaderName, Annotated[str, Field(max_length=1000)]] | None = Field(default=None, max_length=10,
+                                                                                     repr=False)
+
+
 class JobRequest(BaseModel):
     external_id: str = Field(min_length=1, max_length=255)
     file_name: str = Field(min_length=1, max_length=512)
@@ -81,6 +94,8 @@ class JobRequest(BaseModel):
     library_urls: list[Url] | None = Field(default=None, min_length=1, max_length=10)
     callback_url: str | None = Field(default=None, pattern=r"^https?://")
     priority: Literal["interactive", "bulk"] = "interactive"
+    # Asked about the texts and symbols to check (vectorize); kept only until the job ends, never returned or logged
+    reviewer: Reviewer | None = None
 
     @model_validator(mode="after")
     def _uploads_need_a_target(self) -> "JobRequest":
@@ -90,6 +105,8 @@ class JobRequest(BaseModel):
             raise ValueError("result_url is required for the operation 'vectorize'")
         if self.library_urls and "vectorize" not in self.operations:
             raise ValueError("library_urls are for the operation 'vectorize'")
+        if self.reviewer and "vectorize" not in self.operations:
+            raise ValueError("reviewer is for the operation 'vectorize'")
         return self
 
 
@@ -111,7 +128,8 @@ def submit(body: JobRequest, response: Response) -> dict:
         "external_id": body.external_id, "file_name": name, "kind": FORMATS[ext][0], "format": ext,
         "operations": sorted(set(body.operations)), "source_url": body.source_url, "preview_url": body.preview_url,
         "result_url": body.result_url, "options": body.options.model_dump() if body.options else None,
-        "library_urls": body.library_urls, "callback_url": body.callback_url, "priority": body.priority})
+        "library_urls": body.library_urls, "callback_url": body.callback_url, "priority": body.priority,
+        "reviewer": body.reviewer.model_dump() if body.reviewer else None})
     if not created:
         response.status_code = 200
         return store.view(doc)
@@ -160,7 +178,7 @@ def cancel_job(job_id: str) -> Response:
         raise HTTPException(404, "Unknown or expired job")
     if doc["status"] not in store.ACTIVE:
         store.delete(job_id)
-    elif store.update(job_id, store.ACTIVE, status="cancelled"):  # first, so that no result or callback follows
+    elif store.update(job_id, store.ACTIVE, status="cancelled", reviewer=None):  # first: no result or callback follows
         _stop(doc["rq_id"])
     return Response(status_code=204)
 

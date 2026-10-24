@@ -110,7 +110,7 @@ def _process(doc: dict, settings: Settings) -> dict:
         vectorized = os.path.join(directory, "result.zip")
         libraries = _libraries(doc.get("library_urls") or [], directory, settings)  # only with vectorize
         result = _convert(doc["operations"], ext, path, directory, doc["file_name"], preview, settings,
-                          doc.get("options") or {}, vectorized, libraries, deadline)
+                          doc.get("options") or {}, vectorized, libraries, deadline, doc.get("reviewer"))
         if "vectorize" in doc["operations"]:
             _upload(doc["result_url"], vectorized, RESULT_CONTENT_TYPE, "result")
             result["result_content_type"] = RESULT_CONTENT_TYPE
@@ -172,14 +172,15 @@ def _libraries(urls: list[str], directory: str, settings: Settings) -> list[libr
 
 def _convert(operations: list[str], ext: str, path: str, directory: str, name: str, preview: str,
              settings: Settings, options: dict | None = None, vectorized: str | None = None,
-             libraries: list | tuple = (), deadline: float | None = None) -> dict:
+             libraries: list | tuple = (), deadline: float | None = None, reviewer: dict | None = None) -> dict:
     result: dict = {"warnings": []}
     try:
         handler = importlib.import_module(f".{FORMATS[ext][1]}", __package__)
         markdown, warnings = "", []
         if "vectorize" in operations:  # photos and scans: one recognition run serves all operations
             markdown, warnings = handler.vectorize(path, name, options or {}, vectorized,
-                                                   preview if "preview" in operations else None, libraries, deadline)
+                                                   preview if "preview" in operations else None, libraries, deadline,
+                                                   reviewer)
         elif "extract" in operations:
             markdown, warnings = handler.extract(ext, path, directory, name)
         if "extract" in operations:

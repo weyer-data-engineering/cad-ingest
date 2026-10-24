@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from synth import Pen
 
+from app import scan
 from app.plan2cad import symbols
 from app.plan2cad.export import to_dxf
 from app.plan2cad.library import FLOOR_PLAN, combine, load, place, read
@@ -234,6 +235,30 @@ def test_a_ball_valve_whose_ball_is_filled_in_is_no_gate_valve():
     img = cv2.cvtColor(render(d, 150 / 25.4), cv2.COLOR_GRAY2BGR)  # coarse, as a photo: no ring left, a blob
     r = convert(img, paper="A4", dpi=150, drawing="pid")
     assert [s.name for s in r.drawing.symbols] == ["BALL_VALVE"]
+
+
+def test_a_symbol_whose_outline_is_partly_missing_is_marked_to_check():
+    pipes = [Line(60, 50, 97.5, 50, 0.5), Line(102.5, 50, 140, 50, 0.5)]
+    whole, gappy = (drawn(place(LIBRARY["GATE_VALVE"], 100, 50), lines=pipes) for _ in range(2))
+    del gappy.lines[0]  # one side of the valve not drawn
+    for d in (whole, gappy):
+        symbols.recognise(d, LIBRARY)
+    assert [(s.confidence, s.doubt) for s in whole.symbols] == [(100.0, None)]
+    assert [(s.name, s.doubt) for s in gappy.symbols] == [("GATE_VALVE", "only 87 % of its outline found")]
+
+
+def test_a_symbol_to_check_goes_to_its_own_layer_and_into_the_review_list():
+    sure, unsure = place(LIBRARY["PUMP"], 100, 50), place(LIBRARY["GATE_VALVE"], 150, 50)
+    unsure.confidence, unsure.doubt = 88.0, "only 88 % of its outline found"
+    d = Drawing(200, 100, symbols=[sure, unsure], texts=[Text(20, 20, 3, "P-1O1", confidence=40.0, uncertain=True)])
+    assert [ref.dxf.layer for ref in to_dxf(d).modelspace().query("INSERT")] == ["P2C-SYMBOL", "P2C-SYMBOL-CHECK"]
+    assert [(c["kind"], c["what"], c["why"]) for c in scan._report(d)["review"]] == [
+        ("text", "P-1O1", "uncertain reading"), ("symbol", "GATE_VALVE", "only 88 % of its outline found")]
+    info = {"drawing_type": "pid", "paper": "A4", "sheet_size_mm": (200, 100), "sheet": "paper", "scale": None,
+            "counts": {}}
+    markdown = "\n".join(scan._page_markdown(info, d, "##"))
+    assert "## Symbols\n\n- Centrifugal pump" in markdown
+    assert "## Symbols to check (uncertain recognition)\n\n- Gate valve (only 88 % of its outline found)" in markdown
 
 
 def test_dxf_holds_the_library_blocks_with_attributes():

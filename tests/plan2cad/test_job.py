@@ -33,7 +33,8 @@ def test_scan_becomes_dxf_with_markdown_and_preview(api, origin, worker, plan_sc
     files = zipfile.ZipFile(io.BytesIO(data))
     assert content_type == "application/zip"
     assert set(files.namelist()) == {"plan.dxf", "plan.pdf", "overlay.png", "underlay.png", "report.json"}
-    assert json.loads(files.read("report.json"))["scale"] == 50
+    report = json.loads(files.read("report.json"))
+    assert report["scale"] == 50 and isinstance(report["review"], list)
     assert not ezdxf.read(io.StringIO(files.read("plan.dxf").decode())).audit().has_errors
     assert origin.previews["plan.png"][0].startswith(b"%PDF")
 
@@ -47,6 +48,15 @@ def test_vectorize_is_only_for_photos_and_scans(api, origin):
     assert submit(api, origin, "plan.jpg", operations=["vectorize"], options={"scale": 50}, **result).status_code == 202
     assert submit(api, origin, "plans.pdf", operations=["vectorize"], options={"pages": [0]}, **result).status_code == 400
     assert submit(api, origin, "plans.pdf", operations=["vectorize"], options={"pages": [1, 3]}, **result).status_code == 202
+
+
+def test_the_reviewer_is_only_for_vectorize_and_its_key_is_never_shown(api, origin):
+    reviewer = {"base_url": "https://llm.example.com/v1", "api_key": "sk-secret", "model": "vision"}
+    assert submit(api, origin, "drawing.dxf", reviewer=reviewer).status_code == 400
+    response = submit(api, origin, "plan.jpg", operations=["vectorize"], result_url=origin.url("/preview/r"),
+                      reviewer=reviewer)
+    assert response.status_code == 202
+    assert "sk-secret" not in api.get(f"/jobs/{response.json()['id']}").text
 
 
 @pytest.mark.parametrize("name, content", [("blank.png", cv2.imencode(".png", np.full((900, 1200), 255, np.uint8))[1]),

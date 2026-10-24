@@ -19,7 +19,8 @@ JSON. If `API_TOKEN` is set, every `/jobs` call needs `Authorization: Bearer <to
   "options": {"paper": "A3", "scale": 50, "dpi": 300, "drawing": "auto", "libraries": ["din-10628"]},
   "library_urls": ["https://..."],
   "callback_url": "https://...",
-  "priority": "interactive"
+  "priority": "interactive",
+  "reviewer": {"base_url": "https://llm.example.com/v1", "api_key": "...", "model": "..."}
 }
 ```
 
@@ -35,6 +36,7 @@ JSON. If `API_TOKEN` is set, every `/jobs` call needs `Authorization: Bearer <to
 | `library_urls` | optional, only with `vectorize`: presigned `GET`s of symbol libraries the job brings along, a library ZIP or a DXF (at most 10, each up to `MAX_LIBRARY_SIZE_BYTES`). They come before the installed `libraries`; the default libraries are only used when the job names none at all. See [Symbol libraries](symbol-libraries.md) |
 | `callback_url` | optional, see Callback |
 | `priority` | `interactive` (default) or `bulk` |
+| `reviewer` | optional, only with `vectorize`: a vision model behind an OpenAI-compatible endpoint (`base_url` up to `/v1`, `api_key`, `model`, optionally further `headers` such as the customer a LiteLLM proxy books the calls to), such as a LiteLLM proxy, that is asked about the texts and symbols to check. It sees only a crop around each of them (at most 40 per page). The key is kept only until the job ends; it is never returned or logged. See `review` below |
 
 Answers: `202 {"id","status":"queued"}`; `200` with the existing job for a repeated `external_id`; `400` invalid body
 (`{"detail": "..."}`), also for a library in `options.libraries` that the workers do not have; `401`; `415` unsupported extension, or `vectorize` missing for a photo or given for a CAD file; `503` with `Retry-After: 15` when Redis is unavailable or
@@ -115,6 +117,22 @@ curl -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '
 
 The `report.json` in the ZIP of `vectorize` lists the libraries that were used for the kind of drawing (`libraries`:
 id and version) and, for every placed symbol, the library it came from.
+
+What a person should check is listed under `review`, least confident first: texts that could not be read reliably
+and symbols that may be the wrong ones, each with its `kind` (`text` or `symbol`), `what` was recognised (the text or
+the symbol's name), `why` it is doubtful, where it is (`x`, `y` in sheet millimetres) and its `confidence` (0 to 100).
+Every symbol has its `confidence` (the share of its outline found in the scan, in percent) and its `doubt` (`null`, or
+why to check it); in the DXF a symbol to check is on the layer `P2C-SYMBOL-CHECK`, and the markdown has a section
+`Symbols to check (uncertain recognition)`. The fields, the layer and the section are new; a client that does not know
+them can ignore them.
+
+A job with a `reviewer` asks that model about the elements to check, least confident first. For a text it sends a crop
+of the text and the reading and asks for the text as printed; the answer is taken if it is one line about as long as the
+reading (half to twice), and the text is then no longer uncertain. For a symbol it sends a crop of the symbol and the
+library's drawing of it and asks yes or no; a yes confirms the symbol, a no stays to check with that as its `doubt`.
+Everything else stays as it was. `report.json` then has `reviewer` with the `model`, how many elements were `asked`, and
+how many were `confirmed`, `corrected`, `kept` or left `unanswered`; a model that cannot be reached gives a warning
+naming its host, and the job still succeeds.
 
 Markups added by hand in colour on a black and white print (pen notes, clouds, strike-outs, highlighter) are kept
 apart from the drawing (see [Markups](photos-and-scans.md#markups)): the DXF has them on the layers `P2C-MARKUP`,

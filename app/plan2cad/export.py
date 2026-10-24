@@ -22,7 +22,7 @@ from .render import CAP, DASH, GAP, dashes, render
 
 LAYERS = {"P2C-LINE": 7, "P2C-DASH": 5, "P2C-CURVE": 3, "P2C-FILL": 8, "P2C-TEXT": 1, "P2C-UNDERLAY": 9,
           "P2C-WALL": 150, "P2C-DOOR": 30, "P2C-PIPE": 150, "P2C-EQUIPMENT": 94, "P2C-SIGNAL": 5, "P2C-FRAME": 8,
-          "P2C-TEXT-CHECK": 6, "P2C-SYMBOL": 4, LAYER: 1, HIGHLIGHT_LAYER: 3, READING_LAYER: 1}
+          "P2C-TEXT-CHECK": 6, "P2C-SYMBOL": 4, "P2C-SYMBOL-CHECK": 6, LAYER: 1, HIGHLIGHT_LAYER: 3, READING_LAYER: 1}
 KIND_LAYERS = {"wall": "P2C-WALL", "door": "P2C-DOOR", "pipe": "P2C-PIPE", "equipment": "P2C-EQUIPMENT",
                "signal": "P2C-SIGNAL", "frame": "P2C-FRAME"}
 LINEWEIGHTS = (13, 18, 25, 35, 50, 70, 100, 140, 200)  # ISO pen widths in 1/100 mm
@@ -128,7 +128,7 @@ def _symbols(doc: ezdxf.document.Drawing, d: Drawing, pt, s: float) -> None:
     for sym in d.symbols:  # y flips: clockwise on screen is a negative DXF rotation
         size = sym.scale * s * sym.template.unit
         ref = msp.add_blockref(sym.name, pt(sym.x, sym.y), dxfattribs={
-            "layer": "P2C-SYMBOL", "rotation": -sym.angle % 360, "yscale": size,
+            "layer": "P2C-SYMBOL-CHECK" if sym.doubt else "P2C-SYMBOL", "rotation": -sym.angle % 360, "yscale": size,
             "xscale": size * (-1 if sym.mirror else 1)})
         for tag, t in sym.attributes.items():
             ref.add_attrib(tag, t.text, dxfattribs={"height": t.height * s, "layer": "P2C-TEXT"}).set_placement(
@@ -174,12 +174,14 @@ def _rgb(color) -> tuple[float, float, float]:
 
 
 OVERLAY_COLORS = {"lines": (40, 40, 220), "dashed": (200, 90, 0), "curves": (0, 150, 0),
-                  "polygons": (180, 0, 180), "texts": (0, 120, 255), "unsure": (200, 0, 200), "symbols": (150, 110, 0)}
+                  "polygons": (180, 0, 180), "texts": (0, 120, 255), "unsure": (200, 0, 200), "symbols": (150, 110, 0),
+                  "doubtful": (200, 0, 200)}
 
 
 def overlay(gray: np.ndarray, d: Drawing, ppm: float, max_side: int = 4000) -> np.ndarray:
     """Faded rectified photo with the recognised vectors drawn on top in colour (BGR)."""
-    symbols = Drawing(d.width, d.height, symbols=d.symbols).flat()
+    symbols = Drawing(d.width, d.height, symbols=[s for s in d.symbols if not s.doubt]).flat()
+    doubtful = Drawing(d.width, d.height, symbols=[s for s in d.symbols if s.doubt]).flat()
     d = replace(d, symbols=[]).flat()
     marked = (LAYER, HIGHLIGHT_LAYER, READING_LAYER)
     marks = Drawing(d.width, d.height, [ln for ln in d.lines if ln.layer in marked],
@@ -206,6 +208,7 @@ def overlay(gray: np.ndarray, d: Drawing, ppm: float, max_side: int = 4000) -> n
         "texts": Drawing(d.width, d.height, texts=[t for t in d.texts if not t.uncertain]),
         "unsure": Drawing(d.width, d.height, texts=[t for t in d.texts if t.uncertain]),
         "symbols": symbols,
+        "doubtful": doubtful,  # in the colour of the uncertain texts: to check
     }
     for key, part in parts.items():
         render(part, ppm * f, img, OVERLAY_COLORS[key])
