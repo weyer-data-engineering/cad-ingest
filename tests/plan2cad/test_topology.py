@@ -1,3 +1,5 @@
+import pytest
+
 from app.plan2cad.model import Arc, Line
 from app.plan2cad.topology import join
 
@@ -26,3 +28,10 @@ def test_vessel_outline_becomes_one_closed_polyline():
     assert len(pls) == 1 and pls[0].closed and not lines and not arcs
     centres = sorted((round(a.cx), round(a.cy), round(a.r)) for a in pls[0].parts() if isinstance(a, Arc))
     assert centres == [(0, 0, 14), (0, 50, 14)]
+
+
+def test_two_arcs_of_one_circle_become_one_arc():
+    pls, lines, arcs = join([Line(-10, 0, 0, 0), Line(10, 0, 20, 0)], [Arc(5, 0, 5, 180, 270), Arc(5, 0, 5, 270, 360)])
+    assert len(pls) == 1 and not lines and not arcs
+    curved = [q for q in pls[0].parts() if isinstance(q, Arc)]
+    assert len(curved) == 1 and (curved[0].end - curved[0].start) % 360 == pytest.approx(180, abs=0.5)

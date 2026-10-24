@@ -81,11 +81,59 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 - Symbol recognition is faster on dense sheets. A symbol with a single connected port is only looked for at pipe
   ends (straight lines from 4 mm), not at the ends of the short strokes of letters, which also gives fewer false
   symbols on text; and candidates are checked with one search for nearby ink instead of two.
+- Lines on scans and photos come out in one piece more often, and curves as true arcs, so that a conversion needs less
+  rework (see `docs/photos-and-scans.md#how-it-works`):
+  - A traced stroke that runs straight and then bends is cut into the fewest straight lines and arcs that follow it:
+    a rounded corner, a vessel head or the round end of a line-number box is one arc or a few tangent ones, not a
+    chain of short lines (a stroke that is round as a whole stays one arc, as before). Arcs that lie on one circle
+    and were cut apart by a crossing or touching line become one arc again, also within a polyline.
+  - A gap of up to 5 mm in a line is closed where the grey image shows a stroke along it (a faint stretch darker
+    than the paper beside it, a crossing that cut it), and a branch from 4 mm that stops short of the pipe it points
+    at is extended onto it. Gaps of bare paper, such as dashes, and the inside of a small symbol stay open; short
+    pieces are joined only into a run of 8 mm or more (a dotted line), not the two sides of a valve.
+  - Faint stretches of horizontal and vertical lines (a pale pen, a line that came out dotted) count as ink.
+  - Of parallel pipes that end beside one symbol port, only the one pointing at it is snapped onto it, so the others
+    are no longer turned onto the port.
+  - Two or three dashes that run from one stroke to another, such as a short signal line between an instrument bubble
+    and the symbol it acts on, become one dashed line; a short dash on its own is no longer dropped as a speck, and a
+    dashed line is never dropped as a crumb.
+- Text on scans and photos is read more completely:
+  - A single character is read where it stands alone in a frame, such as the loop letter of an instrument bubble or
+    an interlock diamond.
+  - The text in circles that hold text is read a second time without the ring and the line across a shared display,
+    so letters that touch them are no longer lost.
+  - A text line read with low confidence stays a marked text also where the scan merged touching letters, as long as
+    as many characters were read as its length holds.
+  - A bar read at either end of a text line ("| LT"), the end of a leader beside it, stays linework.
+- Symbols on scans and photos:
+  - Nothing is placed in a strip of notes and tables below a line across the whole frame (revision table, issue
+    record, title block).
+  - A symbol drawn around a circle is centred on the circle found in the scan, and a symbol a little beside the pipes
+    that end at its ports is moved onto them. A pipe end is snapped onto a port only where the port lies on its course,
+    so that no pipe is turned askew.
+  - A symbol drawn without curves, such as an off-page connector or a flow arrow, is not placed on the round end of a
+    line-number box.
+- Benchmark: new metrics for what makes rework tedious, `breaks_per_m` (places per metre of reference linework where
+  the output stops although the line runs on), `curve_pieces` and `curves_as_arcs`, in a new report section.
 
 ### Fixed
 
 - A P&ID with more vertical pipe labels than horizontal text was turned by 90 degrees. The rotation check now scores
   each rotation by horizontal text the right way up together with vertical text reading bottom to top.
+- The round ends of a line-number box and rounded corners between two lines were read as brackets, so they were
+  missing from the drawing and garbled the text next to them. They are now kept from text recognition.
+- A circle in a box (a shared display instrument) was missed when OCR read its quarters as brackets, and the round
+  end of a line-number box could be taken for a circle.
+- Parallel lines close together, such as a pipe running into the box of its line number, could be pulled onto one
+  averaged line when short strokes between them (letters touching the lines) chained them, so lines were shifted and
+  box sides went missing. A piece now joins the line it continues at that line's own offset; pieces running beside
+  one another less than 0.7 mm apart are still one stroke.
+- A letter touching the round end of a line-number box was kept from text recognition with it.
+- The frame of a long line-number box holding several texts was not found, so symbols could be placed on it.
+- Letters in a small box, such as a line size, were read together with the box: the reading was garbled and the box
+  went missing. A box or ring around letters is no longer taken for a character.
+- A symbol could be placed on a small closed box whose text was not read, such as an instrument bubble on its sides
+  or a valve on its letters. A symbol without a rectangle of its own no longer lies mostly on such a box.
 - A P&ID listing areas in m² was taken for a floor plan. The drawing type now weighs the
   room areas and the building scale against nominal sizes, instrument bubbles and a title such as "R&I" or "R+I".
 

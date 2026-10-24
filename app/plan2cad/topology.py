@@ -149,7 +149,7 @@ class _Graph:
         for e in alive:
             total[top(self.node(e, 0))] = total.get(top(self.node(e, 0)), 0.0) + self.length(e)
         for e in alive:
-            if total[top(self.node(e, 0))] < crumb:
+            if total[top(self.node(e, 0))] < crumb and not self.dashed[e]:  # a short dashed link is drawn on purpose
                 self.alive[e] = False
 
     def _positions(self) -> dict[int, tuple[float, float]]:
@@ -261,17 +261,46 @@ class _Graph:
 
 
 def _straighten(pl: Polyline) -> Polyline:
-    """Removes vertices between two straight segments that continue in the same direction."""
+    """Removes vertices between two straight segments that continue in the same direction, and between two arcs of
+    one circle (a curve that a crossing line had cut in two)."""
     pts, bulges = list(pl.points), list(pl.bulges)
     i = 1
     while i < len(pts) - (0 if pl.closed else 1) and len(pts) > 2:
         a, b, c = pts[i - 1], pts[i], pts[(i + 1) % len(pts)]
-        if not bulges[i - 1] and not bulges[i % len(bulges)] and _collinear(a, b, c):
+        b1, b2 = bulges[i - 1], bulges[i % len(bulges)]
+        if not b1 and not b2 and _collinear(a, b, c):
+            del pts[i]
+            del bulges[i]
+        elif b1 and b2 and (merged := _one_circle(a, b, c, b1, b2)) is not None:
+            bulges[i - 1] = merged
             del pts[i]
             del bulges[i]
         else:
             i += 1
     return Polyline(pts, bulges, pl.closed, pl.width, pl.dashed, pl.kind)
+
+
+def _circle(p, q, b: float) -> tuple[float, float, float]:
+    """Centre and radius of the arc from p to q with bulge b (sign as in Polyline)."""
+    chord = math.dist(p, q)
+    sweep = 4 * math.atan(abs(b))
+    r = chord / (2 * math.sin(sweep / 2))
+    h = r * math.cos(sweep / 2) * (1 if b > 0 else -1) / chord
+    return (p[0] + q[0]) / 2 - (q[1] - p[1]) * h, (p[1] + q[1]) / 2 + (q[0] - p[0]) * h, r
+
+
+def _one_circle(a, b, c, b1: float, b2: float) -> float | None:
+    """The bulge of a single arc from a to c if the arcs a-b and b-c turn the same way on (nearly) one circle and
+    together sweep less than a full turn; None otherwise."""
+    if (b1 > 0) != (b2 > 0):
+        return None
+    (x1, y1, r1), (x2, y2, r2) = _circle(a, b, b1), _circle(b, c, b2)
+    if math.hypot(x2 - x1, y2 - y1) > max(0.3, 0.04 * max(r1, r2)) or abs(r1 - r2) > max(0.3, 0.04 * max(r1, r2)):
+        return None
+    sweep = 4 * math.atan(abs(b1)) + 4 * math.atan(abs(b2))
+    if sweep >= 2 * math.pi - 1e-6 or math.dist(a, c) < 1e-6:
+        return None
+    return math.copysign(math.tan(sweep / 4), b1)
 
 
 def _collinear(a, b, c) -> bool:

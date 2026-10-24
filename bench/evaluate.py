@@ -146,6 +146,90 @@ def objects(gt: Drawing, pred: Drawing) -> dict:
             "short_pieces": sum(x < 1.5 for x in lengths)}
 
 
+def _nodes(d: Drawing) -> np.ndarray:
+    """Where reference linework ends or branches: line and arc ends that are not the inner vertex of a run
+    (exactly two pieces of the same pen meeting)."""
+    pieces = [(q, ((q.x1, q.y1), (q.x2, q.y2))) for q in d.lines]
+    pieces += [(a, tuple((a.cx + a.r * math.cos(math.radians(t)), a.cy + a.r * math.sin(math.radians(t)))
+                         for t in (a.start, a.end))) for a in d.arcs]
+    at = defaultdict(list)
+    for q, ends in pieces:
+        for x, y in ends:
+            at[(round(x, 3), round(y, 3))].append(q)
+    pen = {id(q): (q.width, getattr(q, "dashed", False)) for q, _ in pieces}
+    nodes = [p for p, qs in at.items() if len(qs) != 2 or pen[id(qs[0])] != pen[id(qs[1])]]
+    return np.array(nodes, np.float64).reshape(-1, 2)
+
+
+def continuity(gt: Drawing, pred: Drawing) -> dict:
+    """What makes reworking a conversion tedious. ``breaks_per_m``: places per metre of reference linework where an
+    output entity stops although the reference runs on (a gap or two pieces where one is drawn), counted from the
+    output's open ends that lie on the reference and run along it, away from its ends and branches. ``curve_pieces``:
+    output entities per reference arc (1 = in one piece; circles are scored by ``circles``). ``curves_as_arcs``: share
+    of the reference arcs that the output draws as arcs or circles, not as chains of short straight segments."""
+    flat_gt = gt.flat()
+    ents = _entities(pred)
+    ref = samples(flat_gt)
+    if not ents or not len(ref):
+        return {}
+    pts, dirs, ent, curved = [], [], [], []
+    for i, e in enumerate(ents):
+        for q in e:
+            p, a = _sampled([q])
+            pts.append(p)
+            dirs.append(a)
+            ent.append(np.full(len(p), i))
+            curved.append(np.full(len(p), isinstance(q, (Arc, Circle))))
+    out = {}
+    ends, heading = _open_ends(pred)
+    lw, lw_dir = _sampled(flat_gt.lines + flat_gt.arcs + flat_gt.circles)
+    if len(ends) and len(lw):
+        dist, near = cKDTree(lw).query(ends)
+        turn = np.abs(heading - lw_dir[near]) % np.pi
+        on_ref = (dist <= 0.5) & (np.minimum(turn, np.pi - turn) < math.radians(25))  # running along it
+        nodes = _nodes(flat_gt)
+        free = cKDTree(nodes).query(ends)[0] > 1.5 if len(nodes) else np.ones(len(ends), bool)
+        length = len(ref) * STEP / 1000
+        out["breaks_per_m"] = float(np.sum(on_ref & free) / 2 / length)
+    P, D, E, C = np.vstack(pts), np.concatenate(dirs), np.concatenate(ent), np.concatenate(curved)
+    tree = cKDTree(P)
+    pieces, as_arc, total = [], 0, 0
+    for q in flat_gt.arcs:
+        if q.r < 1.0:
+            continue
+        s, a = _sampled([q])
+        dist, idx = tree.query(s, k=8, distance_upper_bound=0.5)
+        hit = idx < len(P)
+        diff = np.abs(D[np.minimum(idx, len(P) - 1)] - a[:, None]) % np.pi
+        ok = hit & (np.minimum(diff, np.pi - diff) < math.radians(25))
+        if ok.any(axis=1).mean() < 0.5:
+            continue  # mostly missing: a recognition error, not a question of pieces
+        first = idx[np.arange(len(s)), np.argmax(ok, axis=1)][ok.any(axis=1)]
+        counts = Counter(E[first].tolist())
+        pieces.append(sum(k >= 2 for k in counts.values()))
+        as_arc += int(C[first].sum())
+        total += len(first)
+    if pieces:
+        out["curve_pieces"] = float(np.mean(pieces))
+        out["curves_as_arcs"] = as_arc / total
+    return out
+
+
+def _open_ends(d: Drawing) -> tuple[np.ndarray, np.ndarray]:
+    """The two ends of every line, arc and open polyline (symbols are blocks and have none) with the direction of the
+    entity there (mod pi)."""
+    at = [(q, (q.x1, q.y1)) for q in d.lines] + [(q, (q.x2, q.y2)) for q in d.lines]
+    at += [(a, (a.cx + a.r * math.cos(math.radians(t)), a.cy + a.r * math.sin(math.radians(t))))
+           for a in d.arcs for t in (a.start, a.end)]
+    for pl in d.polylines:
+        if not pl.closed:
+            parts = pl.parts()
+            at += [(parts[0], pl.points[0]), (parts[-1], pl.points[-1])]
+    dirs = [math.atan2(q.y2 - q.y1, q.x2 - q.x1) if isinstance(q, Line)
+            else math.atan2(y - q.cy, x - q.cx) + math.pi / 2 for q, (x, y) in at]
+    return np.array([p for _, p in at], np.float64).reshape(-1, 2), np.array(dirs) % np.pi
+
+
 def circles(gt: Drawing, pred: Drawing) -> dict:
     def match(a, b):
         return math.hypot(a.cx - b.cx, a.cy - b.cy) < max(0.5, 0.15 * a.r) and abs(a.r - b.r) < max(0.4, 0.15 * a.r)
@@ -215,6 +299,6 @@ def symbols(gt: Drawing, pred: Drawing) -> dict:
 def evaluate(gt: Drawing, pred: Drawing) -> dict:
     flat_gt, flat_pred = gt.flat(), pred.flat()
     out = geometry(flat_gt, flat_pred) | circles(flat_gt, flat_pred) | texts(flat_gt, flat_pred) | objects(gt, pred)
-    out |= symbols(gt, pred)
+    out |= continuity(gt, pred) | symbols(gt, pred)
     out["scale_ok"] = pred.scale == gt.scale if gt.scale else None
     return out

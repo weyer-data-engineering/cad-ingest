@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from app.plan2cad.model import Drawing, Line, Polyline, Text
+from app.plan2cad.model import Circle, Drawing, Line, Polyline, Text
 from app.plan2cad.ocr import Components, _group, _voted, find_texts, fix, frames
 from app.plan2cad.pipeline import detect_scale
 from app.plan2cad.render import render
@@ -73,6 +73,36 @@ def test_frames_are_the_strokes_around_a_text():
     frame = frames(ink, labels, 10)
     assert frame[100, 250] and frame[150, 400]  # the box around P-101
     assert not frame[250:350, 450:750].any()  # T=EL stands free
+
+
+def test_a_single_letter_is_read_in_a_frame_but_not_on_open_paper():
+    d = Drawing(90, 40, circles=[Circle(20, 20, 5, 0.35)], texts=[
+        Text(20, 18, 2.0, "FIC"), Text(20, 22.5, 2.0, "B"),  # an instrument bubble with its loop letter
+        Text(60, 20, 2.0, "B"), Text(60, 32, 2.0, "LINE 101")])
+    gray = render(d, 10)
+    ink = (gray < 128).astype(np.uint8)
+    texts, _, _ = find_texts(ink, gray, 10, frame=ink)
+    assert sorted((t.text, round(t.x)) for t in texts if not t.uncertain) == [("B", 20), ("FIC", 20), ("LINE 101", 60)]
+
+
+def test_a_stroke_beside_a_text_is_not_read_as_part_of_it():
+    d = Drawing(60, 30, lines=[Line(25.5, 13.8, 25.5, 16.2, 0.3)], texts=[Text(30, 15, 2.0, "LT")])
+    gray = render(d, 10)
+    texts, labels, _ = find_texts((gray < 128).astype(np.uint8), gray, 10)
+    assert [t.text for t in texts] == ["LT"]
+    assert not labels[140:160, 253:258].any()  # the stroke stays linework
+
+
+def test_letters_in_small_boxes_are_read_without_the_boxes():
+    corners = [(0, 0), (5, 0), (5, 5), (0, 5), (0, 0)]  # two 5 mm boxes side by side, as line sizes are drawn
+    boxes = [Line(x + p[0], 12.5 + p[1], x + q[0], 12.5 + q[1], 0.35)
+             for x in (15, 21.5) for p, q in zip(corners, corners[1:])]
+    texts = [Text(17.5, 15, 1.4, "K7"), Text(24, 15, 1.4, "M3"), Text(45, 15, 1.8, "LINE 101")]
+    d = Drawing(60, 30, lines=boxes, texts=texts)
+    gray = render(d, 10)
+    texts, labels, _ = find_texts((gray < 128).astype(np.uint8), gray, 10)
+    assert sorted(t.text for t in texts) == ["K7", "LINE 101", "M3"]
+    assert not labels[123:127].any()  # the boxes stay linework
 
 
 @pytest.mark.parametrize("text, scale", [("Maßstab 1:50", 50), ("M 1:100", 100), ("Matstab 1 50", 50),

@@ -39,27 +39,31 @@ class Components:
         self.n = n - 1
 
 
-def find_texts(ink: np.ndarray, gray: np.ndarray, ppm: float, rotation_check: bool = False
-               ) -> tuple[list[Text], np.ndarray, int | None]:
+def find_texts(ink: np.ndarray, gray: np.ndarray, ppm: float, rotation_check: bool = False,
+               frame: np.ndarray | None = None) -> tuple[list[Text], np.ndarray, int | None]:
     """Returns recognised text lines (sheet mm), a label image of their pixels (0: no text, k: the
     k-th text line) and, if requested, the clockwise rotation in degrees (0, 90, 180, 270) that
-    makes the text upright (None if the text is not readable enough to tell)."""
+    makes the text upright (None if the text is not readable enough to tell). ``frame``: all strokes of the sheet,
+    which may enclose a single letter (see _framed)."""
     cc = Components(ink, gray)
     cand = np.flatnonzero((np.maximum(cc.w, cc.h) <= 7.5 * ppm) & (cc.area >= 3))
+    cand = np.setdiff1d(cand, _enclosing(cc, cand, ppm))
     h_groups, singles = _group(cc, cand, horizontal=True)
-    v_groups, _ = _group(cc, singles, horizontal=False)
+    framed = _framed(cc, singles, h_groups, ppm, frame)  # before vertical lines: a bubble's letter above its stem
+    v_groups, _ = _group(cc, np.setdiff1d(singles, framed), horizontal=False)
     rotation: int | None = 0
     if rotation_check:  # vertical lines grouped from all characters, the sheet may be sideways
         rotation = _rotation(cc, h_groups, _group(cc, cand, horizontal=False)[0])
         if rotation:
             return [], np.zeros(ink.shape, np.uint8), rotation
     groups = [(g, False) for g in h_groups] + [(g, True) for g in v_groups]
+    groups += [([i], False) for i in framed]
     results = _voted(cc, groups, _read([_crop(cc, g, vertical) for g, vertical in groups]))
     found, unsure = [], []
     for (g, vertical), (s, conf) in zip(groups, results):
-        s = fix(" ".join(s.split()))
-        if conf < 50 or not any(ch.isalnum() for ch in s) or (len(s) <= 3 and conf < 75) or (len(s) == 1 and conf < 90):
-            letters = _letters(cc, g, vertical, ppm) if sum(ch.isalnum() for ch in s) >= 2 else []
+        s, g = _unbarred(cc, g, vertical, fix(" ".join(s.split())))
+        if conf < 50 or not any(ch.isalnum() for ch in s) or (len(s) <= 3 and conf < 75) or (len(s) == 1 and conf < 85):
+            letters = _letters(cc, g, vertical, ppm, s) if sum(ch.isalnum() for ch in s) >= 2 else []
             if letters:
                 unsure.append((replace(_text(cc, letters, vertical, s, conf, ppm), uncertain=True), letters))
             continue
@@ -74,6 +78,78 @@ def find_texts(ink: np.ndarray, gray: np.ndarray, ppm: float, rotation_check: bo
     return [t for t, _ in found], lut[cc.lab], rotation
 
 
+def _enclosing(cc: Components, cand: np.ndarray, ppm: float) -> np.ndarray:
+    """The candidates that enclose a letter-sized one at most half their height, such as the box around a line size
+    or the ring of a bubble: a frame, not a character, and read together with its letters it spoils their reading."""
+    x0, y0, x1, y1 = cc.x[cand], cc.y[cand], cc.x[cand] + cc.w[cand], cc.y[cand] + cc.h[cand]
+    centres = np.column_stack([x0 + x1, y0 + y1]) / 2
+    tree = cKDTree(centres)
+    out = []
+    for k in np.flatnonzero(cc.h[cand] >= ppm):
+        near = np.array(tree.query_ball_point(centres[k], max(cc.w[cand[k]], cc.h[cand[k]])))
+        inner = (x0[near] > x0[k]) & (x1[near] < x1[k]) & (y0[near] > y0[k]) & (y1[near] < y1[k])
+        sized = (cc.h[cand[near]] >= 0.5 * ppm) & (2 * cc.h[cand[near]] <= cc.h[cand[k]])
+        if (inner & sized).any():
+            out.append(cand[k])
+    return np.array(out, np.int64)
+
+
+def _framed(cc: Components, alone: np.ndarray, groups: list[list[int]], ppm: float,
+            frame: np.ndarray | None = None) -> list[int]:
+    """The components among ``alone`` that look like a character of the sheet's text lines and sit in a frame of their
+    own, such as the loop letter of an instrument bubble: a single character is read only there, since elsewhere a
+    lone stroke of that size is as likely part of a symbol."""
+    lines = [g for g in groups if len(g) >= 3]
+    if not lines or not len(alone):
+        return []
+    h = float(np.median([cc.h[i] for g in lines for i in g]))
+    reach = round(FRAME * ppm)
+    out = []
+    for i in alone:
+        if not (0.75 * h <= cc.h[i] <= 1.5 * h and 0.4 * h <= cc.w[i] <= 1.2 * h):
+            continue  # not letter-sized, or a bar or a dash
+        y0, x0 = max(0, cc.y[i] - reach), max(0, cc.x[i] - reach)
+        y1, x1 = min(cc.lab.shape[0], cc.y[i] + cc.h[i] + reach), min(cc.lab.shape[1], cc.x[i] + cc.w[i] + reach)
+        lab = cc.lab[y0:y1, x0:x1]
+        window = ((lab > 0) & (lab != i + 1)).astype(np.uint8)
+        gap = round(h)
+        row = window[cc.y[i] - y0:cc.y[i] - y0 + cc.h[i], max(0, cc.x[i] - x0 - gap):cc.x[i] - x0 + cc.w[i] + gap]
+        if row.any():
+            continue  # a letter of a word whose other letters touch something: not a single character
+        if frame is not None:
+            window |= frame[y0:y1, x0:x1] & (lab != i + 1)
+        seed = np.argwhere(lab == i + 1)[0]
+        fill = np.zeros((y1 - y0 + 2, x1 - x0 + 2), np.uint8)
+        cv2.floodFill(window, fill, (int(seed[1]), int(seed[0])), 1, 0, 0, 4 | cv2.FLOODFILL_MASK_ONLY | (1 << 8))
+        inside = fill[1:-1, 1:-1]
+        if not (inside[0].any() or inside[-1].any() or inside[:, 0].any() or inside[:, -1].any()):
+            out.append(int(i))
+    return out
+
+
+BARS = set("|ı")  # what Tesseract reads for a bare stroke
+
+
+def _unbarred(cc: Components, g: list[int], vertical: bool, s: str) -> tuple[str, list[int]]:
+    """Drops a bar read at either end of a line, apart from the next character ("| LT", "ıLT"): the end of a leader or
+    a pipe beside the text, which stays linework."""
+    glyphs = _glyphs(cc, g, vertical)
+    a, la = (cc.y, cc.h) if vertical else (cc.x, cc.w)
+    top, base, _, _ = _metrics(cc, g, vertical)
+
+    def apart(p: list[int], q: list[int]) -> bool:  # the gap between two glyphs, at least a third of a capital
+        return max(a[i] for i in q) - min(a[i] + la[i] for i in p) >= (base - top) / 3 or \
+            min(a[i] for i in p) - max(a[i] + la[i] for i in q) >= (base - top) / 3
+
+    drop: list[int] = []
+    s = s.strip()
+    if len(s) > 1 and s[0] in BARS and len(glyphs) > 1 and apart(glyphs[0], glyphs[1]):
+        drop, s, glyphs = drop + glyphs[0], s[1:].lstrip(), glyphs[1:]
+    if len(s) > 1 and s[-1] in BARS and len(glyphs) > 1 and apart(glyphs[-2], glyphs[-1]):
+        drop, s = drop + glyphs[-1], s[:-1].rstrip()
+    return s, [i for i in g if i not in drop]
+
+
 def frames(ink: np.ndarray, labels: np.ndarray, ppm: float) -> np.ndarray:
     """The strokes that enclose a text line: the outline around a tag, such as an instrument bubble, the box of a
     line number or an off-page connector (``labels`` as from find_texts). The paper around the text is filled
@@ -85,18 +161,20 @@ def frames(ink: np.ndarray, labels: np.ndarray, ppm: float) -> np.ndarray:
     for sl in find_objects(labels):
         if sl is None:
             continue
-        y0, x0 = max(0, sl[0].start - reach), max(0, sl[1].start - reach)
-        y1, x1 = min(ink.shape[0], sl[0].stop + reach), min(ink.shape[1], sl[1].stop + reach)
-        window = blocked[y0:y1, x0:x1]
-        seed = ((sl[1].start + sl[1].stop) // 2 - x0, (sl[0].start + sl[0].stop) // 2 - y0)
-        if window[seed[1], seed[0]]:
-            continue
-        fill = np.zeros((y1 - y0 + 2, x1 - x0 + 2), np.uint8)
-        cv2.floodFill(window, fill, seed, 1, 0, 0, 4 | cv2.FLOODFILL_MASK_ONLY | (1 << 8))
-        inside = fill[1:-1, 1:-1]
-        if inside[0].any() or inside[-1].any() or inside[:, 0].any() or inside[:, -1].any():
-            continue  # the paper runs on: no frame
-        out[y0:y1, x0:x1] |= cv2.dilate(inside, stroke) & window
+        # a long line-number box holds several texts: along the text the frame may be further away
+        for along in (reach, 4 * reach):
+            y0, x0 = max(0, sl[0].start - reach), max(0, sl[1].start - along)
+            y1, x1 = min(ink.shape[0], sl[0].stop + reach), min(ink.shape[1], sl[1].stop + along)
+            window = blocked[y0:y1, x0:x1]
+            seed = ((sl[1].start + sl[1].stop) // 2 - x0, (sl[0].start + sl[0].stop) // 2 - y0)
+            if window[seed[1], seed[0]]:
+                break
+            fill = np.zeros((y1 - y0 + 2, x1 - x0 + 2), np.uint8)
+            cv2.floodFill(window, fill, seed, 1, 0, 0, 4 | cv2.FLOODFILL_MASK_ONLY | (1 << 8))
+            inside = fill[1:-1, 1:-1]
+            if not (inside[0].any() or inside[-1].any() or inside[:, 0].any() or inside[:, -1].any()):
+                out[y0:y1, x0:x1] |= cv2.dilate(inside, stroke) & window
+                break  # otherwise the paper runs on: no frame, or a longer one
     return out
 
 
@@ -160,16 +238,20 @@ def _glyph(cc: Components, parts: list[int], vertical: bool) -> np.ndarray:
     return (f - f.mean()) / (f.std() + 1e-6)
 
 
-def _letters(cc: Components, g: list[int], vertical: bool, ppm: float) -> list[int]:
-    """The character-like members of a group that looks like a line of text: at least three of
-    similar height (0.8 to 6 mm), none much longer than high (dashes, symbol parts). Empty if the
-    group does not look like text."""
+def _letters(cc: Components, g: list[int], vertical: bool, ppm: float, s: str) -> list[int]:
+    """The character-like members of a group that looks like a line of text read as ``s``: at least three of
+    similar height (0.8 to 6 mm), none longer than three characters (a scan merges touching letters), and as many
+    characters read as their length holds: a symbol, such as a valve with its stem, reads as two or three large
+    letters. Empty if the group does not look like text."""
     g = np.array(g)
     size = (cc.w if vertical else cc.h)[g].astype(np.float64)
-    along = (cc.h if vertical else cc.w)[g]
+    start, along = ((cc.y, cc.h) if vertical else (cc.x, cc.w))
     med = float(np.median(size))
-    ok = (np.abs(size - med) <= 0.4 * med) & (along <= 1.5 * size)
+    ok = (np.abs(size - med) <= 0.4 * med) & (along[g] <= 3.5 * size)
     if ok.sum() < 3 or ok.mean() < 0.6 or not 0.8 * ppm <= med <= 6 * ppm:
+        return []
+    extent = (start[g[ok]] + along[g[ok]]).max() - start[g[ok]].min()
+    if extent > 1.3 * med * len(s.replace(" ", "")):
         return []
     return g[ok].tolist()
 
