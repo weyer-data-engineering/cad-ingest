@@ -85,8 +85,9 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 - Connected linework on photos and scans: once the symbols are placed, line ends that stop up to 2 mm short of other
   linework are joined to it (a branch to its pipe, a signal line to its bubble, a pipe to its valve or vessel), two
   loose ends whose lines meet nearby form a corner, a symbol port that faces a pipe or the next symbol's port within
-  6 mm is piped to it, pieces that then meet end to end become one polyline, and loose pieces under 2 mm are dropped.
-  The benchmark counts the ends that stop short and the loose crumbs.
+  6 mm is piped to it, a line drawn broken where it crosses another becomes one line across it (without a junction),
+  pieces that then meet end to end become one polyline, and loose pieces under 2 mm are dropped. The benchmark counts
+  the ends that stop short and the loose crumbs.
 - Fewer wrong symbols: a symbol needs 85 % of its outline instead of 80 % (a symbol not placed keeps its strokes as
   lines, which is better than a wrong block); a symbol whose strokes end freely in the library, such as the barbs of a
   flow arrow, is not placed where those strokes run on (the edges of a line number's frame, the cross in a box,
@@ -99,7 +100,7 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   with; positions in `report.json` stay in sheet millimetres.
 - Texts in the DXF, the tags in symbols included, are fitted between the ends of their baseline as printed, so they
   are as long as on the paper in any font: a tag stays inside its bubble, a line number inside its frame. The preview
-  draws a text that would come out longer smaller.
+  draws a text that would come out longer smaller. A text whose letters were found only in part keeps its size.
 
 - The starter library moved from `app/plan2cad/symbols.dxf` to `libraries/din-10628`.
 - A symmetric symbol (one that looks the same turned or mirrored) takes the pose in which most of its attribute

@@ -34,6 +34,7 @@ GLYPH = 7.5  # mm: the largest character on a sheet
 SURE = 0.9
 TALL = 1.6  # nor much higher than the usual text of the sheet (two stacked circles read as "8")
 SPACE = 2.5
+NARROW = 0.35  # cap heights a character takes along the line at least, on average ("1", "I" and "." with their gaps)
 LATIN = 0x24F  # last code point of the Latin scripts; the recogniser also knows Chinese, Korean, ...
 
 
@@ -207,11 +208,14 @@ def spotted(texts: list[Text], labels: np.ndarray, ink: np.ndarray, gray: np.nda
     line = np.zeros(cc.n + 1, kind)
     out = [texts[k - 1] for k in keep]
     for (s, _, near, letters, cap), (text, _) in zip(lines, read[len(texts):]):
-        lo, hi = _metrics(cc, letters.tolist(), s.vertical)[2:] if len(letters) else \
-            (s.y0, s.y1) if s.vertical else (s.x0, s.x1)  # the extent of its letters along the line
+        box = (s.y0, s.y1) if s.vertical else (s.x0, s.x1)
+        lo, hi = _metrics(cc, letters.tolist(), s.vertical)[2:] if len(letters) else box  # its letters along the line
+        text = _spaced(cc, near, s.vertical, text)
+        if (length := _length(lo, hi, cap, text, ppm)) is None:  # only some of its letters were found: on its box
+            lo, hi = box
         x, y = ((s.x0 + s.x1) / 2, (lo + hi) / 2) if s.vertical else ((lo + hi) / 2, (s.y0 + s.y1) / 2)
-        out.append(Text(x / ppm, y / ppm, cap / ppm, _spaced(cc, near, s.vertical, text), 90.0 if s.vertical else 0.0,
-                        round(100 * s.score, 1), s.score < UNSURE, (hi - lo) / ppm))
+        out.append(Text(x / ppm, y / ppm, cap / ppm, text, 90.0 if s.vertical else 0.0, round(100 * s.score, 1),
+                        s.score < UNSURE, length))
         line[letters + 1] = len(out)
     take = line[cc.lab]
     return out, np.where(take > 0, take, ids[labels])
@@ -557,7 +561,14 @@ def _text(cc: Components, g: list[int], vertical: bool, s: str, conf: float, ppm
     mid_across, mid_along = (top + base) / 2, (lo + hi) / 2
     x, y = (mid_across, mid_along) if vertical else (mid_along, mid_across)
     return Text(x / ppm, y / ppm, (base - top) / ppm, s, 90.0 if vertical else 0.0, round(conf, 1),
-                length=(hi - lo) / ppm)
+                length=_length(lo, hi, base - top, s, ppm))
+
+
+def _length(lo: float, hi: float, cap: float, text: str, ppm: float) -> float | None:
+    """The length of a text line as printed, in mm, from the extent of its letters along the line (in pixels); none
+    where they are too short for the text, as when letters that touch a line were not found as letters: fitted to
+    that, the text would shrink to a fraction of its size."""
+    return (hi - lo) / ppm if hi - lo >= NARROW * cap * sum(not ch.isspace() for ch in text) else None
 
 
 def _rotation(cc: Components, h_groups: list, v_groups: list) -> int | None:

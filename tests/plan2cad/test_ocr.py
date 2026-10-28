@@ -126,3 +126,10 @@ def test_inch_marks_are_put_right_on_a_sheet_that_writes_pipe_sizes_in_inches():
 def test_a_colon_in_a_key_value_label_is_its_equals_sign_where_the_sheet_writes_such_labels():
     assert read("PN=16", "M=XY", "T:AB", "NOTE: SEE", "NAME : X") == ["PN=16", "M=XY", "T=AB", "NOTE: SEE", "NAME : X"]
     assert read("PN=16", "T:AB") == ["PN=16", "T:AB"]
+
+
+def test_a_text_whose_letters_were_found_only_in_part_keeps_its_size():
+    from app.plan2cad.ocr import _length
+
+    assert _length(0, 120, 20, "AB=12XY", 10) == pytest.approx(12.0)
+    assert _length(0, 30, 20, "AB=12XY", 10) is None  # the letters touching a line were not found: not fitted to that

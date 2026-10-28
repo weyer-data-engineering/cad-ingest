@@ -30,6 +30,7 @@ FACING = math.radians(10)  # two loose ends that point at each other along one l
 CORNER = math.radians(30)  # two loose ends whose lines meet at least at this angle form a corner where they meet
 LOOSE = 2.0  # mm: a shorter piece that touches no other linework is left over from strokes not recognised
 STUB = 6.0  # mm: a port of a symbol that faces a pipe or the port of the next symbol this close is piped to it
+BRIDGE = 8.0  # mm: a line broken where it crosses another, to show they do not join, is joined across a gap this long
 FIXED = ("frame", "door")  # kinds of polylines whose ends stay as they are
 
 
@@ -339,7 +340,9 @@ def connect(d: Drawing) -> None:
     g = _Linework(items, rest, ports)
     loose = [(i, k) for i in range(len(items)) for k in (0, 1) if g.distance(_end(items[i], k), (i, k))[0] > TOUCH]
     hits = {end: g.ray(*end) for end in loose}
-    for (i, k), (j, m), p in _pairs(items, loose, hits):  # corners first: both ends move
+    bridges = _bridges(items, [e for e in loose if hits[e] is None], g)
+    across = {e for a, b, _ in bridges for e in (a, b)}
+    for (i, k), (j, m), p in bridges + _pairs(items, [e for e in loose if e not in across], hits):
         _move(items[i], k, p)
         _move(items[j], m, p)
         hits.pop((i, k))
@@ -580,6 +583,37 @@ def _pairs(items: list[Polyline], loose: list[tuple[int, int]], hits: dict):
             taken |= {ea, eb}
             out.append((ea, eb, meet))
     return out
+
+
+def _bridges(items: list[Polyline], loose: list[tuple[int, int]], g: _Linework):
+    """Loose ends beyond REACH of the line between them that point at each other along one line across it, near the
+    middle, with nothing else between them: a line drawn broken where it crosses another, to show that the two do not
+    join. They meet halfway, on the other line, which joins them into one line across it, without a junction."""
+    if len(loose) < 2:
+        return []
+    ends = {e: _heading(items[e[0]], e[1]) for e in loose}
+    tree = cKDTree([ends[e][0] for e in loose])
+    offers = []
+    for a, b in tree.query_pairs(BRIDGE):
+        ea, eb = loose[a], loose[b]
+        (p, u), (q, v) = ends[ea], ends[eb]
+        if u is None or v is None or ea[0] == eb[0] or items[ea[0]].dashed != items[eb[0]].dashed:
+            continue
+        gap = (q[0] - p[0], q[1] - p[1])
+        along = gap[0] * u[0] + gap[1] * u[1]
+        if u[0] * v[0] + u[1] * v[1] > -math.cos(FACING) or abs(gap[0] * u[1] - gap[1] * u[0]) > ASIDE:
+            continue
+        between = g.cast(p, u, ea, TOUCH, along - TOUCH)
+        if len(between) == 1 and abs(between[0] - along / 2) <= along / 4:
+            offers.append((along, ea, eb, ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)))
+    taken, out = set(), []
+    for _, ea, eb, meet in sorted(offers, key=lambda o: o[0]):
+        if ea not in taken and eb not in taken:
+            taken |= {ea, eb}
+            out.append((ea, eb, meet))
+    return out
+
+
 def _merged(items: list[Polyline]) -> list[Polyline]:
     """The polylines with those that meet end to end joined into one: where two meet alone, and at a node where more
     meet, the pairs that go straight on. Only polylines of one pen join (dashed or not, the same kind or a plain

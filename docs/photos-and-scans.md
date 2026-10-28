@@ -96,7 +96,9 @@ job handler in `app/scan.py`.
    pipes a little short of it. An end of a line or polyline that stops up to 2 mm short of other linework is moved
    along its line onto it (a branch onto its pipe, a signal line onto its bubble, a pipe onto its valve or vessel), or
    cut back onto a line it runs past by a little; two loose ends whose lines meet nearby form a corner there, and two
-   that point at each other along one line meet halfway. A port of a symbol that no line reaches, but that faces a
+   that point at each other along one line meet halfway. A line drawn broken where it crosses another, to show that
+   the two do not join, becomes one line across it, without a junction: two ends further than 2 mm from a single line
+   between them, which point at each other along one line no more than 8 mm apart. A port of a symbol that no line reaches, but that faces a
    pipe or the port of the next symbol within 6 mm, is piped to it: the short pipe between a valve and its junction,
    with its flanges, is often lost with the strokes of the symbols around it. Pieces that then meet end to end become
    one polyline, through a crossing the ones that go straight on, and pieces under 2 mm that touch nothing are dropped
@@ -119,7 +121,8 @@ the recognised texts, symbols (with their tags) and markups as markdown, so phot
 Every text of the DXF, the tags in a symbol's bubble included, is fitted between the ends of its baseline as printed
 (DXF alignment "fit"), so that it is as long as on the paper in whatever font the CAD program shows it: a tag stays
 inside its bubble, a line number inside its frame. The preview draws a text that would come out longer in its font
-smaller.
+smaller. A text whose letters were found only in part (where they touch a line) keeps its natural length, as fitted
+to that part it would shrink to a fraction of its size.
 
 `report.json` lists what to check under `review`, least confident first: texts that could not be read
 reliably (on `P2C-TEXT-CHECK`) and symbols that may be the wrong ones (on `P2C-SYMBOL-CHECK`, and in magenta in

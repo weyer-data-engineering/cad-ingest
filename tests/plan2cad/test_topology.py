@@ -60,6 +60,12 @@ def test_two_loose_ends_close_their_corner_and_become_one_polyline():
     assert [pl.points for pl in d.polylines] == [[(0, 0), (50, 0), (50, 40)]]
 
 
+def test_a_pipe_drawn_broken_where_it_crosses_another_is_one_pipe_across_it_without_a_junction():
+    d = Drawing(100, 100, polylines=[pipe((0, 50), (90, 50)), pipe((40, 0), (40, 47)), pipe((40, 53), (40, 90))])
+    connect(d)
+    assert sorted(pl.points for pl in d.polylines) == [[(0, 50), (90, 50)], [(40, 0), (40, 90)]]
+
+
 def test_crumbs_that_touch_nothing_are_dropped_but_a_flange_mark_stays():
     d = Drawing(100, 100, polylines=[pipe((0, 0), (40, 0))],
                 lines=[Line(20, -1, 20, 1), Line(70, 70, 71.2, 70.5)])
