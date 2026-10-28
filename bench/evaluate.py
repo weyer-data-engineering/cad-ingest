@@ -344,6 +344,45 @@ def _linked(d: Drawing, tol: float = 0.5) -> set[frozenset]:
     return {frozenset((a, b)) for m in members.values() for a in m for b in m if a < b}
 
 
+def loose(d: Drawing) -> dict:
+    """What has to be joined or cleaned up by hand in CAD, without a reference: ``gap_ends``, ends of lines, arcs and
+    open polylines that stop short of other linework by up to 2 mm without touching it (a pipe that does not reach its
+    junction, valve or vessel); ``crumbs``, pieces under 2 mm that touch no other linework."""
+    ents = [e for e in _entities(d) if e]
+    sampled = [_sampled(e)[0] for e in ents]
+    if not sampled:
+        return {"gap_ends": 0, "crumbs": 0}
+    owner = np.concatenate([np.full(len(p), i) for i, p in enumerate(sampled)])
+    tree = cKDTree(np.vstack(sampled))
+
+    def nearest_other(points: np.ndarray, i: int) -> np.ndarray:
+        dist, idx = tree.query(points, k=12, distance_upper_bound=2.0)
+        dist[(idx < len(owner)) & (owner[np.minimum(idx, len(owner) - 1)] == i)] = np.inf
+        return dist.min(axis=1)
+
+    touch = STEP / 2 + 0.05
+    gaps = crumbs = 0
+    for i, e in enumerate(ents[:len(ents) - len(d.symbols)]):  # the symbols are blocks
+        if isinstance(e[0], (Circle, Polygon)) or _closed(e):
+            continue
+        ends = np.array([_ends(e[0])[0], _ends(e[-1])[1]])
+        dist = nearest_other(ends, i)
+        gaps += int(np.sum((dist > touch) & (dist <= 2.0)))
+        crumbs += _length(e) < 2.0 and bool(nearest_other(sampled[i], i).min() > touch)
+    return {"gap_ends": gaps, "crumbs": crumbs}
+
+
+def _ends(q) -> tuple[tuple[float, float], tuple[float, float]]:
+    if isinstance(q, Line):
+        return (q.x1, q.y1), (q.x2, q.y2)
+    return tuple((q.cx + q.r * math.cos(math.radians(t)), q.cy + q.r * math.sin(math.radians(t)))
+                 for t in (q.start, q.end))
+
+
+def _closed(parts: list) -> bool:
+    return len(parts) > 1 and math.dist(_ends(parts[0])[0], _ends(parts[-1])[1]) < 1e-6
+
+
 def connectivity(gt: Drawing, pred: Drawing) -> dict:
     """Symbols joined by linework in the reference and in the output; output symbols count as the reference symbol of
     the same name within 1.5 mm. A broken pipe loses a connection, a wrong junction adds one."""
@@ -364,6 +403,6 @@ def connectivity(gt: Drawing, pred: Drawing) -> dict:
 def evaluate(gt: Drawing, pred: Drawing) -> dict:
     flat_gt, flat_pred = gt.flat(), pred.flat()
     out = geometry(flat_gt, flat_pred) | circles(flat_gt, flat_pred) | texts(flat_gt, flat_pred) | objects(gt, pred)
-    out |= continuity(gt, pred) | symbols(gt, pred) | connectivity(gt, pred)
+    out |= continuity(gt, pred) | symbols(gt, pred) | connectivity(gt, pred) | loose(pred)
     out["scale_ok"] = pred.scale == gt.scale if gt.scale else None
     return out

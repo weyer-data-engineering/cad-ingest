@@ -18,6 +18,9 @@ MAX_PIXELS = 80e6  # upper bound for the rectified sheet image
 PDF_PPM = 300 / 25.4  # resolution of the review image of a vector PDF page
 TEXT = 2.0  # mm: text height the printed-size symbols of the libraries go with (their tags are this high)
 FAINT = 0.25  # share of the way from paper to the darkest ink nearby that a faint stretch of a stroke reaches
+DRAWN = 2.2  # mm: the usual height of the characters of a drawing at its drawn size (2.5 mm by ISO 3098, 2 for tags)
+SMALLER = 0.7  # a sheet whose characters are smaller than this share of DRAWN is a large drawing printed small
+DRAWN_PPM = 5.0  # px per drawn mm from which a small print is vectorised at its drawn size (a photo of it is coarser)
 SCALES = {1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 200, 250, 500, 1000, 2000, 2500, 5000}
 
 
@@ -76,9 +79,15 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
     timer.lap("sheet")
     norm = normalize(image, out)
     ink = binarize(norm, out)
+    # A large drawing printed small (an A1 plan on A3) is recognised at its drawn size, which the measures of
+    # recognition are made for, and brought back to the size of the sheet at the end. Its lines and texts are found at
+    # the drawn size too where the image has the pixels for it (a scan); a photo of a small print has too few and
+    # falls apart into short pieces that way, so its lines are found on the sheet as it is.
+    printed = printed_size(ink, out)
+    first = printed if out * printed >= DRAWN_PPM else 1.0  # the size lines and texts are found at
     timer.lap("binarize")
     rotation = 0
-    parts = _vectorize(ink, norm, out, timer, check_rotation=True)
+    parts = _vectorize(ink, norm, out * first, timer, True, first)
     if isinstance(parts, int):  # text is sideways or upside down: turn the sheet and start again
         rotation = parts
         k = -rotation // 90  # np.rot90 turns counter-clockwise
@@ -86,21 +95,28 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
         marks = None if marks is None else np.ascontiguousarray(np.rot90(marks, k))
         if rotation in (90, 270):
             size = (size[1], size[0])
-        parts = _vectorize(ink, norm, out, timer, check_rotation=False)
+        parts = _vectorize(ink, norm, out * first, timer, False, first)
     polygons, lines, arcs, circles, texts, (linework, text_mask, straight, frame) = parts
     scale = scale or detect_scale([t for t in texts if not t.uncertain])
-    drawing_type = drawing or objects.drawing_type(texts, circles, scale)
+    size, grow = (size[0] / first, size[1] / first), first / printed  # what is still to be brought to the drawn size
+    drawn = Drawing(*size, circles=circles, texts=texts).scaled(grow)
+    drawing_type = drawing or objects.drawing_type(drawn.texts, drawn.circles, scale)
     swings, lines, arcs = objects.doors(lines, arcs) if drawing_type == "building" else ([], lines, arcs)
     # below 3.5 px per mm lines fall apart into short pieces themselves: no crumbs are dropped
-    polylines, lines, arcs = topology.join(lines, arcs, topology.CRUMB if src >= 3.5 else 0.0)
-    d = Drawing(size[0], size[1], lines, arcs, circles, polygons, texts, scale, swings + polylines)
+    polylines, lines, arcs = topology.join(lines, arcs, topology.CRUMB if src * first >= 3.5 else 0.0)
+    d = Drawing(size[0], size[1], lines, arcs, circles, polygons, texts, scale, swings + polylines).scaled(grow)
     objects.classify(d, drawing_type)
     timer.lap("objects")
     libraries = library.select() if libraries is None else libraries
     used = [lib for lib in libraries if (drawing_type or "pid") in lib.drawing]
-    if templates := library.combine(used, drawing_type or "pid", d.scale, _printed(texts)):
-        symbols.recognise(d, templates, symbols.ink_samples(linework, text_mask, out, straight, frame))
+    if templates := library.combine(used, drawing_type or "pid", d.scale, _printed(d.texts)):
+        straight = Drawing(*size, lines=straight).scaled(grow).lines
+        symbols.recognise(d, templates, symbols.ink_samples(linework, text_mask, out * printed, straight, frame))
         timer.lap("symbols")
+    topology.connect(d)
+    timer.lap("connect")
+    d = d.scaled(printed)
+    d.printed, size = printed, (size[0] * first, size[1] * first)
     crops = []
     if marks is not None:  # after the recognition of the print, which they would only disturb
         tags = [Text(s.x, s.y, TEXT, " ".join(t.text for t in s.attributes.values()))
@@ -117,6 +133,7 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
         "source_ppm": round(src, 2),
         "working_ppm": round(out, 2),
         "rotation_deg": rotation,
+        "printed": printed,
         "drawing_type": drawing_type or None,
         "scale": d.scale,
         "libraries": [{"id": lib.id, "version": lib.version} for lib in used],
@@ -159,7 +176,10 @@ def convert_vectors(pdf: pdfium.PdfDocument, page: pdfium.PdfPage, scale: int | 
     return Result(d, image, ppm, info)
 
 
-def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, check_rotation: bool):
+def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, check_rotation: bool, printed: float):
+    """The vectors and texts of the sheet in millimetres at ``ppm`` pixels each: of the sheet, or of the drawing as
+    drawn where it is printed smaller (``printed``, the share of its drawn size the sheet shows); or the clockwise
+    rotation in degrees that makes the sheet's text upright, if asked to ``check_rotation`` and it is not."""
     polygons, fill = vectorize.fills(ink, ppm)
     ink = ink & (1 - fill)
     hv, used, crossing = vectorize.axis_lines(ink, ppm)
@@ -167,14 +187,16 @@ def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, che
     rem = ink & (1 - cv2.dilate(used, k))
     timer.lap("lines")
     readable = rem & (1 - vectorize.joints(rem, hv, ppm))
-    texts, labels, rotation = ocr.find_texts(readable, norm, ppm, check_rotation, ink)
-    if rotation is None:
-        rotation = title_block_rotation(hv, ink.shape[1] / ppm, ink.shape[0] / ppm)
+    texts, labels, rotation = ocr.find_texts(readable, norm, ppm, check_rotation, ink, printed)
+    if rotation is None:  # judged on the sheet, as its measures are meant: the frame of a small print is close
+        rotation = title_block_rotation(Drawing(0, 0, lines=hv).scaled(printed).lines, ink.shape[1] / ppm * printed,
+                                        ink.shape[0] / ppm * printed)
     if rotation:
         return rotation
     round_, rings = vectorize.circles(ink, ppm, (labels > 0).astype(np.uint8), hv)
     texts, labels = _in_circles(texts, labels, readable, ink, round_, rings, norm, ppm)
-    texts, labels = ocr.spotted(texts, labels, readable, norm, spotting.spot(norm, ppm), ppm)
+    # the spotter enlarges a sheet as coarse as a phone photo, by its own pixels per mm: a scan has enough for it
+    texts, labels = ocr.spotted(texts, labels, readable, norm, spotting.spot(norm, ppm / printed), ppm)
     texts = ocr.grammar(texts)
     timer.lap("text")
     words = np.uint8([0] + [ocr.worded(t.text) for t in texts])[labels]
@@ -270,6 +292,22 @@ def title_block_rotation(lines: list[Line], width: float, height: float) -> int:
     best = max(score, key=score.get)
     others = max(v for k, v in score.items() if k != best)
     return best if score[best] >= 3 and score[best] >= 2 * others else 0
+
+
+def printed_size(ink: np.ndarray, ppm: float) -> float:
+    """The share of its drawn size that the sheet shows the drawing at: 1, unless its characters are much smaller
+    than drawings are lettered (DRAWN), as on a large drawing printed on a small sheet. Characters are the most
+    common small, upright shapes of ink; the most common of their heights is the height of the lettering. It is
+    measured on the ink, not on what is read, as the text of a small print may be too small to read."""
+    _, _, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    w, h, area = stats[1:, cv2.CC_STAT_WIDTH] / ppm, stats[1:, cv2.CC_STAT_HEIGHT] / ppm, stats[1:, cv2.CC_STAT_AREA]
+    heights = h[(h >= 0.4) & (h <= 6) & (w >= 0.1 * h) & (w <= 1.2 * h) & (area <= 0.75 * w * h * ppm * ppm)]
+    if len(heights) < 50:
+        return 1.0
+    counts, edges = np.histogram(np.log(heights), np.arange(math.log(0.4), math.log(6), 0.06))
+    k = int(np.argmax(np.convolve(counts, [1, 2, 1], "same")))
+    share = math.exp((edges[k] + edges[k + 1]) / 2) / DRAWN
+    return 1.0 if share >= SMALLER else round(max(share, 0.2), 2)
 
 
 def _working_ppm(src: float, size: tuple[float, float]) -> float:

@@ -1,7 +1,10 @@
+import math
+
 import pytest
 
-from app.plan2cad.model import Arc, Line
-from app.plan2cad.topology import join
+from app.plan2cad.library import load, place
+from app.plan2cad.model import Arc, Circle, Drawing, Line, Polyline
+from app.plan2cad.topology import connect, join
 
 
 def test_rectangle_with_open_corners_becomes_one_closed_polyline():
@@ -35,3 +38,37 @@ def test_two_arcs_of_one_circle_become_one_arc():
     assert len(pls) == 1 and not lines and not arcs
     curved = [q for q in pls[0].parts() if isinstance(q, Arc)]
     assert len(curved) == 1 and (curved[0].end - curved[0].start) % 360 == pytest.approx(180, abs=0.5)
+
+
+def pipe(*points) -> Polyline:
+    return Polyline(list(points), [0.0] * (len(points) - 1), kind="pipe")
+
+
+def test_a_pipe_stopping_short_of_a_junction_or_circle_is_joined_to_it():
+    d = Drawing(100, 100, polylines=[pipe((0, 50), (60, 50)), pipe((30, 51.2), (30, 80)), pipe((61, 50), (90, 50))],
+                circles=[Circle(70, 20, 5)], lines=[Line(70, 78.8, 70, 26.4)])
+    connect(d)
+    ends = {pl.points[0] for pl in d.polylines} | {pl.points[-1] for pl in d.polylines}
+    assert (30, 50) in ends  # the branch now meets the pipe it starts at
+    assert any(math.isclose(ln.y2, 25) for ln in d.lines)  # the signal line reaches the circle
+    assert [pl.points for pl in d.polylines if pl.points[-1][1] == 50] == [[(0, 50), (90, 50)]]  # one pipe again
+
+
+def test_two_loose_ends_close_their_corner_and_become_one_polyline():
+    d = Drawing(100, 100, polylines=[pipe((0, 0), (48.8, 0)), pipe((50, 1.5), (50, 40))])
+    connect(d)
+    assert [pl.points for pl in d.polylines] == [[(0, 0), (50, 0), (50, 40)]]
+
+
+def test_crumbs_that_touch_nothing_are_dropped_but_a_flange_mark_stays():
+    d = Drawing(100, 100, polylines=[pipe((0, 0), (40, 0))],
+                lines=[Line(20, -1, 20, 1), Line(70, 70, 71.2, 70.5)])
+    connect(d)
+    assert d.lines == [Line(20, -1, 20, 1)]
+
+
+def test_a_valve_whose_short_pipe_to_the_junction_was_lost_is_piped_to_it():
+    valve = place(load()["GATE_VALVE"], 60, 20)  # its ports at x 57.5 and 62.5
+    d = Drawing(100, 100, polylines=[pipe((52, 0), (52, 40)), pipe((62.5, 20), (90, 20))], symbols=[valve])
+    connect(d)
+    assert [(57.5, 20), (52, 20)] in [pl.points for pl in d.polylines]

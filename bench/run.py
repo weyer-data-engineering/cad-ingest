@@ -20,7 +20,7 @@ from matplotlib.figure import Figure
 sys.path[:0] = [str(Path(__file__).parent), str(Path(__file__).parent.parent)]  # bench and the app
 
 from evaluate import evaluate  # noqa: E402
-from synth import building_plan, photo, pid, scan  # noqa: E402
+from synth import building_plan, photo, pid, printed_on, scan  # noqa: E402
 
 from app.plan2cad.export import overlay, to_figure  # noqa: E402
 from app.plan2cad.imageio import load_image  # noqa: E402
@@ -41,6 +41,10 @@ CASES = [  # name, drawing, paper, image, seeds
      "A3", lambda d, s: photo(d, s), [1, 2, 3]),
     ("P&ID A1, scan 200 dpi", lambda s: pid(s, "A1"), "A1", lambda d, s: scan(d, s, dpi=200), [1, 2]),
     ("P&ID A1, phone photo 12 MP", lambda s: pid(s, "A1"), "A1", lambda d, s: photo(d, s), [1, 2]),
+    ("P&ID A1 printed on A3, scan 300 dpi", lambda s: printed_on(pid(s, "A1"), "A3"), "A3",
+     lambda d, s: scan(d, s, dpi=300), [1, 2]),
+    ("P&ID A1 printed on A4, phone photo 12 MP", lambda s: printed_on(pid(s, "A1"), "A4"), "A4",
+     lambda d, s: photo(d, s), [1, 2]),
     ("P&ID A0, scan 200 dpi", lambda s: pid(s, "A0"), "A0", lambda d, s: scan(d, s, dpi=200), [1]),
     ("P&ID A0, phone photo 12 MP", lambda s: pid(s, "A0"), "A0", lambda d, s: photo(d, s), [1]),
     ("P&ID A0, phone photo 48 MP", lambda s: pid(s, "A0"), "A0", lambda d, s: photo(d, s, camera=MP48), [1]),
@@ -52,7 +56,7 @@ KEYS = ["recall_1mm", "precision_1mm", "recall_05mm", "precision_05mm", "deviati
         "pieces_per_object", "objects_whole", "entities", "reference_objects", "short_pieces",
         "breaks_per_m", "curve_pieces", "curves_as_arcs",
         "symbol_recall", "symbol_precision", "symbol_attributes", "symbol_review", "symbol_unflagged",
-        "connection_recall", "connection_precision",
+        "connection_recall", "connection_precision", "gap_ends", "crumbs",
         "scale_ok", "seconds", "source_ppm"]
 
 
@@ -212,6 +216,13 @@ def report(results: dict) -> str:
     for c in results["cases"]:
         lines.append(f"| {c['name']} | {num(c.get('breaks_per_m'), 1)} | {num(c.get('curve_pieces'))} "
                      f"| {pct(c.get('curves_as_arcs'))} |")
+    lines += ["", "## Connected linework", "",
+              "What has to be joined or cleaned up by hand in CAD. Ends stopping short: ends of lines and polylines "
+              "that stop up to 2 mm short of other linework without touching it (a pipe that does not reach its "
+              "junction, valve or vessel). Crumbs: pieces under 2 mm that touch nothing. The references have none.", "",
+              "| Case | Ends stopping short | Crumbs |", "|---|---|---|"]
+    for c in results["cases"]:
+        lines.append(f"| {c['name']} | {num(c.get('gap_ends'), 0)} | {num(c.get('crumbs'), 0)} |")
     lines += ["", "## Texts by kind and errors left unmarked", "",
               "Exact texts among codes (letters and digits: tags, line numbers), numbers and words. Unmarked errors: "
               "reference texts read wrong without a text marked for review in their place, so nobody is pointed to "

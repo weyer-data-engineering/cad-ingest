@@ -19,7 +19,18 @@ job handler in `app/scan.py`.
    divides by the paper brightness (a closing that follows soft shadow edges) and binarises against the darkest ink
    nearby, so glare and light toner keep their lines. Fainter stretches of a stroke are added where they hang together
    with clear ink, so a pale or dotted line stays one line.
-3. **Vectors**: filled areas (thicker than 1.5 mm), horizontal and vertical lines (morphology), circles (Hough, verified
+3. **Print size**: a large drawing is often printed small to take along, an A1 P&ID on A3 or A4. Its lettering is then
+   much smaller than drawings are lettered (about 2.5 mm), and so are its symbols, pens and gaps. The most common
+   height of the shapes of ink the size of a character tells the share it is printed at (half for A1 on A3); it is
+   measured on the ink, not on what is read, as the text of a small print may be too small to read. Such a sheet is
+   recognised at the drawing's drawn size, because the measures of recognition, such as how far a line may lie off a
+   symbol's outline or how short a pipe may stop of a junction, are made for drawings at their drawn size: on a small
+   print a plain line fitted a flow arrow, and pipes were not joined to their valves. Where the image has fewer than 5
+   pixels per drawn millimetre, as a phone photo of a small print, lines and texts are found on the sheet as it is
+   (at the drawn size they would fall apart into short pieces), and only objects and symbols are recognised and the
+   linework connected at the drawn size. `report.json` gives the share as `printed` (1 for a drawing printed at its
+   size), and the DXF is at the drawn size.
+4. **Vectors**: filled areas (thicker than 1.5 mm), horizontal and vertical lines (morphology), circles (Hough, verified
    on all ink; text found on a ring is dropped as misread symbol arcs, and a ring whose quarters OCR took for brackets,
    such as a circle in a box, is found as well), everything else by skeleton tracing. A traced stroke that is round
    becomes one arc; one that runs straight and then bends is cut into the fewest straight lines and true arcs that
@@ -35,11 +46,11 @@ job handler in `app/scan.py`.
    paper, such as dashes and line jumps, and the inside of a small symbol stay open. The round ends of a line-number
    box and rounded corners between two lines are kept from text recognition, which would read them as brackets; only
    the part beyond the two line ends, so a letter touching a round end from inside the box is still read.
-4. **Objects**: pieces that meet end to end become one polyline (a wall outline, a pipe run through its bends, a vessel
+5. **Objects**: pieces that meet end to end become one polyline (a wall outline, a pipe run through its bends, a vessel
    with its heads); slivers and loose specks from the tracing are dropped. Floor plans get door swings (leaf and quarter
    arc) and walls, P&IDs equipment (large closed outlines), signal lines (dashed or ending at an instrument bubble) and
    pipes.
-5. **Text**: characters of similar height are grouped into lines first, and small marks such as dots, hyphens and
+6. **Text**: characters of similar height are grouped into lines first, and small marks such as dots, hyphens and
    quotes join the line they sit in, so two text lines beside a slanted stroke stay apart. The lines are read by
    Tesseract in batches with its most accurate models (`tessdata_best`). A drawing is written in one font, so a
    character read unlike the glyphs that look most like it on the same sheet is corrected by their vote: the slashed
@@ -77,10 +88,20 @@ job handler in `app/scan.py`.
    such a size, or after a nominal pipe size on its own, is an inch mark, whatever was read for it (`2°-AB12`, `2'`);
    angles (`45°`), temperatures (`60°C`) and feet and inches (`12'-6"`) keep theirs. On a sheet with at least two
    key=value labels (`PN=16`), a colon between a short key and its value (`PN:16`) is the equals sign.
-6. **Symbols**: valves, pumps and instruments on P&IDs (and on drawings of unknown kind), toilets, washbasins, bathtubs
+7. **Symbols**: valves, pumps and instruments on P&IDs (and on drawings of unknown kind), toilets, washbasins, bathtubs
    and other fixtures on floor plans are looked up in symbol libraries and placed as their CAD blocks instead of loose
    strokes, see below.
-7. **Markups**: pen strokes and highlighter in colour on a black and white print become their own layers, see
+   Then the linework is connected, so that it can be worked on in CAD without closing gaps by hand: tracing stops a
+   line short of a junction by about the width of the line it meets, and taking out the strokes of a symbol leaves its
+   pipes a little short of it. An end of a line or polyline that stops up to 2 mm short of other linework is moved
+   along its line onto it (a branch onto its pipe, a signal line onto its bubble, a pipe onto its valve or vessel), or
+   cut back onto a line it runs past by a little; two loose ends whose lines meet nearby form a corner there, and two
+   that point at each other along one line meet halfway. A port of a symbol that no line reaches, but that faces a
+   pipe or the port of the next symbol within 6 mm, is piped to it: the short pipe between a valve and its junction,
+   with its flanges, is often lost with the strokes of the symbols around it. Pieces that then meet end to end become
+   one polyline, through a crossing the ones that go straight on, and pieces under 2 mm that touch nothing are dropped
+   as leftovers.
+8. **Markups**: pen strokes and highlighter in colour on a black and white print become their own layers, see
    [Markups](#markups).
 
 ## Output
@@ -94,6 +115,11 @@ straightened photo `underlay.png` as raster underlay on `P2C-UNDERLAY`),
 teal, for checking), `markup-k.png` for each markup and `report.json` (sheet, resolution, drawing type, scale, counts, timings, all texts, the symbols
 with their attributes and ports, the lines joining two symbol ports, the markups and what to check). `extract` lists
 the recognised texts, symbols (with their tags) and markups as markdown, so photographed plans become searchable too.
+
+Every text of the DXF, the tags in a symbol's bubble included, is fitted between the ends of its baseline as printed
+(DXF alignment "fit"), so that it is as long as on the paper in whatever font the CAD program shows it: a tag stays
+inside its bubble, a line number inside its frame. The preview draws a text that would come out longer in its font
+smaller.
 
 `report.json` lists what to check under `review`, least confident first: texts that could not be read
 reliably (on `P2C-TEXT-CHECK`) and symbols that may be the wrong ones (on `P2C-SYMBOL-CHECK`, and in magenta in
@@ -181,7 +207,8 @@ beside the pipe that runs through two of them (a flow arrow on its pipe), is mov
 snapped onto the ports of the symbols they lead to where the port lies on the pipe's course (within 0.5 mm), so that no
 pipe is turned askew; of parallel pipes ending beside one port, only the one pointing at it. Strokes left wholly inside
 a symbol with ports, such as the one between the two triangles of a gate valve, are dropped: they would join the pipes
-on either side through the valve.
+on either side through the valve. So are strokes left inside a symbol that holds text, such as an instrument bubble:
+they are letters that could not be read, and the bubble is marked to check ("its text could not be read").
 
 The symbols come from symbol libraries: DXF files with one block per symbol, with points where pipes connect and the
 places of their attributes. Each library is for P&IDs or for floor plans, and only used on its kind of drawing. Two
@@ -206,14 +233,18 @@ stand within 1.5 mm beside a straight line of at least 10 mm (a word traced as a
 signal line), both ways along it: the pipe joins such strokes into one large group, so they are not found as a group
 of their own. Each candidate is matched against the image itself (the centre lines of
 the ink, not the traced vectors, which round off arrowheads and springs): a point of the symbol counts as found where
-ink runs close by in the same direction. A symbol needs 80 % of its outline and half of each of its parts (a ball
+ink runs close by in the same direction. A symbol needs 85 % of its outline and half of each of its parts (a ball
 valve needs its ball), a line leaving at least one port and, if it has one, a line through it that goes on for at
 least a millimetre past both ends: where an arc runs into a line, the bend looks like an arrowhead, but no pipe goes
 on past it. A symbol drawn the same as another one plus a small circle (a ball valve and a gate valve) is the one with
 the circle where half of the circle's rim is there, or a blob as thick as the circle and one and a half times as thick
 as the usual stroke of the sheet: a filled ball leaves that, and so does a ring that blur has filled in on a photo,
 but not the crossing of two strokes. Ink inside the symbol that it does not explain counts against it, except for text
-at its attribute positions. Of overlapping candidates the one explaining the most ink wins. A symmetric symbol fits as
+at its attribute positions and, in a symbol that holds text such as an instrument bubble, other text: letters in a
+reducer are the cross of a box read as an "X". A stroke that ends freely in the library, such as a barb of a flow
+arrow or a bar of an orifice plate, has to end on the sheet too: where the ink runs on past its end, the strokes belong
+to something else, the pointed end of an off-page connector, the edge of a line number's frame or a letter. Of
+overlapping candidates the one explaining the most ink wins. A symmetric symbol fits as
 well turned half way or mirrored; it takes the pose in which most of its attribute positions have a text, and then the
 one with its back on the wall: a fixture's insertion point is in the middle of its back, and the linework left around
 it continues that side. Nothing is placed in the title block in the bottom right corner of the frame, whose small text

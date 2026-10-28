@@ -61,6 +61,26 @@ def test_symbols_go_with_the_text_size_of_the_sheet(height, count, size):
     assert _printed([Text(0, 0, height, "P-101")] * count) == pytest.approx(size)
 
 
+@pytest.mark.parametrize("height, share", [(2.5, 1.0), (1.25, 0.57), (0.8, 0.36)])
+def test_a_drawing_printed_small_is_told_by_its_small_lettering(height, share):
+    from app.plan2cad.model import Drawing, Text
+    from app.plan2cad.pipeline import printed_size
+
+    texts = [Text(20 + 30 * (k % 8), 10 + 8 * (k // 8), height, "P-101 AB") for k in range(80)]
+    ink = (render(Drawing(260, 100, texts=texts), 12) < 128).astype(np.uint8)
+    assert printed_size(ink, 12) == pytest.approx(share, abs=0.08)
+
+
+def test_a_drawing_printed_small_is_recognised_at_its_drawn_size():
+    from synth import pid, printed_on
+
+    d = printed_on(pid(3, "A2"), "A4")  # an A2 P&ID on A4: lettering of 1 mm instead of 2
+    r = convert(scan(d, 3, dpi=300), paper="A4")
+    m = evaluate(d, r.drawing)
+    assert r.info["printed"] == pytest.approx(0.47, abs=0.08) and r.drawing.printed == r.info["printed"]
+    assert m["symbol_recall"] > 0.85 and m["symbol_precision"] > 0.9 and m["recall_1mm"] > 0.95
+
+
 def test_title_block_decides_orientation_when_text_is_unreadable(plan):
     from app.plan2cad.model import Line
     from app.plan2cad.pipeline import title_block_rotation

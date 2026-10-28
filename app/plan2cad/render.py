@@ -24,17 +24,18 @@ def _font(px: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(str(FONT), px)
 
 
-def dashes(line: Line) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-    """Splits a dashed line into its visible dash segments."""
+def dashes(line: Line, size: float = 1.0) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Splits a dashed line into its visible dash segments, the pattern ``size`` times as long as DASH and GAP (a
+    drawing printed smaller has shorter dashes)."""
     length = math.hypot(line.x2 - line.x1, line.y2 - line.y1)
     if length == 0:
         return []
     ux, uy = (line.x2 - line.x1) / length, (line.y2 - line.y1) / length
     out, s = [], 0.0
     while s < length:
-        e = min(s + DASH, length)
+        e = min(s + DASH * size, length)
         out.append(((line.x1 + ux * s, line.y1 + uy * s), (line.x1 + ux * e, line.y1 + uy * e)))
-        s += DASH + GAP
+        s += (DASH + GAP) * size
     return out
 
 
@@ -52,7 +53,7 @@ def render(d: Drawing, ppm: float, img: np.ndarray | None = None, color=0, texts
         return max(1, round(w * ppm))
 
     for ln in d.lines:
-        for a, b in dashes(ln) if ln.dashed else [((ln.x1, ln.y1), (ln.x2, ln.y2))]:
+        for a, b in dashes(ln, d.printed) if ln.dashed else [((ln.x1, ln.y1), (ln.x2, ln.y2))]:
             cv2.line(img, p(*a), p(*b), color, thick(ln.width), cv2.LINE_AA, SHIFT)
     for a in d.arcs:
         end = a.end if a.end > a.start else a.end + 360
@@ -85,6 +86,8 @@ def draw_text(img: np.ndarray, t: Text, ppm: float, color=0) -> None:
     mask = Image.new("L", (right - left + 2, bottom - top + 2), 0)
     ImageDraw.Draw(mask).text((1 - left, 1 - top), t.text, font=font, fill=255, anchor="ls")
     m = np.asarray(mask, np.float32) / 255
+    if t.length and m.shape[1] > t.length * ppm:  # no longer than printed
+        m = cv2.resize(m, (max(1, round(t.length * ppm)), m.shape[0]), interpolation=cv2.INTER_AREA)
     # Anchor = centre of the capitals: half the cap height above the baseline.
     ax, ay = m.shape[1] / 2, (1 - top) - t.height * ppm / 2
     if t.angle == 90:

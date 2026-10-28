@@ -30,6 +30,7 @@ CAP_PX = 32  # cap height in pixels that Tesseract reads well
 MOSAIC_H = 6000
 UNSURE = 0.8  # spotted lines the recogniser is less sure of are marked for review
 SHORT = 2  # characters: a spotted line this short is new text only if the recogniser is SURE of it
+GLYPH = 7.5  # mm: the largest character on a sheet
 SURE = 0.9
 TALL = 1.6  # nor much higher than the usual text of the sheet (two stacked circles read as "8")
 SPACE = 2.5
@@ -48,13 +49,16 @@ class Components:
 
 
 def find_texts(ink: np.ndarray, gray: np.ndarray, ppm: float, rotation_check: bool = False,
-               frame: np.ndarray | None = None) -> tuple[list[Text], np.ndarray, int | None]:
-    """Returns recognised text lines (sheet mm), a label image of their pixels (0: no text, k: the
+               frame: np.ndarray | None = None, printed: float = 1.0) -> tuple[list[Text], np.ndarray, int | None]:
+    """Returns recognised text lines (mm at ``ppm`` pixels each), a label image of their pixels (0: no text, k: the
     k-th text line) and, if requested, the clockwise rotation in degrees (0, 90, 180, 270) that
     makes the text upright (None if the text is not readable enough to tell). ``frame``: all strokes of the sheet,
-    which may enclose a single letter (see _framed)."""
+    which may enclose a single letter (see _framed). ``printed``: the share of its drawn size the sheet shows the
+    drawing at, where ``ppm`` counts the pixels per millimetre as drawn."""
     cc = Components(ink, gray)
-    cand = np.flatnonzero((np.maximum(cc.w, cc.h) <= 7.5 * ppm) & (cc.area >= 3))
+    # a character is at most GLYPH mm on the sheet, whatever size it is drawn at: on a small print blur runs the
+    # letters of a word together into one shape, which is read as well
+    cand = np.flatnonzero((np.maximum(cc.w, cc.h) <= GLYPH * ppm / printed) & (cc.area >= 3))
     cand = np.setdiff1d(cand, _enclosing(cc, cand, ppm))
     h_groups, singles = _group(cc, cand, horizontal=True)
     framed = _framed(cc, singles, h_groups, ppm, frame)  # before vertical lines: a bubble's letter above its stem
@@ -203,9 +207,11 @@ def spotted(texts: list[Text], labels: np.ndarray, ink: np.ndarray, gray: np.nda
     line = np.zeros(cc.n + 1, kind)
     out = [texts[k - 1] for k in keep]
     for (s, _, near, letters, cap), (text, _) in zip(lines, read[len(texts):]):
-        out.append(Text((s.x0 + s.x1) / 2 / ppm, (s.y0 + s.y1) / 2 / ppm, cap / ppm,
-                        _spaced(cc, near, s.vertical, text), 90.0 if s.vertical else 0.0, round(100 * s.score, 1),
-                        s.score < UNSURE))
+        lo, hi = _metrics(cc, letters.tolist(), s.vertical)[2:] if len(letters) else \
+            (s.y0, s.y1) if s.vertical else (s.x0, s.x1)  # the extent of its letters along the line
+        x, y = ((s.x0 + s.x1) / 2, (lo + hi) / 2) if s.vertical else ((lo + hi) / 2, (s.y0 + s.y1) / 2)
+        out.append(Text(x / ppm, y / ppm, cap / ppm, _spaced(cc, near, s.vertical, text), 90.0 if s.vertical else 0.0,
+                        round(100 * s.score, 1), s.score < UNSURE, (hi - lo) / ppm))
         line[letters + 1] = len(out)
     take = line[cc.lab]
     return out, np.where(take > 0, take, ids[labels])
@@ -550,7 +556,8 @@ def _text(cc: Components, g: list[int], vertical: bool, s: str, conf: float, ppm
     top, base, lo, hi = _metrics(cc, g, vertical)
     mid_across, mid_along = (top + base) / 2, (lo + hi) / 2
     x, y = (mid_across, mid_along) if vertical else (mid_along, mid_across)
-    return Text(x / ppm, y / ppm, (base - top) / ppm, s, 90.0 if vertical else 0.0, round(conf, 1))
+    return Text(x / ppm, y / ppm, (base - top) / ppm, s, 90.0 if vertical else 0.0, round(conf, 1),
+                length=(hi - lo) / ppm)
 
 
 def _rotation(cc: Components, h_groups: list, v_groups: list) -> int | None:

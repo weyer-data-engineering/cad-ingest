@@ -18,7 +18,7 @@ from matplotlib.patches import Polygon as MplPolygon
 
 from .markup import HIGHLIGHT_LAYER, LAYER, READING_LAYER
 from .model import Drawing
-from .render import CAP, DASH, GAP, dashes, render
+from .render import CAP, DASH, GAP, dashes, render, text_length
 
 LAYERS = {"P2C-LINE": 7, "P2C-DASH": 5, "P2C-CURVE": 3, "P2C-FILL": 8, "P2C-TEXT": 1, "P2C-UNDERLAY": 9,
           "P2C-WALL": 150, "P2C-DOOR": 30, "P2C-PIPE": 150, "P2C-EQUIPMENT": 94, "P2C-SIGNAL": 5, "P2C-FRAME": 8,
@@ -36,16 +36,18 @@ def lineweight(width_mm: float, exact: bool = False) -> int:
 
 
 def to_dxf(d: Drawing, underlay: tuple[str, tuple[int, int]] | None = None) -> ezdxf.document.Drawing:
-    """Builds a DXF document in real-world millimetres (sheet mm times the drawing scale).
+    """Builds a DXF document in real-world millimetres: millimetres of the drawing as drawn (sheet mm, or more for a
+    drawing printed smaller) times the drawing scale.
 
     ``underlay`` optionally references the rectified photo (file name, size in pixels) as a
     raster image on its own layer, so the result can be checked and traced over in CAD.
     """
-    s = d.scale or 1
+    s = (d.scale or 1) / d.printed
     doc = ezdxf.new("R2018", units=ezdxf.units.MM)
     doc.header["$MEASUREMENT"] = 1
     doc.header["$LWDISPLAY"] = 1
-    doc.linetypes.add("P2C_DASH", [(DASH + GAP) * s, DASH * s, -GAP * s], description="Dashed __ __ __")
+    dash = d.scale or 1  # the pattern as drawn
+    doc.linetypes.add("P2C_DASH", [(DASH + GAP) * dash, DASH * dash, -GAP * dash], description="Dashed __ __ __")
     for name, color in LAYERS.items():
         doc.layers.add(name, color=color)
     msp = doc.modelspace()
@@ -63,7 +65,7 @@ def to_dxf(d: Drawing, underlay: tuple[str, tuple[int, int]] | None = None) -> e
         return attribs
 
     def pen(layer: str, item) -> dict:
-        return on(layer, item) | {"lineweight": lineweight(item.width, d.exact)}
+        return on(layer, item) | {"lineweight": lineweight(item.width / d.printed, d.exact)}
 
     for ln in d.lines:
         attribs = pen("P2C-DASH" if ln.dashed else "P2C-LINE", ln)
@@ -94,14 +96,7 @@ def to_dxf(d: Drawing, underlay: tuple[str, tuple[int, int]] | None = None) -> e
         attribs = on("P2C-TEXT-CHECK" if t.uncertain else "P2C-TEXT", t)
         if t.oblique:
             attribs["oblique"] = t.oblique
-        text = msp.add_text(t.text, height=t.height * s, rotation=t.angle, dxfattribs=attribs)
-        if t.length:  # stretched between the ends of its baseline, so it is as long as drawn in any font
-            a = math.radians(t.angle)
-            bx, by = t.x + math.sin(a) * t.height / 2, t.y + math.cos(a) * t.height / 2  # middle of the baseline
-            ux, uy = math.cos(a) * t.length / 2, -math.sin(a) * t.length / 2
-            text.set_placement(pt(bx - ux, by - uy), pt(bx + ux, by + uy), align=TextEntityAlignment.FIT)
-        else:
-            text.set_placement(pt(t.x, t.y), align=TextEntityAlignment.MIDDLE_CENTER)
+        _place(msp.add_text(t.text, height=t.height * s, rotation=t.angle, dxfattribs=attribs), t, pt)
     _symbols(doc, d, pt, s)
     if underlay:
         name, size = underlay
@@ -131,8 +126,21 @@ def _symbols(doc: ezdxf.document.Drawing, d: Drawing, pt, s: float) -> None:
             "layer": "P2C-SYMBOL-CHECK" if sym.doubt else "P2C-SYMBOL", "rotation": -sym.angle % 360, "yscale": size,
             "xscale": size * (-1 if sym.mirror else 1)})
         for tag, t in sym.attributes.items():
-            ref.add_attrib(tag, t.text, dxfattribs={"height": t.height * s, "layer": "P2C-TEXT"}).set_placement(
-                pt(t.x, t.y), align=TextEntityAlignment.MIDDLE_CENTER)
+            _place(ref.add_attrib(tag, t.text, dxfattribs={"height": t.height * s, "layer": "P2C-TEXT",
+                                                           "rotation": t.angle}), t, pt)
+
+
+def _place(text, t, pt) -> None:
+    """Places a DXF text or attribute where ``t`` stood. One whose length is known is fitted between the ends of its
+    baseline, so that it is as long as printed in whatever font the CAD program shows it: a tag stays inside its
+    bubble, a line number inside its frame."""
+    if t.length:
+        a = math.radians(t.angle)
+        bx, by = t.x + math.sin(a) * t.height / 2, t.y + math.cos(a) * t.height / 2  # middle of the baseline
+        ux, uy = math.cos(a) * t.length / 2, -math.sin(a) * t.length / 2
+        text.set_placement(pt(bx - ux, by - uy), pt(bx + ux, by + uy), align=TextEntityAlignment.FIT)
+    else:
+        text.set_placement(pt(t.x, t.y), align=TextEntityAlignment.MIDDLE_CENTER)
 
 
 def to_figure(d: Drawing, path, fmt: str = "pdf", dpi: float | None = None) -> None:
@@ -146,7 +154,7 @@ def to_figure(d: Drawing, path, fmt: str = "pdf", dpi: float | None = None) -> N
     ax.axis("off")
     segments, widths, colors = [], [], []
     for ln in d.lines:
-        parts = dashes(ln) if ln.dashed else [((ln.x1, ln.y1), (ln.x2, ln.y2))]
+        parts = dashes(ln, d.printed) if ln.dashed else [((ln.x1, ln.y1), (ln.x2, ln.y2))]
         segments += parts
         widths += [ln.width * PT_PER_MM] * len(parts)
         colors += [_rgb(ln.color)] * len(parts)
@@ -162,8 +170,9 @@ def to_figure(d: Drawing, path, fmt: str = "pdf", dpi: float | None = None) -> N
                                 alpha=0.4 if g.layer == HIGHLIGHT_LAYER else None))
     for t in d.texts:
         rad = math.radians(t.angle)  # anchor on the baseline, half a cap height below the centre
+        narrower = min(1.0, t.length / text_length(t)) if t.length and t.text.strip() else 1.0  # no longer than printed
         ax.text(t.x + math.sin(rad) * t.height / 2, t.y + math.cos(rad) * t.height / 2, t.text,
-                fontsize=t.height / CAP * PT_PER_MM, rotation=t.angle, rotation_mode="anchor",
+                fontsize=narrower * t.height / CAP * PT_PER_MM, rotation=t.angle, rotation_mode="anchor",
                 ha="center", va="baseline",
                 color=_rgb(t.color) if t.color else "0.55" if t.uncertain else "k")
     fig.savefig(path, format=fmt, dpi=dpi, facecolor="white")

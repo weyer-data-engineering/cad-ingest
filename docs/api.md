@@ -134,6 +134,12 @@ Everything else stays as it was. `report.json` then has `reviewer` with the `mod
 how many were `confirmed`, `corrected`, `kept` or left `unanswered`; a model that cannot be reached gives a warning
 naming its host, and the job still succeeds.
 
+A large drawing printed small, such as an A1 P&ID on A3, is recognised at its drawn size (see [Print
+size](photos-and-scans.md#how-it-works)): `report.json` has `printed`, the share of its drawn size the sheet shows it at
+(1 for a drawing printed at its size, 0.5 for A1 on A3), and the DXF is at the drawn size, so its texts and symbols have
+the sizes they were drawn with. Positions in `report.json` stay in sheet millimetres. The field is new; a client that
+does not know it can ignore it.
+
 Markups added by hand in colour on a black and white print (pen notes, clouds, strike-outs, highlighter) are kept
 apart from the drawing (see [Markups](photos-and-scans.md#markups)): the DXF has them on the layers `P2C-MARKUP`,
 `P2C-HIGHLIGHT` and `P2C-MARKUP-TEXT`, `report.json` lists them under `markups` (`kind` `note` or `highlight`,
