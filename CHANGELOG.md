@@ -87,11 +87,11 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   loose ends whose lines meet nearby form a corner, a symbol port that faces a pipe or the next symbol's port within
   6 mm is piped to it, pieces that then meet end to end become one polyline, and loose pieces under 2 mm are dropped.
   The benchmark counts the ends that stop short and the loose crumbs.
-- Fewer wrong symbols: a symbol needs 85 % of its outline instead of 80 % (on a real scan most symbols with less were
-  wrong; their strokes stay as lines); a symbol whose strokes end freely in the library, such as the barbs of a flow
-  arrow, is not placed where those strokes run on (the edges of a line number's frame, the cross in a box, letters);
-  letters inside a symbol that holds none, such as a reducer, count against it; and what is left of letters that could
-  not be read in an instrument bubble is dropped, the bubble marked to check ("its text could not be read").
+- Fewer wrong symbols: a symbol needs 85 % of its outline instead of 80 % (a symbol not placed keeps its strokes as
+  lines, which is better than a wrong block); a symbol whose strokes end freely in the library, such as the barbs of a
+  flow arrow, is not placed where those strokes run on (the edges of a line number's frame, the cross in a box,
+  letters); letters inside a symbol that holds none, such as a reducer, count against it; and what is left of letters
+  that could not be read in an instrument bubble is dropped, the bubble marked to check ("its text could not be read").
 
 ### Changed
 
