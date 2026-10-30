@@ -123,7 +123,7 @@ teal, for checking), `markup-k.png` for each markup and `report.json` (sheet, re
 with their attributes and ports, the lines joining two symbol ports, the markups and what to check). `extract` lists
 the recognised texts, symbols (with their tags) and markups as markdown, so photographed plans become searchable too.
 
-Texts are lettered as with a stencil, since a drawing is lettered in a few sizes: a text whose height is within 15 %
+Texts are lettered as with a stencil, since a drawing is lettered in a few sizes: a text whose height is within 20 %
 of a height at least three texts share takes it, and the texts of one size get one width per character (narrow ones,
 such as spaces, points and the digit 1, half of it), so the same label looks the same wherever it is. Every text of
 the DXF, the tags in a symbol's bubble included, is fitted between the ends of its baseline at that width (DXF

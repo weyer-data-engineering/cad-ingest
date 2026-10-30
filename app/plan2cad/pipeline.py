@@ -22,7 +22,7 @@ DRAWN = 2.2  # mm: the usual height of the characters of a drawing at its drawn 
 SMALLER = 0.7  # a sheet whose characters are smaller than this share of DRAWN is a large drawing printed small
 DRAWN_PPM = 5.0  # px per drawn mm from which a small print is vectorised at its drawn size (a photo of it is coarser)
 SCALES = {1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 200, 250, 500, 1000, 2000, 2500, 5000}
-SIZE = 0.15  # a text whose height is within this share of a size the sheet is lettered in is of that size
+SIZE = 0.2  # a text whose height is within this share of a size the sheet is lettered in has that size: 2 and 2.5 mm differ
 SIZED = 3  # texts of one height that make a size
 TIGHT = 0.85  # a text printed shorter than this share of the usual width of its characters is kept that short
 NARROW_CHARS = " .,:;'\"()|!Iil1"  # characters about half as wide as the others
@@ -256,8 +256,9 @@ def _in_circles(texts: list[Text], labels: np.ndarray, readable: np.ndarray, ink
 def _lettering(d: Drawing) -> None:
     """Letters the texts of the drawing as with a stencil: a sheet is lettered in a few sizes, and a text whose height
     is within SIZE of one at least SIZED texts have takes that size; the texts of a size get one width per character
-    (NARROW_CHARS half of it), so the same label looks the same wherever it is. A text printed clearly narrower (TIGHT) keeps its printed length,
-    to stay inside its frame or bubble. The tags of the symbols are lettered with the other texts."""
+    (NARROW_CHARS half of it), so the same label looks the same wherever it is. A text printed clearly narrower
+    (TIGHT) keeps its printed length, to stay inside its frame or bubble. The tags of the symbols are lettered with the
+    other texts."""
     texts = d.texts + [t for s in d.symbols for t in s.attributes.values()]
     ems = {id(t): sum(0.5 if ch in NARROW_CHARS else 1.0 for ch in t.text) or 1.0 for t in texts}
     heights = np.log([t.height for t in texts if t.height > 0 and not t.uncertain])
