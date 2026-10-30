@@ -228,10 +228,11 @@ def spotted(texts: list[Text], labels: np.ndarray, ink: np.ndarray, gray: np.nda
 def _split(cc: Components, letters: np.ndarray, vertical: bool, text: str, dark: np.ndarray
            ) -> list[tuple[np.ndarray, str]]:
     """A spotted line cut into the texts on either side of a stroke that crosses it between two glyphs from above its
-    letters to below them: the end of a line number's frame or the ring of the bubble next to it, which a space never
-    is. Its characters go with its glyphs one to one; where a character or two were not read, across a single cut the
-    shorter side takes as many characters from its end as it has glyphs. As it is if it reads vertically or that
-    does not work out."""
+    letters to below them: the end of a line number's frame or the ring of the bubble next to it, a break between two
+    labels. The two glyphs must be a letter's height apart or the reading must have a space there, since a wall may run
+    through a room's area between two digits. Its characters go with its glyphs one to one; where a character or two
+    were not read, across a single cut the shorter side takes as many characters from its end as it has glyphs (at a
+    space the reader put next to it). As it is if it reads vertically or that does not work out."""
     glyphs = _glyphs(cc, letters.tolist(), vertical)
     chars = [j for j, ch in enumerate(text) if ch != " "]
     if vertical or len(glyphs) < 2:
@@ -239,20 +240,24 @@ def _split(cc: Components, letters: np.ndarray, vertical: bool, text: str, dark:
     top, base = int(cc.y[letters].min()), int((cc.y[letters] + cc.h[letters]).max())
     reach = round(0.3 * (base - top))  # a curve, as the end of a frame, runs this far aside above and below the letters
     band = ndimage.maximum_filter1d(dark[max(0, top - reach):base + reach], 2 * reach + 1, axis=1)
-    cuts = [n for n, (p, g) in enumerate(zip(glyphs, glyphs[1:]), 1)
+    cuts = {n: x1 - x0 >= base - top for n, (p, g) in enumerate(zip(glyphs, glyphs[1:]), 1)
             if (x0 := max(cc.x[i] + cc.w[i] for i in p)) < (x1 := min(cc.x[i] for i in g))
-            and (band[:, x0:x1].mean(axis=0) >= 0.9).any()]
+            and (band[:, x0:x1].mean(axis=0) >= 0.9).any()}  # cut: whether wide
     if not cuts or len(glyphs) != len(chars) and (len(cuts) > 1 or abs(len(glyphs) - len(chars)) > 2):
         return [(letters, text)]
     if len(glyphs) == len(chars):
-        at = [chars[n] for n in cuts]
-    else:  # the shorter side is read whole more likely; a space the reader put next to the cut is where it goes
-        n = cuts[0] if cuts[0] <= len(glyphs) - cuts[0] else len(chars) - (len(glyphs) - cuts[0])
-        if not 0 < n < len(chars):
+        at = {n: chars[n] for n in cuts}
+    else:  # the shorter side is read whole more likely
+        n = next(iter(cuts))
+        k = n if n <= len(glyphs) - n else len(chars) - (len(glyphs) - n)
+        if not 0 < k < len(chars):
             return [(letters, text)]
-        spaces = [j for j in range(chars[max(0, n - 2)], chars[min(len(chars) - 1, n + 1)] + 1) if text[j] == " "]
-        at = [min(spaces, key=lambda j: abs(j - chars[n])) if spaces else chars[n]]
-    glyph_bounds, text_bounds = [0, *cuts, len(glyphs)], [0, *at, len(text)]
+        spaces = [j for j in range(chars[max(0, k - 2)], chars[min(len(chars) - 1, k + 1)] + 1) if text[j] == " "]
+        at = {n: min(spaces, key=lambda j: abs(j - chars[k])) if spaces else chars[k]}
+    at = {n: j for n, j in at.items() if cuts[n] or " " in text[j - 1:j + 1]}
+    if not at:
+        return [(letters, text)]
+    glyph_bounds, text_bounds = [0, *at, len(glyphs)], [0, *at.values(), len(text)]
     return [(np.array([i for g in glyphs[a:b] for i in g]), text[c:e].strip())
             for a, b, c, e in zip(glyph_bounds, glyph_bounds[1:], text_bounds, text_bounds[1:])]
 

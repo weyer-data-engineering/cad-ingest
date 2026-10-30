@@ -104,7 +104,8 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   number inside its frame. The preview squeezes such a text along its line only, as CAD does, and a text whose
   letters were found only in part keeps its size.
 - A spotted text line through which a stroke runs from above to below its letters (the end of a line number's frame,
-  the ring of the bubble beside it) is cut there into two texts.
+  the ring of the bubble beside it, the line between two labels) is cut there into two texts, where the letters on
+  either side are a letter's height apart or read with a space between them.
 - A thick round ring, such as the mark of a note, is a circle with a wide pen instead of a filled disc, and the letter
   in it is read.
 

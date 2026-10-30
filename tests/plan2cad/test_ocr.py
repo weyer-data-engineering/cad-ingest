@@ -146,3 +146,17 @@ def test_a_line_read_across_the_end_of_a_frame_is_two_texts(read, parts):
     letters = np.flatnonzero(cc.h < 40)  # all but the stroke
     assert [t for _, t in _split(cc, letters, False, read, gray < 128)] == parts
     assert [t for _, t in _split(cc, letters, False, "AB-12 34", np.zeros_like(gray, bool))] == ["AB-12 34"]
+
+
+def test_a_line_through_a_text_close_between_two_characters_cuts_it_only_at_a_space():
+    from app.plan2cad.ocr import _glyphs, _split
+
+    gray = render(Drawing(60, 20, texts=[Text(20, 10, 2.5, "AB-12"), Text(27.8, 10, 2.5, "34")]), 10)
+    cc = Components((gray < 128).astype(np.uint8), gray)
+    letters = np.arange(cc.n)
+    glyphs = _glyphs(cc, letters.tolist(), False)
+    x = (max(cc.x[i] + cc.w[i] for i in glyphs[4]) + min(cc.x[i] for i in glyphs[5])) // 2  # between "2" and "3"
+    dark = gray < 128
+    dark[40:160, x] = True  # a wall drawn through a room's area
+    assert [t for _, t in _split(cc, letters, False, "AB-1234", dark)] == ["AB-1234"]
+    assert [t for _, t in _split(cc, letters, False, "AB-12 34", dark)] == ["AB-12", "34"]

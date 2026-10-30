@@ -78,8 +78,9 @@ job handler in `app/scan.py`.
    part of a text written the other way (a vertical dimension read as two numbers). Its letters are the components
    wholly in the box and about as high as most of them, so a pipe or a ring that touches the line, or a dash, stays
    linework. A line through which a stroke runs from above its letters to below them, between two of them, is two
-   texts: the spotter reads a line number and the tag in the bubble next to it as one line, across the end of the
-   frame and the ring of the bubble, which a space never is.
+   texts where the two are a letter's height apart or read with a space between them: the spotter reads a line
+   number and the tag in the bubble next to it as one line, across the end of the frame and the ring of the bubble,
+   and two labels across the line between them; a wall through a room's area, close between two digits, cuts nothing.
    Where no text was found before, a reading needs a score of 0.8, and one of one or two characters 0.9 and no more
    than 1.6 times the usual text height: such a reading is as likely a symbol (a valve read as "D8", a fixture as
    "8"). A replacement scored below 0.8 is marked for review, and the characters both readers confuse go to the vote
