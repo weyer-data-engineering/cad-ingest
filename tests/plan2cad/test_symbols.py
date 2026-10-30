@@ -186,6 +186,28 @@ def test_a_flow_arrow_needs_its_pipe_to_go_on_past_both_ends():
     assert "FLOW_ARROW" not in [s.name for s in d.symbols]  # where an arc runs into a line, it looks like this
 
 
+def test_a_flow_arrow_whose_barbs_run_on_does_not_fit():
+    pipe, arrow = Line(40, 50, 160, 50, 0.5), place(LIBRARY["FLOW_ARROW"], 100, 50)
+    tips = symbols._tips(LIBRARY["FLOW_ARROW"])  # the edges of a box or a cross meeting the pipe look like barbs
+    run_on = [Line(100 + x, 50 + y, 100 + x + 4 * ux, 50 + y + 4 * uy) for x, y, ux, uy in tips]
+
+    def fits(lines) -> bool:
+        points, headings = zip(*[symbols._sample(q) for q in lines])
+        ink = symbols._Ink(np.vstack(points), np.vstack(headings), np.zeros(sum(map(len, points))),
+                           np.zeros(sum(map(len, points)), bool))
+        return symbols._fit(symbols._shape(LIBRARY["FLOW_ARROW"]), (100.0, 50.0, 0.0, False, 1.0), 1.0, ink) is not None
+
+    assert fits([pipe] + arrow.parts) and not fits([pipe] + arrow.parts + run_on)
+
+
+def test_what_is_left_of_a_tag_not_read_goes_and_its_bubble_is_marked_to_check():
+    scribble = [Line(98.5, 48.5, 99.5, 49.5), Line(100.5, 51, 101.5, 51.6)]
+    d = drawn(place(LIBRARY["INSTRUMENT"], 100, 50), lines=scribble + [Line(100, 55, 100, 80, 0.25)])
+    symbols.recognise(d, LIBRARY)
+    assert [(s.name, s.doubt) for s in d.symbols] == [("INSTRUMENT", "its text could not be read")]
+    assert [(ln.y1, ln.y2) for ln in d.lines] == [(55, 80)]  # its signal line stays
+
+
 def test_a_stroke_left_inside_a_valve_does_not_join_the_pipes_on_either_side():
     left, stub = Line(60, 50, 97.5, 50, 0.5), Line(97.5, 50, 100, 50, 0.5)  # a pipe and a stroke up to the middle
     right = Polyline([(100, 50), (102.5, 50), (140, 50)], [0.0, 0.0], width=0.5)  # traced from the middle on

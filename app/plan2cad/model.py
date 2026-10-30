@@ -99,7 +99,7 @@ class Text:
     angle: float = 0.0
     confidence: float = 100.0
     uncertain: bool = False  # looks like text but could not be read reliably: a guess to check
-    length: float | None = None  # mm along the reading direction, where known exactly (vector PDFs): DXF fits to it
+    length: float | None = None  # mm along the reading direction as printed, where measured: DXF fits the text to it
     oblique: float = 0.0  # degrees the letters lean forward (italics)
     color: Color | None = None
     layer: str | None = None
@@ -150,6 +150,26 @@ class Drawing:
     symbols: list[Symbol] = field(default_factory=list)
     exact: bool = False  # read from the vectors of a PDF, not recognised on an image: widths and colours are as drawn
     markups: list[Markup] = field(default_factory=list)  # their strokes, fills and readings are on their own layers
+    printed: float = 1.0  # the sheet shows the drawing at this share of its drawn size (an A1 plan printed on A3: 0.5)
+
+    def scaled(self, f: float) -> Drawing:
+        """The same drawing ``f`` times as large: positions, sizes, pen widths and texts (markups excepted)."""
+        def at(q):
+            if isinstance(q, Line):
+                return replace(q, x1=q.x1 * f, y1=q.y1 * f, x2=q.x2 * f, y2=q.y2 * f, width=q.width * f)
+            if isinstance(q, (Arc, Circle)):
+                return replace(q, cx=q.cx * f, cy=q.cy * f, r=q.r * f, width=q.width * f)
+            if isinstance(q, Text):
+                return replace(q, x=q.x * f, y=q.y * f, height=q.height * f, length=q.length and q.length * f)
+            return replace(q, points=[(x * f, y * f) for x, y in q.points], width=q.width * f)  # polygon, polyline
+
+        symbols = [replace(s, x=s.x * f, y=s.y * f, scale=s.scale * f, parts=[at(q) for q in s.parts],
+                           ports=[(x * f, y * f) for x, y in s.ports],
+                           attributes={k: at(t) for k, t in s.attributes.items()}) for s in self.symbols]
+        return replace(self, width=self.width * f, height=self.height * f, lines=[at(q) for q in self.lines],
+                       arcs=[at(q) for q in self.arcs], circles=[at(q) for q in self.circles],
+                       polygons=[at(q) for q in self.polygons], texts=[at(q) for q in self.texts],
+                       polylines=[at(q) for q in self.polylines], symbols=symbols)
 
     def counts(self) -> dict[str, int]:
         return {k: len(getattr(self, k))

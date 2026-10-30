@@ -16,22 +16,50 @@ from .model import Arc, Circle, Line, Polygon
 AXIS_SNAP = math.radians(2.0)
 
 
-def fills(ink: np.ndarray, ppm: float) -> tuple[list[Polygon], np.ndarray]:
+def fills(ink: np.ndarray, ppm: float) -> tuple[list[Polygon], list[Circle], np.ndarray]:
     """Solid areas (e.g. concrete walls, chimneys): strokes thicker than 1.5 mm and at least
-    3.5 mm across, so blurred small text and arrowheads stay strokes."""
+    3.5 mm across, so blurred small text and arrowheads stay strokes. A round one with a round opening is a thick
+    ring, such as the mark of a note with its letter in the opening: a circle with a wide pen, and what is in the
+    opening stays ink. Returns the areas, the rings and the mask of their ink."""
     r = max(2.0, 0.75 * ppm)
     core = (cv2.distanceTransform(ink, cv2.DIST_L2, 3) > r).astype(np.uint8)
     keep = np.zeros_like(ink)
     if not core.any():
-        return [], keep
+        return [], [], keep
     grown = cv2.dilate(core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * int(r) + 3,) * 2)) & ink
-    polys = []
-    for c in cv2.findContours(grown, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0]:
-        if min(cv2.boundingRect(c)[2:]) >= 3.5 * ppm:
+    polys, rings, rims = [], [], np.zeros_like(ink)
+    contours, tree = cv2.findContours(grown, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    for k, c in enumerate(contours):
+        if tree[0][k][3] >= 0 or min(cv2.boundingRect(c)[2:]) < 3.5 * ppm:
+            continue  # an opening, drawn with its outline, or too small
+        cv2.drawContours(keep, [c], -1, 1, cv2.FILLED)
+        holes, j = [], tree[0][k][2]
+        while j >= 0:
+            holes.append(contours[j])
+            j = tree[0][j][0]
+        if ring := _ring(c, holes, ppm):
+            rings.append(ring)
+            cv2.drawContours(keep, holes, -1, 0, cv2.FILLED)
+            cv2.circle(rims, (round(ring.cx * ppm), round(ring.cy * ppm)), round(ring.r * ppm), 1,
+                       round(ring.width * ppm) + 2 * round(0.15 * ppm) + 2)  # with its edge, which is not thick
+        else:
             pts = cv2.approxPolyDP(c, max(1.0, 0.2 * ppm), True)[:, 0, :] / ppm
             polys.append(Polygon([(float(x), float(y)) for x, y in pts]))
-            cv2.drawContours(keep, [c], -1, 1, cv2.FILLED)
-    return polys, keep & grown
+    return polys, rings, (keep & grown) | (rims & ink)
+
+
+def _ring(outline: np.ndarray, holes: list[np.ndarray], ppm: float) -> Circle | None:
+    """The thick ring an area with this outline and these openings is, if both outline and its largest opening are
+    round and about one centre and the opening is at least a third as wide."""
+    if not holes:
+        return None
+    hole = max(holes, key=cv2.contourArea)
+    (x, y), r_out = cv2.minEnclosingCircle(outline)
+    (hx, hy), r_in = cv2.minEnclosingCircle(hole)
+    round_ = all(cv2.contourArea(c) >= 0.8 * math.pi * rr * rr for c, rr in ((outline, r_out), (hole, r_in)))
+    if not round_ or r_in < r_out / 3 or math.hypot(x - hx, y - hy) > 0.15 * r_out:
+        return None
+    return Circle(x / ppm, y / ppm, (r_out + r_in) / 2 / ppm, (r_out - r_in) / ppm)
 
 
 def axis_lines(ink: np.ndarray, ppm: float) -> tuple[list[Line], np.ndarray, np.ndarray]:

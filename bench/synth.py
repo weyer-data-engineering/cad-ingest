@@ -8,6 +8,8 @@ so every test image comes with an exact reference solution.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import cv2
 import numpy as np
 
@@ -79,6 +81,13 @@ def frame(p: Pen, rows: list[list[tuple[str, float]]], tb_w: float = 170, tb_h: 
 
 def de(v: float) -> str:
     return f"{v:.2f}".replace(".", ",")
+
+
+def printed_on(d: Drawing, paper: str) -> Drawing:
+    """The drawing printed smaller on ``paper``, as a large P&ID is printed on A3 or A4 to take along: everything,
+    pens and texts included, shrinks by the same factor."""
+    f = min(PAPER[paper][0] / d.width, PAPER[paper][1] / d.height)
+    return replace(d.scaled(f), printed=f)
 
 
 # --------------------------------------------------------------------------- building plan
