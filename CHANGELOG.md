@@ -98,9 +98,15 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 
 - The DXF of a drawing printed small is at its drawn size, so its texts and symbols have the sizes they were drawn
   with; positions in `report.json` stay in sheet millimetres.
-- Texts in the DXF, the tags in symbols included, are fitted between the ends of their baseline as printed, so they
-  are as long as on the paper in any font: a tag stays inside its bubble, a line number inside its frame. The preview
-  draws a text that would come out longer smaller. A text whose letters were found only in part keeps its size.
+- Texts in the DXF, the tags in symbols included, are lettered as with a stencil: texts of about one height get one
+  height and one width per character, so the same label looks the same everywhere, and are fitted to that length in
+  any font. A text printed clearly narrower keeps its printed length, so a tag stays inside its bubble and a line
+  number inside its frame. The preview squeezes such a text along its line only, as CAD does, and a text whose
+  letters were found only in part keeps its size.
+- A spotted text line through which a stroke runs from above to below its letters (the end of a line number's frame,
+  the ring of the bubble beside it) is cut there into two texts.
+- A thick round ring, such as the mark of a note, is a circle with a wide pen instead of a filled disc, and the letter
+  in it is read.
 
 - The starter library moved from `app/plan2cad/symbols.dxf` to `libraries/din-10628`.
 - A symmetric symbol (one that looks the same turned or mirrored) takes the pose in which most of its attribute

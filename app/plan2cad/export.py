@@ -12,13 +12,17 @@ from ezdxf import xref
 from ezdxf.enums import TextEntityAlignment
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
+from matplotlib.font_manager import FontProperties
 from matplotlib.patches import Arc as MplArc
 from matplotlib.patches import Circle as MplCircle
+from matplotlib.patches import PathPatch
 from matplotlib.patches import Polygon as MplPolygon
+from matplotlib.textpath import TextPath
+from matplotlib.transforms import Affine2D
 
 from .markup import HIGHLIGHT_LAYER, LAYER, READING_LAYER
 from .model import Drawing
-from .render import CAP, DASH, GAP, dashes, render, text_length
+from .render import CAP, DASH, FONT, GAP, dashes, render, text_length
 
 LAYERS = {"P2C-LINE": 7, "P2C-DASH": 5, "P2C-CURVE": 3, "P2C-FILL": 8, "P2C-TEXT": 1, "P2C-UNDERLAY": 9,
           "P2C-WALL": 150, "P2C-DOOR": 30, "P2C-PIPE": 150, "P2C-EQUIPMENT": 94, "P2C-SIGNAL": 5, "P2C-FRAME": 8,
@@ -170,11 +174,17 @@ def to_figure(d: Drawing, path, fmt: str = "pdf", dpi: float | None = None) -> N
                                 alpha=0.4 if g.layer == HIGHLIGHT_LAYER else None))
     for t in d.texts:
         rad = math.radians(t.angle)  # anchor on the baseline, half a cap height below the centre
+        bx, by = t.x + math.sin(rad) * t.height / 2, t.y + math.cos(rad) * t.height / 2
         narrower = min(1.0, t.length / text_length(t)) if t.length and t.text.strip() else 1.0  # no longer than printed
-        ax.text(t.x + math.sin(rad) * t.height / 2, t.y + math.cos(rad) * t.height / 2, t.text,
-                fontsize=narrower * t.height / CAP * PT_PER_MM, rotation=t.angle, rotation_mode="anchor",
-                ha="center", va="baseline",
-                color=_rgb(t.color) if t.color else "0.55" if t.uncertain else "k")
+        color = _rgb(t.color) if t.color else "0.55" if t.uncertain else "k"
+        if narrower < 1:  # squeezed along the line only, as a fitted DXF text: as outlines, for a smaller font is lower
+            outline = TextPath((0, 0), t.text, size=t.height / CAP, prop=FontProperties(fname=str(FONT)))
+            box = outline.get_extents()
+            place = Affine2D().translate(-(box.x0 + box.x1) / 2, 0).scale(narrower, -1).rotate_deg(-t.angle)
+            ax.add_patch(PathPatch(place.translate(bx, by).transform_path(outline), lw=0, color=color))
+            continue
+        ax.text(bx, by, t.text, fontsize=t.height / CAP * PT_PER_MM, rotation=t.angle, rotation_mode="anchor",
+                ha="center", va="baseline", color=color)
     fig.savefig(path, format=fmt, dpi=dpi, facecolor="white")
 
 

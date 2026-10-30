@@ -102,3 +102,16 @@ def test_text_lying_on_a_circle_ring_is_dropped():
     texts, mask = _off_rings([Text(0, 0, 1, "N"), Text(0, 5, 1, "LIC")], labels, rings)
     assert [t.text for t in texts] == ["LIC"]
     assert mask.sum() == 4 and mask[5, :4].all()
+
+
+def test_texts_of_one_size_are_lettered_alike_but_a_tight_one_stays_inside_its_frame():
+    from app.plan2cad.model import Drawing, Text
+    from app.plan2cad.pipeline import _lettering
+
+    d = Drawing(100, 100, texts=[Text(10, 10, 1.1, "AB=CD", length=4.6), Text(10, 20, 1.2, "AB=CD", length=5.4),
+                                 Text(10, 30, 1.25, "AB=CD"), Text(10, 40, 1.2, "EF-12", length=2.5),
+                                 Text(10, 50, 3.3, "TITLE", length=14)])
+    _lettering(d)
+    same = [(t.height, t.length) for t in d.texts[:3]]
+    assert same[0] == same[1] == same[2] and same[0][0] == pytest.approx(1.2, abs=0.05)
+    assert d.texts[3].length == 2.5 and (d.texts[4].height, d.texts[4].length) == (3.3, 14)

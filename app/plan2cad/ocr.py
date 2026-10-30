@@ -202,16 +202,20 @@ def spotted(texts: list[Text], labels: np.ndarray, ink: np.ndarray, gray: np.nda
     groups += [(near.tolist(), s.vertical) for s, _, near, _, _ in lines]
     read = _voted(cc, groups, [(t.text, t.confidence) for t in texts] + [(t, 100 * s.score) for s, t, _, _, _ in lines])
     keep = [k for k in range(1, len(texts) + 1) if k not in claimed]
-    kind = np.min_scalar_type(len(keep) + len(lines))
+    dark = gray < 128
+    parts = []  # (spotted line, its letters, their text, cap height, whether the line is whole)
+    for (s, _, near, letters, cap), (text, _) in zip(lines, read[len(texts):]):
+        split = _split(cc, letters, s.vertical, _spaced(cc, near, s.vertical, text), dark)
+        parts += [(s, part, piece, cap, len(split) == 1) for part, piece in split]
+    kind = np.min_scalar_type(len(keep) + len(parts))
     ids = np.zeros(len(texts) + 1, kind)
     ids[keep] = np.arange(1, len(keep) + 1)
     line = np.zeros(cc.n + 1, kind)
     out = [texts[k - 1] for k in keep]
-    for (s, _, near, letters, cap), (text, _) in zip(lines, read[len(texts):]):
+    for s, letters, text, cap, whole in parts:
         box = (s.y0, s.y1) if s.vertical else (s.x0, s.x1)
         lo, hi = _metrics(cc, letters.tolist(), s.vertical)[2:] if len(letters) else box  # its letters along the line
-        text = _spaced(cc, near, s.vertical, text)
-        if (length := _length(lo, hi, cap, text, ppm)) is None:  # only some of its letters were found: on its box
+        if (length := _length(lo, hi, cap, text, ppm)) is None and whole:  # only some of its letters found: on its box
             lo, hi = box
         x, y = ((s.x0 + s.x1) / 2, (lo + hi) / 2) if s.vertical else ((lo + hi) / 2, (s.y0 + s.y1) / 2)
         out.append(Text(x / ppm, y / ppm, cap / ppm, text, 90.0 if s.vertical else 0.0, round(100 * s.score, 1),
@@ -219,6 +223,38 @@ def spotted(texts: list[Text], labels: np.ndarray, ink: np.ndarray, gray: np.nda
         line[letters + 1] = len(out)
     take = line[cc.lab]
     return out, np.where(take > 0, take, ids[labels])
+
+
+def _split(cc: Components, letters: np.ndarray, vertical: bool, text: str, dark: np.ndarray
+           ) -> list[tuple[np.ndarray, str]]:
+    """A spotted line cut into the texts on either side of a stroke that crosses it between two glyphs from above its
+    letters to below them: the end of a line number's frame or the ring of the bubble next to it, which a space never
+    is. Its characters go with its glyphs one to one; where a character or two were not read, across a single cut the
+    shorter side takes as many characters from its end as it has glyphs. As it is if it reads vertically or that
+    does not work out."""
+    glyphs = _glyphs(cc, letters.tolist(), vertical)
+    chars = [j for j, ch in enumerate(text) if ch != " "]
+    if vertical or len(glyphs) < 2:
+        return [(letters, text)]
+    top, base = int(cc.y[letters].min()), int((cc.y[letters] + cc.h[letters]).max())
+    reach = round(0.3 * (base - top))  # a curve, as the end of a frame, runs this far aside above and below the letters
+    band = ndimage.maximum_filter1d(dark[max(0, top - reach):base + reach], 2 * reach + 1, axis=1)
+    cuts = [n for n, (p, g) in enumerate(zip(glyphs, glyphs[1:]), 1)
+            if (x0 := max(cc.x[i] + cc.w[i] for i in p)) < (x1 := min(cc.x[i] for i in g))
+            and (band[:, x0:x1].mean(axis=0) >= 0.9).any()]
+    if not cuts or len(glyphs) != len(chars) and (len(cuts) > 1 or abs(len(glyphs) - len(chars)) > 2):
+        return [(letters, text)]
+    if len(glyphs) == len(chars):
+        at = [chars[n] for n in cuts]
+    else:  # the shorter side is read whole more likely; a space the reader put next to the cut is where it goes
+        n = cuts[0] if cuts[0] <= len(glyphs) - cuts[0] else len(chars) - (len(glyphs) - cuts[0])
+        if not 0 < n < len(chars):
+            return [(letters, text)]
+        spaces = [j for j in range(chars[max(0, n - 2)], chars[min(len(chars) - 1, n + 1)] + 1) if text[j] == " "]
+        at = [min(spaces, key=lambda j: abs(j - chars[n])) if spaces else chars[n]]
+    glyph_bounds, text_bounds = [0, *cuts, len(glyphs)], [0, *at, len(text)]
+    return [(np.array([i for g in glyphs[a:b] for i in g]), text[c:e].strip())
+            for a, b, c, e in zip(glyph_bounds, glyph_bounds[1:], text_bounds, text_bounds[1:])]
 
 
 def _spaced(cc: Components, near: np.ndarray, vertical: bool, text: str) -> str:

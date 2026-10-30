@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import cv2
 import numpy as np
@@ -22,6 +22,10 @@ DRAWN = 2.2  # mm: the usual height of the characters of a drawing at its drawn 
 SMALLER = 0.7  # a sheet whose characters are smaller than this share of DRAWN is a large drawing printed small
 DRAWN_PPM = 5.0  # px per drawn mm from which a small print is vectorised at its drawn size (a photo of it is coarser)
 SCALES = {1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 200, 250, 500, 1000, 2000, 2500, 5000}
+SIZE = 0.15  # a text whose height is within this share of a size the sheet is lettered in is of that size
+SIZED = 3  # texts of one height that make a size
+TIGHT = 0.85  # a text printed shorter than this share of the usual width of its characters is kept that short
+NARROW_CHARS = " .,:;'\"()|!Iil1"  # characters about half as wide as the others
 
 
 @dataclass
@@ -114,6 +118,7 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
         symbols.recognise(d, templates, symbols.ink_samples(linework, text_mask, out * printed, straight, frame))
         timer.lap("symbols")
     topology.connect(d)
+    _lettering(d)
     timer.lap("connect")
     d = d.scaled(printed)
     d.printed, size = printed, (size[0] * first, size[1] * first)
@@ -180,20 +185,21 @@ def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, che
     """The vectors and texts of the sheet in millimetres at ``ppm`` pixels each: of the sheet, or of the drawing as
     drawn where it is printed smaller (``printed``, the share of its drawn size the sheet shows); or the clockwise
     rotation in degrees that makes the sheet's text upright, if asked to ``check_rotation`` and it is not."""
-    polygons, fill = vectorize.fills(ink, ppm)
-    ink = ink & (1 - fill)
+    polygons, thick, fill = vectorize.fills(ink, ppm)
+    strokes, ink = ink, ink & (1 - fill)  # all of it frames a single letter: the thick ring of a note mark too
     hv, used, crossing = vectorize.axis_lines(ink, ppm)
     k = np.ones((2 * round(0.15 * ppm) + 1,) * 2, np.uint8)
     rem = ink & (1 - cv2.dilate(used, k))
     timer.lap("lines")
     readable = rem & (1 - vectorize.joints(rem, hv, ppm))
-    texts, labels, rotation = ocr.find_texts(readable, norm, ppm, check_rotation, ink, printed)
+    texts, labels, rotation = ocr.find_texts(readable, norm, ppm, check_rotation, strokes, printed)
     if rotation is None:  # judged on the sheet, as its measures are meant: the frame of a small print is close
         rotation = title_block_rotation(Drawing(0, 0, lines=hv).scaled(printed).lines, ink.shape[1] / ppm * printed,
                                         ink.shape[0] / ppm * printed)
     if rotation:
         return rotation
     round_, rings = vectorize.circles(ink, ppm, (labels > 0).astype(np.uint8), hv)
+    round_ = thick + round_
     texts, labels = _in_circles(texts, labels, readable, ink, round_, rings, norm, ppm)
     # the spotter enlarges a sheet as coarse as a phone photo, by its own pixels per mm: a scan has enough for it
     texts, labels = ocr.spotted(texts, labels, readable, norm, spotting.spot(norm, ppm / printed), ppm)
@@ -245,6 +251,47 @@ def _in_circles(texts: list[Text], labels: np.ndarray, readable: np.ndarray, ink
     lut[keep] = np.arange(1, len(keep) + 1)
     out = np.where(more_labels > 0, more_labels.astype(np.int32) + len(keep), lut[labels])
     return [texts[k - 1] for k in keep] + more, out
+
+
+def _lettering(d: Drawing) -> None:
+    """Letters the texts of the drawing as with a stencil: a sheet is lettered in a few sizes, and a text whose height
+    is within SIZE of one at least SIZED texts have takes that size; the texts of a size get one width per character
+    (NARROW_CHARS half of it), so the same label looks the same wherever it is. A text printed clearly narrower (TIGHT) keeps its printed length,
+    to stay inside its frame or bubble. The tags of the symbols are lettered with the other texts."""
+    texts = d.texts + [t for s in d.symbols for t in s.attributes.values()]
+    ems = {id(t): sum(0.5 if ch in NARROW_CHARS else 1.0 for ch in t.text) or 1.0 for t in texts}
+    heights = np.log([t.height for t in texts if t.height > 0 and not t.uncertain])
+    sizes = []
+    while len(heights) >= SIZED:
+        near = np.abs(heights[:, None] - heights[None, :]) <= SIZE / 2
+        k = int(np.argmax(near.sum(axis=1)))
+        if near[k].sum() < SIZED:
+            break
+        sizes.append(float(np.exp(np.median(heights[near[k]]))))
+        heights = heights[np.abs(heights - heights[k]) > SIZE]
+    if not sizes:
+        return
+    sizes = np.array(sizes)
+    size_of = {}
+    for t in texts:
+        k = int(np.argmin(np.abs(np.log(sizes / t.height)))) if t.height > 0 else -1
+        if k >= 0 and abs(math.log(sizes[k] / t.height)) <= SIZE:
+            size_of[id(t)] = k
+    widths: dict[int, list[float]] = {}
+    for t in texts:
+        if id(t) in size_of and t.length and not t.uncertain:
+            widths.setdefault(size_of[id(t)], []).append(t.length / t.height / ems[id(t)])
+
+    def lettered(t: Text) -> Text:
+        if (k := size_of.get(id(t))) is None:
+            return t
+        usual = float(np.median(widths[k])) * sizes[k] * ems[id(t)] if k in widths else None
+        tight = t.length and (usual is None or t.length < TIGHT * usual)
+        return replace(t, height=float(sizes[k]), length=t.length if tight else usual)
+
+    d.texts = [lettered(t) for t in d.texts]
+    for s in d.symbols:
+        s.attributes = {tag: lettered(t) for tag, t in s.attributes.items()}
 
 
 def _printed(texts: list[Text]) -> float:

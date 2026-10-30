@@ -30,7 +30,9 @@ job handler in `app/scan.py`.
    (at the drawn size they would fall apart into short pieces), and only objects and symbols are recognised and the
    linework connected at the drawn size. `report.json` gives the share as `printed` (1 for a drawing printed at its
    size), and the DXF is at the drawn size.
-4. **Vectors**: filled areas (thicker than 1.5 mm), horizontal and vertical lines (morphology), circles (Hough, verified
+4. **Vectors**: filled areas (thicker than 1.5 mm; a round one with a round opening, such as the thick ring of a note
+   mark, is a circle with a wide pen, and the letter in its opening is read), horizontal and vertical lines
+   (morphology), circles (Hough, verified
    on all ink; text found on a ring is dropped as misread symbol arcs, and a ring whose quarters OCR took for brackets,
    such as a circle in a box, is found as well), everything else by skeleton tracing. A traced stroke that is round
    becomes one arc; one that runs straight and then bends is cut into the fewest straight lines and true arcs that
@@ -75,7 +77,9 @@ job handler in `app/scan.py`.
    Tesseract. A spotted line replaces the texts whose letters lie in its box, unless it is a shorter reading across
    part of a text written the other way (a vertical dimension read as two numbers). Its letters are the components
    wholly in the box and about as high as most of them, so a pipe or a ring that touches the line, or a dash, stays
-   linework.
+   linework. A line through which a stroke runs from above its letters to below them, between two of them, is two
+   texts: the spotter reads a line number and the tag in the bubble next to it as one line, across the end of the
+   frame and the ring of the bubble, which a space never is.
    Where no text was found before, a reading needs a score of 0.8, and one of one or two characters 0.9 and no more
    than 1.6 times the usual text height: such a reading is as likely a symbol (a valve read as "D8", a fixture as
    "8"). A replacement scored below 0.8 is marked for review, and the characters both readers confuse go to the vote
@@ -118,11 +122,15 @@ teal, for checking), `markup-k.png` for each markup and `report.json` (sheet, re
 with their attributes and ports, the lines joining two symbol ports, the markups and what to check). `extract` lists
 the recognised texts, symbols (with their tags) and markups as markdown, so photographed plans become searchable too.
 
-Every text of the DXF, the tags in a symbol's bubble included, is fitted between the ends of its baseline as printed
-(DXF alignment "fit"), so that it is as long as on the paper in whatever font the CAD program shows it: a tag stays
-inside its bubble, a line number inside its frame. The preview draws a text that would come out longer in its font
-smaller. A text whose letters were found only in part (where they touch a line) keeps its natural length, as fitted
-to that part it would shrink to a fraction of its size.
+Texts are lettered as with a stencil, since a drawing is lettered in a few sizes: a text whose height is within 15 %
+of a height at least three texts share takes it, and the texts of one size get one width per character (narrow ones,
+such as spaces, points and the digit 1, half of it), so the same label looks the same wherever it is. Every text of
+the DXF, the tags in a symbol's bubble included, is fitted between the ends of its baseline at that width (DXF
+alignment "fit"), so it looks the same in whatever font the CAD program shows it; a text printed clearly narrower
+than that (by more than 15 %) keeps its printed length, so a tag stays inside its bubble and a line number inside
+its frame. The preview squeezes such a text along its line only, as CAD does. A text whose letters were found only
+in part (where they touch a line) is lettered at the usual width of its size, as fitted to that part it would
+shrink to a fraction of its size.
 
 `report.json` lists what to check under `review`, least confident first: texts that could not be read
 reliably (on `P2C-TEXT-CHECK`) and symbols that may be the wrong ones (on `P2C-SYMBOL-CHECK`, and in magenta in

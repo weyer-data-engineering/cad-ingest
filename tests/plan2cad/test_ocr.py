@@ -133,3 +133,16 @@ def test_a_text_whose_letters_were_found_only_in_part_keeps_its_size():
 
     assert _length(0, 120, 20, "AB=12XY", 10) == pytest.approx(12.0)
     assert _length(0, 30, 20, "AB=12XY", 10) is None  # the letters touching a line were not found: not fitted to that
+
+
+@pytest.mark.parametrize("read, parts", [("AB-12 34", ["AB-12", "34"]), ("AB-1234", ["AB-12", "34"]),
+                                         ("AB-2 34", ["AB-2", "34"])])  # one character not read: cut at the space
+def test_a_line_read_across_the_end_of_a_frame_is_two_texts(read, parts):
+    from app.plan2cad.ocr import _split
+
+    d = Drawing(60, 20, lines=[Line(30, 4, 30, 16)], texts=[Text(20, 10, 2.5, "AB-12"), Text(36, 10, 2.5, "34")])
+    gray = render(d, 10)
+    cc = Components((gray < 128).astype(np.uint8), gray)
+    letters = np.flatnonzero(cc.h < 40)  # all but the stroke
+    assert [t for _, t in _split(cc, letters, False, read, gray < 128)] == parts
+    assert [t for _, t in _split(cc, letters, False, "AB-12 34", np.zeros_like(gray, bool))] == ["AB-12 34"]
