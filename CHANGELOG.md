@@ -101,8 +101,8 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 - Texts in the DXF, the tags in symbols included, are lettered as with a stencil: texts of about one height get one
   height and one width per character, so the same label looks the same everywhere, and are fitted to that length in
   any font. A text printed clearly narrower keeps its printed length, so a tag stays inside its bubble and a line
-  number inside its frame. The preview squeezes such a text along its line only, as CAD does, and a text whose
-  letters were found only in part keeps its size.
+  number inside its frame; one spaced wider keeps where it starts, so notes stay flush left. The preview squeezes a
+  text along its line only, as CAD does, and a text whose letters were found only in part keeps its size.
 - A spotted text line through which a stroke runs from above to below its letters (the end of a line number's frame,
   the ring of the bubble beside it, the line between two labels) is cut there into two texts, where the letters on
   either side are a letter's height apart or read with a space between them.

@@ -110,8 +110,9 @@ def test_texts_of_one_size_are_lettered_alike_but_a_tight_one_stays_inside_its_f
 
     d = Drawing(100, 100, texts=[Text(10, 10, 1.1, "AB=CD", length=4.6), Text(10, 20, 1.2, "AB=CD", length=5.4),
                                  Text(10, 30, 1.25, "AB=CD"), Text(10, 40, 1.2, "EF-12", length=2.5),
-                                 Text(10, 50, 3.3, "TITLE", length=14)])
+                                 Text(10, 50, 3.3, "TITLE", length=14), Text(50, 60, 1.2, "AB=CD", length=7.0)])
     _lettering(d)
-    same = [(t.height, t.length) for t in d.texts[:3]]
-    assert same[0] == same[1] == same[2] and same[0][0] == pytest.approx(1.2, abs=0.05)
+    same = [(t.height, t.length) for t in d.texts[:3] + d.texts[5:]]
+    assert same[0] == same[1] == same[2] == same[3] and same[0][0] == pytest.approx(1.2, abs=0.05)
     assert d.texts[3].length == 2.5 and (d.texts[4].height, d.texts[4].length) == (3.3, 14)
+    assert d.texts[5].x - d.texts[5].length / 2 == pytest.approx(50 - 7.0 / 2)  # spaced wider: starts where it did

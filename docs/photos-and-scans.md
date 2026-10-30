@@ -129,9 +129,9 @@ such as spaces, points and the digit 1, half of it), so the same label looks the
 the DXF, the tags in a symbol's bubble included, is fitted between the ends of its baseline at that width (DXF
 alignment "fit"), so it looks the same in whatever font the CAD program shows it; a text printed clearly narrower
 than that (by more than 15 %) keeps its printed length, so a tag stays inside its bubble and a line number inside
-its frame. The preview squeezes such a text along its line only, as CAD does. A text whose letters were found only
-in part (where they touch a line) is lettered at the usual width of its size, as fitted to that part it would
-shrink to a fraction of its size.
+its frame. A text spaced wider than that keeps where it starts, so notes and legends stay flush left. The preview
+squeezes a text along its line only, as CAD does. A text whose letters were found only in part (where they touch a
+line) is lettered at the usual width of its size, as fitted to that part it would shrink to a fraction of its size.
 
 `report.json` lists what to check under `review`, least confident first: texts that could not be read
 reliably (on `P2C-TEXT-CHECK`) and symbols that may be the wrong ones (on `P2C-SYMBOL-CHECK`, and in magenta in

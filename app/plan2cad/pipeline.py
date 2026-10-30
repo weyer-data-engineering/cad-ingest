@@ -22,7 +22,7 @@ DRAWN = 2.2  # mm: the usual height of the characters of a drawing at its drawn 
 SMALLER = 0.7  # a sheet whose characters are smaller than this share of DRAWN is a large drawing printed small
 DRAWN_PPM = 5.0  # px per drawn mm from which a small print is vectorised at its drawn size (a photo of it is coarser)
 SCALES = {1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 200, 250, 500, 1000, 2000, 2500, 5000}
-SIZE = 0.2  # a text whose height is within this share of a size the sheet is lettered in has that size: 2 and 2.5 mm differ
+SIZE = 0.2  # a text whose height is within this share of a size the sheet is lettered in has it: 2 and 2.5 mm differ
 SIZED = 3  # texts of one height that make a size
 TIGHT = 0.85  # a text printed shorter than this share of the usual width of its characters is kept that short
 NARROW_CHARS = " .,:;'\"()|!Iil1"  # characters about half as wide as the others
@@ -283,16 +283,19 @@ def _lettering(d: Drawing) -> None:
         if id(t) in size_of and t.length and not t.uncertain:
             widths.setdefault(size_of[id(t)], []).append(t.length / t.height / ems[id(t)])
 
-    def lettered(t: Text) -> Text:
+    def lettered(t: Text, centred: bool = False) -> Text:
         if (k := size_of.get(id(t))) is None:
             return t
         usual = float(np.median(widths[k])) * sizes[k] * ems[id(t)] if k in widths else None
-        tight = t.length and (usual is None or t.length < TIGHT * usual)
-        return replace(t, height=float(sizes[k]), length=t.length if tight else usual)
+        if t.length and (usual is None or t.length < TIGHT * usual):
+            return replace(t, height=float(sizes[k]))
+        back = (t.length - usual) / 2 if t.length and usual < t.length and not centred else 0.0
+        a = math.radians(t.angle)  # a text shorter than printed starts where it did: notes stay flush left
+        return replace(t, x=t.x - back * math.cos(a), y=t.y + back * math.sin(a), height=float(sizes[k]), length=usual)
 
     d.texts = [lettered(t) for t in d.texts]
-    for s in d.symbols:
-        s.attributes = {tag: lettered(t) for tag, t in s.attributes.items()}
+    for s in d.symbols:  # a tag stays in the middle of its bubble
+        s.attributes = {tag: lettered(t, centred=True) for tag, t in s.attributes.items()}
 
 
 def _printed(texts: list[Text]) -> float:
