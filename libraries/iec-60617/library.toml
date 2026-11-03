@@ -1,0 +1,9 @@
+# The circuit diagram starter library of cad-ingest: simplified symbols after IEC 60617, written by
+# bench/make_library.py. See docs/symbol-libraries.md for the format.
+id = "iec-60617"
+name = "Circuit diagram symbols after IEC 60617 (starter library)"
+version = "1.0.0"
+format = 1
+licence = "Apache-2.0"
+drawing = ["electrical"]
+file = "symbols.dxf"

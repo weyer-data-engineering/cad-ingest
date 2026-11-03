@@ -1,7 +1,9 @@
 """Writes the DXFs of the built-in symbol libraries:
 
 - libraries/din-10628: simplified P&ID symbols after DIN EN ISO 10628-2, at their printed size;
-- libraries/floor-plan: fixtures of floor plans (sanitary objects, kitchen), at their real size in millimetres.
+- libraries/floor-plan: fixtures of floor plans (sanitary objects, kitchen), at their real size in millimetres;
+- libraries/iec-60617: simplified symbols of circuit diagrams after IEC 60617, at their printed size, drawn upright
+  (current flowing from top to bottom).
 
     python bench/make_library.py
 
@@ -132,6 +134,45 @@ def pid(path: Path = LIBRARIES / "din-10628" / "symbols.dxf") -> None:
     doc.saveas(path)
 
 
+LEADS = [[(0, 5), (0, 2.5)], [(0, -5), (0, -2.5)]]  # the wire ends above and below a two-terminal device
+UPRIGHT = [(0, 5), (0, -5)]
+TAG = {"TAG": (-6, 0)}
+# name: description, polylines, circles (x, y, r), ports, attributes; on a 2.5 mm grid, the wire running vertically
+ELECTRICAL = {
+    "NO_CONTACT": ("Make contact", LEADS + [[(0, -2.5), (-2.2, 2.5)]], [], UPRIGHT, TAG),
+    "NC_CONTACT": ("Break contact", LEADS + [[(0, -2.5), (2.2, 2.9)], [(0, 2.5), (2.6, 2.5)]], [], UPRIGHT, TAG),
+    "COIL": ("Relay coil", [[(0, 5), (0, 2.5)], [(0, -5), (0, -2.5)], [(-3.5, -2.5), (3.5, -2.5), (3.5, 2.5),
+                                                                       (-3.5, 2.5), (-3.5, -2.5)]], [], UPRIGHT,
+             {"TAG": (-8, 0)}),
+    "FUSE": ("Fuse", [[(0, 5), (0, -5)], [(-1.25, -3.5), (1.25, -3.5), (1.25, 3.5), (-1.25, 3.5), (-1.25, -3.5)]],
+             [], UPRIGHT, TAG),
+    "RESISTOR": ("Resistor", LEADS + [[(-1.25, -2.5), (1.25, -2.5), (1.25, 2.5), (-1.25, 2.5), (-1.25, -2.5)]], [],
+                 UPRIGHT, TAG),
+    "LAMP": ("Indicator lamp", [[(0, 5), (0, 2.5)], [(0, -5), (0, -2.5)], [(-1.77, -1.77), (1.77, 1.77)],
+                                [(-1.77, 1.77), (1.77, -1.77)]], [(0, 0, 2.5)], UPRIGHT, TAG),
+}
+
+
+def electrical(path: Path = LIBRARIES / "iec-60617" / "symbols.dxf") -> None:
+    doc = ezdxf.new("R2018", units=ezdxf.units.MM)
+    doc.layers.add("PORT", color=1).dxf.plot = 0
+    pen = {"lineweight": 35}
+    for name, (description, polylines, circles, ports, attributes) in ELECTRICAL.items():
+        block = doc.blocks.new(name, dxfattribs={"description": description})
+        for points in polylines:
+            closed = points[0] == points[-1]
+            block.add_lwpolyline(points[:-1] if closed else points, close=closed, dxfattribs=pen)
+        for x, y, r in circles:
+            block.add_circle((x, y), r, dxfattribs=pen)
+        for point in ports:
+            block.add_point(point, dxfattribs={"layer": "PORT"})
+        for tag, point in attributes.items():
+            block.add_attdef(tag, point, dxfattribs={"height": 2.0}).set_placement(
+                point, align=TextEntityAlignment.MIDDLE_RIGHT)
+    doc.saveas(path)
+
+
 if __name__ == "__main__":
     pid()
     floor_plan()
+    electrical()

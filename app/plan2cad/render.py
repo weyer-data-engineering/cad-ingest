@@ -58,6 +58,11 @@ def render(d: Drawing, ppm: float, img: np.ndarray | None = None, color=0, texts
     for a in d.arcs:
         end = a.end if a.end > a.start else a.end + 360
         r = round(a.r * f)
+        if a.r * ppm >= 400:  # OpenCV draws large arcs in 5 degree chords: a street at 1:500 would come out polygonal
+            t = np.radians(np.linspace(a.start, end, max(2, int((end - a.start) * a.r * ppm / 60))))
+            pts = np.column_stack([a.cx + a.r * np.cos(t), a.cy + a.r * np.sin(t)]) * f
+            cv2.polylines(img, [np.round(pts).astype(np.int32)], False, color, thick(a.width), cv2.LINE_AA, SHIFT)
+            continue
         cv2.ellipse(img, p(a.cx, a.cy), (r, r), 0, a.start, end, color, thick(a.width), cv2.LINE_AA, SHIFT)
     for c in d.circles:
         cv2.circle(img, p(c.cx, c.cy), round(c.r * f), color, thick(c.width), cv2.LINE_AA, SHIFT)
@@ -93,6 +98,14 @@ def draw_text(img: np.ndarray, t: Text, ppm: float, color=0) -> None:
     if t.angle == 90:
         m = np.rot90(m)  # counter-clockwise: reads bottom to top
         ax, ay = ay, m.shape[0] - ax
+    elif t.angle:  # any other angle, counter-clockwise, about the anchor
+        h, w = m.shape
+        M = cv2.getRotationMatrix2D((ax, ay), t.angle, 1.0)
+        corners = cv2.transform(np.float32([[[0, 0], [w, 0], [w, h], [0, h]]]), M)[0]
+        M[:, 2] -= corners.min(axis=0)
+        size = np.ceil(corners.max(axis=0) - corners.min(axis=0)).astype(int) + 1
+        m = cv2.warpAffine(m, M, (int(size[0]), int(size[1])), flags=cv2.INTER_LINEAR)
+        ax, ay = M @ (ax, ay, 1.0)
     blend(img, m, round(t.x * ppm - ax), round(t.y * ppm - ay), color)
 
 
