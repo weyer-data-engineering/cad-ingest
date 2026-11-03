@@ -221,6 +221,7 @@ API `options.on` and `options.off`, command line and benchmark `--on` and `--off
 | `read_handwriting` | off | handwriting in colour markups is read by Tesseract, as a guess to check |
 | `vocabulary` | on | a token read with letters for digits or digits for letters ("-KI") is read in the vocabulary of the kind of drawing's [profile](profiles.md) where that alone makes it a word of it ("-K1") |
 | `dedupe` | on | a text read twice at one place, in the same direction, is kept once, the surer reading |
+| `pens` | off | the linework gets a few pens, as many as the drawing has: the measured widths, weighted by length, are clustered around the modes of their distribution. Off by default: widths measured on a scan come out about one ISO pen too thick, and the clusters merge pens rather than put them right (on the benchmark the right pen on 14-39 % of the linework without it, 0-6 points more with it) |
 
 ## Vector PDFs
 

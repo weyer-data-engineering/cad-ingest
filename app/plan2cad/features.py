@@ -13,7 +13,9 @@ class Features:
     read_handwriting: bool = False  # read handwritten notes in colour with Tesseract, which misreads most of them
     vocabulary: bool = True  # read tokens in the vocabulary of the kind of drawing's profile: profiles.py
     dedupe: bool = True  # one text where the same was read twice at one place
-    pens: bool = True  # a few pen widths, as many as the drawing has, instead of each line's own: objects.pens
+    # a few pen widths, as many as the drawing has, instead of each line's own (objects.pens); off, as the widths
+    # measured on a scan are a pen too thick, and this merges pens rather than putting them right
+    pens: bool = False
 
     @classmethod
     def names(cls) -> list[str]:

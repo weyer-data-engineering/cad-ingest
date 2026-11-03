@@ -464,8 +464,8 @@ def crossings(gt: Drawing, pred: Drawing) -> dict:
     """Lines that cross without joining, and lines that join. Of the places where two lines of the reference cross
     and run on (no dot), the share where two lines of the output run through as well, neither ending within 1.5 mm
     (crossings kept); of the places where they join (at an end, at a dot), the share where a line of the output ends,
-    or a dot is, within 1 mm (junctions kept). A crossing closed into a junction loses the one, a junction drawn
-    as a crossing (or left with a gap) the other."""
+    turns (a corner of a closed outline) or a dot is within 1 mm (junctions kept). A crossing closed into a junction
+    loses the one, a junction left with a gap the other."""
     seg, owner, ends = _segments(gt)
     if len(seg) < 2:
         return {}
@@ -486,7 +486,8 @@ def crossings(gt: Drawing, pred: Drawing) -> dict:
         return len(near - ending)
 
     kept = sum(through(x) >= 2 for x in across)
-    met = sum(bool(tree.query_ball_point(x, 1.0)) or any(math.dist(x, (c.cx, c.cy)) <= 1.0 for c in pred.circles)
+    corners = cKDTree(np.vstack([pseg[:, :2], pseg[:, 2:]]))  # the ends of every straight piece
+    met = sum(bool(corners.query_ball_point(x, 1.0)) or any(math.dist(x, (c.cx, c.cy)) <= 1.0 for c in pred.circles)
               for x in joins)
     return {"crossings_kept": kept / len(across) if across else None,
             "junctions_kept": met / len(joins) if joins else None}

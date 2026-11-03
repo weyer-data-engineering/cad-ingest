@@ -76,7 +76,7 @@ class VectorizeOptions(BaseModel):
 
     @model_validator(mode="after")
     def _known_features(self) -> "VectorizeOptions":
-        Features.of(self.on or [], self.off or [])  # ValueError: a 422 naming the unknown feature
+        Features.of(self.on or [], self.off or [])  # ValueError: a 400 naming the unknown feature
         return self
 
 

@@ -11,16 +11,17 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   `P2C-MARKUP` and in `markups`, before lines and texts are read: told apart by their shape (neither straight nor
   an arc nor an ellipse between their corners, or turning too often for anything else; chains of arcs for clouds) and
   their grey (pencil), with rules that hold on any kind of drawing (`docs/photos-and-scans.md#markups`).
-- Steps of the recognition can be switched on and off by name: job API `options.on` and `options.off` (`422` for an
+- Steps of the recognition can be switched on and off by name: job API `options.on` and `options.off` (`400` for an
   unknown name), command line and benchmark `--on` and `--off`. Steps: `freehand`, `read_handwriting`, `vocabulary`,
-  `dedupe` (`docs/photos-and-scans.md#steps-that-can-be-switched`).
+  `dedupe`, `pens` (`docs/photos-and-scans.md#steps-that-can-be-switched`).
 - Profiles of kinds of drawing as data (`profiles/`, `docs/profiles.md`): the evidence that recognises the kind and the
   vocabulary its texts are written in, for P&IDs, building drawings, site plans and circuit diagrams. New kinds
   `electrical` and `site` for `options.drawing`; new setting `PROFILES` for further profile folders. A token read with
   letters for digits ("-KI") is read in the vocabulary where that makes it a word of it ("-K1").
 - A starter library of circuit diagram symbols after IEC 60617 (`iec-60617`), used on circuit diagrams;
   `DEFAULT_SYMBOL_LIBRARIES` is now `din-10628,floor-plan,iec-60617`.
-- A text read twice at one place is kept once.
+- A text read twice at one place is kept once. The step `pens` (off by default) gives the linework a few pens, as many
+  as the drawing has.
 - The benchmark has circuit diagrams, building sections and site plans, as clean plots, scans, poor and skewed scans
   and photos, and cases with markups by hand in black, pencil and colour. New measures: tokens exact, the share marked
   to check, areas where output and reference differ, symbols placed where there are none, markups found, correct and
