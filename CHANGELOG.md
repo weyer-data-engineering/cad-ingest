@@ -7,6 +7,25 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 
 ### Added
 
+- Marks by hand in black or pencil (notes, revision clouds, freehand hatching) are kept apart from the drawing, on
+  `P2C-MARKUP` and in `markups`, before lines and texts are read: told apart by their shape (neither straight nor
+  an arc nor an ellipse between their corners, or turning too often for anything else; chains of arcs for clouds) and
+  their grey (pencil), with rules that hold on any kind of drawing (`docs/photos-and-scans.md#markups`).
+- Steps of the recognition can be switched on and off by name: job API `options.on` and `options.off` (`422` for an
+  unknown name), command line and benchmark `--on` and `--off`. Steps: `freehand`, `read_handwriting`, `vocabulary`,
+  `dedupe` (`docs/photos-and-scans.md#steps-that-can-be-switched`).
+- Profiles of kinds of drawing as data (`profiles/`, `docs/profiles.md`): the evidence that recognises the kind and the
+  vocabulary its texts are written in, for P&IDs, building drawings, site plans and circuit diagrams. New kinds
+  `electrical` and `site` for `options.drawing`; new setting `PROFILES` for further profile folders. A token read with
+  letters for digits ("-KI") is read in the vocabulary where that makes it a word of it ("-K1").
+- A starter library of circuit diagram symbols after IEC 60617 (`iec-60617`), used on circuit diagrams;
+  `DEFAULT_SYMBOL_LIBRARIES` is now `din-10628,floor-plan,iec-60617`.
+- A text read twice at one place is kept once.
+- The benchmark has circuit diagrams, building sections and site plans, as clean plots, scans, poor and skewed scans
+  and photos, and cases with markups by hand in black, pencil and colour. New measures: tokens exact, the share marked
+  to check, areas where output and reference differ, symbols placed where there are none, markups found, correct and
+  taken for the drawing, phantom texts and fills on markups, and crossings and junctions kept; and a table by kind of
+  drawing.
 - Symbol libraries as add-ons (see `docs/symbol-libraries.md`). A library is a folder with a `library.toml` and a
   DXF, the same folder as a ZIP, or a bare DXF; units come from `$INSUNITS`, blocks are read around their base point,
   and splines, ellipses and nested blocks count towards a symbol's outline. The result DXF holds the library's
@@ -96,6 +115,10 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 
 ### Changed
 
+- Handwriting in colour markups is no longer read by default: Tesseract made up most of what it read. `reading` is
+  `null`; the step `read_handwriting` reads it as before. The markdown section is now `Markups (added by hand)`.
+- A pen stroke in colour no longer leaves a faint grey line in the drawing: the grey image lifts it and its fringe to
+  the paper.
 - The DXF of a drawing printed small is at its drawn size, so its texts and symbols have the sizes they were drawn
   with; positions in `report.json` stay in sheet millimetres.
 - Texts in the DXF, the tags in symbols included, are lettered as with a stencil: texts of about one height get one

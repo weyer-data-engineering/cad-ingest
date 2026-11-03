@@ -1,11 +1,13 @@
 # Symbol libraries
 
-When cad-ingest turns a photo or scan of a P&ID or a floor plan into DXF (`vectorize`), it replaces recognised
-symbols with blocks of a symbol library: a valve becomes a valve block with its tag as an attribute, a washbasin a
-washbasin block, not loose strokes. cad-ingest ships two starter libraries: `din-10628` with 18 P&ID symbols after
-DIN EN ISO 10628-2, and `floor-plan` with seven fixtures of floor plans (toilet, washbasin, bathtub, shower tray,
-kitchen sink, hob, washing machine). You can add your own company libraries next to them, so that the DXF contains
-your blocks, with your layers, colours and attribute names.
+When cad-ingest turns a photo or scan of a P&ID, a floor plan or a circuit diagram into DXF (`vectorize`), it replaces
+recognised symbols with blocks of a symbol library: a valve becomes a valve block with its tag as an attribute, a
+washbasin a washbasin block, not loose strokes. cad-ingest ships three starter libraries: `din-10628` with 18 P&ID
+symbols after DIN EN ISO 10628-2, `floor-plan` with seven fixtures of floor plans (toilet, washbasin, bathtub, shower
+tray, kitchen sink, hob, washing machine) and `iec-60617` with six symbols of circuit diagrams after IEC 60617
+(make and break contact, relay coil, fuse, resistor, lamp). You can add your own company libraries next to them, so
+that the DXF contains your blocks, with your layers, colours and attribute names. Which kind of drawing a sheet is,
+and so which libraries are used on it, the [profiles](profiles.md) recognise from its texts.
 
 A library is data, not code: nothing in a library is ever run. A library that a job brings along is read like the
 job's own file, in its work-horse under the same time and memory limits.
@@ -31,7 +33,7 @@ name = "ACME P&ID symbols"
 version = "2.1.0"
 format = 1                               # the library format; this version of cad-ingest reads format 1
 licence = "LicenseRef-ACME-internal"     # SPDX identifier, e.g. CC-BY-4.0
-drawing = ["pid"]                        # the drawings it is for: "pid" (P&IDs), "building" (floor plans) or both
+drawing = ["pid"]                        # the kinds of drawing it is for: "pid", "building", "electrical", "site"
 size = "printed"                         # blocks drawn at their size on the sheet ("printed") or of the object ("real")
 file = "symbols.dxf"
 ```
@@ -163,7 +165,7 @@ cad-ingest plan.jpg out/ --paper A1 --library ./acme-pid --library din-10628
 
 **Service, installed libraries.** Workers read the libraries in `SYMBOL_LIBRARIES` (default `/libraries`) when they
 start, in addition to the built-in starter libraries. Mount a folder there or build an image of your own (see
-[Operations](operations.md#symbol-libraries)). `DEFAULT_SYMBOL_LIBRARIES` (default `din-10628,floor-plan`) names the
+[Operations](operations.md#symbol-libraries)). `DEFAULT_SYMBOL_LIBRARIES` (default `din-10628,floor-plan,iec-60617`) names the
 libraries a job gets when it names none. A job chooses others with `"options": {"libraries": ["acme-pid",
 "din-10628"]}`, and `GET /libraries` lists what is installed. Each library is used on the kind of drawing it is for.
 

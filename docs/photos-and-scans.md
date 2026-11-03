@@ -171,13 +171,14 @@ LibreDWG writes only old DWG versions, experimentally. AutoCAD and other CAD pro
 Plans come back from site and review with notes on them: a cloud around a valve with "removed" next to it, a pipe
 struck out, a line marked with a highlighter. On a black and white print, every stroke in strong colour is such a
 markup. Read as part of the drawing, it would turn into stray lines and symbols and garble the printed text under
-it. So the converter takes markups out before it reads the drawing and keeps them on their own layers:
+it. So the converter takes markups out before it reads the drawing and keeps them on their own layers, not deleted:
 
 - **Pen strokes** become polylines in their colour on `P2C-MARKUP`. Strokes close to one another make one note.
 - **Highlighter** (light colour at least 1 mm wide) becomes a transparent fill in its colour on `P2C-HIGHLIGHT`. The
   print under it shows through and is read as usual.
-- **Handwriting** in a note is read by Tesseract where it can. The reading goes on `P2C-MARKUP-TEXT` as a guess to
-  check: Tesseract is made for print, so it reads clear block letters and misses much of joined-up writing.
+- **Handwriting** is kept as strokes and not read: Tesseract is made for print, and what it read in joined-up writing
+  was mostly made up. The step `read_handwriting` (see [Steps that can be switched](#steps-that-can-be-switched))
+  reads it as before, as a guess to check on `P2C-MARKUP-TEXT`.
 - **What a markup covers**: the printed texts and the tags of the symbols inside a pen loop, under a pen stroke or
   under highlighter, such as the instruments in a revision cloud.
 
@@ -187,8 +188,39 @@ ZIP holds `markup-k.png` for each markup, the markup in colour on the faded prin
 person or a vision model to read what Tesseract could not. The markdown has a section `Markups (added by hand in
 colour)`, for example `- Note in red: “removed” (handwriting, read automatically); covers: FV 101, FT 101`.
 
-On a colour plot, where coloured lines are a large share of the ink, all colour is print and no markups are taken out.
-Markups in black or grey cannot be told from the print.
+On a colour plot, where coloured lines are a large share of the ink, all colour is print and no colour markups are
+taken out.
+
+**Markups in black or pencil** are told apart by their shape and their grey, with features that hold on any kind of
+drawing (`app/plan2cad/freehand.py`; step `freehand`):
+
+- CAD draws straight lines, circular and elliptic arcs and smooth curves, joined at sharp corners. A stroke whose
+  pieces between its corners are none of these, or that turns so often that its pieces are too short to be anything
+  (joined-up writing), and that has few straight pieces, is a mark.
+- A chain of six or more arcs of about one size, bulging to one side and meeting in points, is a revision cloud.
+- Pencil is lighter than print: a light stroke needs less of the above.
+- Characters of print are left to the text recognition: only strokes at least three characters long are judged, and
+  none that stand in a row of characters of their height. Neither are strokes across half the sheet: a mark drawn
+  into the drawing's own linework stays in it.
+
+A mark found goes on `P2C-MARKUP` in black or its grey, with a note in `markups`, before lines and texts are read: the
+text recognition sees paper where it was. The rules favour the drawing: a mark that looks like CAD (a straight
+strike-out, freehand hatching of nearly straight strokes) stays in the drawing rather than a CAD shape going to the
+markup layer. On the synthetic benchmark about a third of the black marks and three quarters of the pencil marks are
+found, and almost nothing of the drawing is taken for a mark (see the [Benchmark](#benchmark)).
+
+## Steps that can be switched
+
+Some steps of the recognition can be switched on and off by name, to measure what each brings on every kind of drawing
+and to turn one off where it does not suit a kind of drawing or a customer's sheets (`app/plan2cad/features.py`; job
+API `options.on` and `options.off`, command line and benchmark `--on` and `--off`):
+
+| Step | Default | What it does |
+|---|---|---|
+| `freehand` | on | marks by hand in black or pencil go to the markup layer ([Markups](#markups)) |
+| `read_handwriting` | off | handwriting in colour markups is read by Tesseract, as a guess to check |
+| `vocabulary` | on | a token read with letters for digits or digits for letters ("-KI") is read in the vocabulary of the kind of drawing's [profile](profiles.md) where that alone makes it a word of it ("-K1") |
+| `dedupe` | on | a text read twice at one place, in the same direction, is kept once, the surer reading |
 
 ## Vector PDFs
 
@@ -322,7 +354,10 @@ stay linework. On floor plans, all fixtures are found at 1:50; at 1:100, where O
 
 ## Limits
 
-- Handwriting is read only in part (see [Markups](#markups)); the markup images in the ZIP show what it says.
+- Handwriting is not read (see [Markups](#markups)); the markup images in the ZIP show what it says.
+- Marks by hand in black are found only in part (about a third on the benchmark): those that look like CAD (straight
+  strokes, a strike-out through a text, hatching of nearly straight strokes) and those drawn into the drawing's own
+  linework stay in the drawing.
 - Small text needs about 8 px per mm of paper. An A0 sheet as one 12 MP photo has 2.8 px/mm, so its text is not
   readable; use 200-300 dpi scans for A0/A1. Unread text is kept as a guess on `P2C-TEXT-CHECK`.
 - Thin lines (0.18 mm, e.g. dimension lines) need about 6 px per mm of paper. On a 12 MP photo of an A1 floor plan
