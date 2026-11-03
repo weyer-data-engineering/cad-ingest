@@ -1,0 +1,14 @@
+# A profile: what the texts of one kind of drawing look like (docs/profiles.md).
+format = 1
+id = "building"
+name = "Building drawing (floor plan, section, elevation)"
+drawing = "building"
+
+[evidence]
+titles = ['Grundriss', 'Schnitt', 'Ansicht', 'Erdgeschoss', 'Obergeschoss', 'Kellergeschoss', 'Floor plan', 'Section']
+patterns = ['\d m[²2]\b']  # room areas
+scales = [20, 25, 50, 75, 100, 200]  # each counts SCALE when the drawing is at one of them
+
+[vocabulary]
+level = ['[±+-]\d+,\d\d']
+area = ['\d+,\d\d']

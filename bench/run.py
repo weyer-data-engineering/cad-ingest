@@ -1,8 +1,12 @@
 """Benchmark: synthetic drawings with ground truth, converted from simulated scans and phone photos.
 
-    python bench/run.py --out bench/out [--quick] [--real photo.heic:A4 ...]
+    python bench/run.py --out bench/out [--quick] [--only NAME] [--on FEATURE,...] [--off FEATURE,...]
+        [--real photo.heic:A4 ...]
 
-Writes results.json, report.md, side-by-side panels and the resolution sweep chart to --out.
+The cases cover floor plans, P&IDs, circuit diagrams, building sections and site plans, as clean plots, scans (good,
+poor, skewed) and phone photos, with and without markups added by hand. --only runs the cases whose name contains one
+of the given words; --on and --off switch steps of the recognition on and off (app/plan2cad/features.py), to
+measure what each brings. Writes results.json, report.md, side-by-side panels and the resolution sweep chart to --out.
 """
 
 from __future__ import annotations
@@ -20,30 +24,59 @@ from matplotlib.figure import Figure
 sys.path[:0] = [str(Path(__file__).parent), str(Path(__file__).parent.parent)]  # bench and the app
 
 from evaluate import evaluate  # noqa: E402
-from synth import building_plan, photo, pid, scan  # noqa: E402
+from synth import building_plan, mark_up, photo, pid, plot, printed_on, scan, schematic, section, site_plan  # noqa: E402
 
 from app.plan2cad.export import overlay, to_figure  # noqa: E402
 from app.plan2cad.imageio import load_image  # noqa: E402
+from app.plan2cad.features import Features  # noqa: E402
 from app.plan2cad.pipeline import convert  # noqa: E402
 
 MP48 = (8064, 6048)
-CASES = [  # name, drawing, paper, image, seeds
-    ("Floor plan A3, scan 300 dpi", building_plan, "A3", lambda d, s: scan(d, s, dpi=300), [1, 2, 3]),
-    ("Floor plan A3, phone photo 12 MP", building_plan, "A3", lambda d, s: photo(d, s), [1, 2, 3]),
-    ("Floor plan A3, phone photo 12 MP, hard", building_plan, "A3", lambda d, s: photo(d, s, hard=True), [1, 2, 3]),
-    ("Floor plan A3 with fixtures, scan 300 dpi", lambda s: building_plan(s, fixtures=True), "A3",
+PLAN, PID, CIRCUIT, SECTION, SITE = "floor plan", "P&ID", "circuit diagram", "section", "site plan"
+CASES = [  # name, kind of drawing, drawing, paper, image, seeds[, options of convert]
+    ("Floor plan A3, scan 300 dpi", PLAN, building_plan, "A3", lambda d, s: scan(d, s, dpi=300), [1, 2, 3]),
+    ("Floor plan A3, phone photo 12 MP", PLAN, building_plan, "A3", lambda d, s: photo(d, s), [1, 2, 3]),
+    ("Floor plan A3, phone photo 12 MP, hard", PLAN, building_plan, "A3", lambda d, s: photo(d, s, hard=True),
+     [1, 2, 3]),
+    ("Floor plan A3 with fixtures, scan 300 dpi", PLAN, lambda s: building_plan(s, fixtures=True), "A3",
      lambda d, s: scan(d, s, dpi=300), [1, 2, 3]),
-    ("Floor plan A3 with fixtures, phone photo 12 MP", lambda s: building_plan(s, fixtures=True), "A3",
+    ("Floor plan A3 with fixtures, phone photo 12 MP", PLAN, lambda s: building_plan(s, fixtures=True), "A3",
      lambda d, s: photo(d, s), [1, 2, 3]),
-    ("Floor plan A3 1:100 with fixtures, scan 300 dpi", lambda s: building_plan(s, fixtures=True, scale=100), "A3",
-     lambda d, s: scan(d, s, dpi=300), [1, 2, 3]),
-    ("Floor plan A3 1:100 with fixtures, phone photo 12 MP", lambda s: building_plan(s, fixtures=True, scale=100),
-     "A3", lambda d, s: photo(d, s), [1, 2, 3]),
-    ("P&ID A1, scan 200 dpi", lambda s: pid(s, "A1"), "A1", lambda d, s: scan(d, s, dpi=200), [1, 2]),
-    ("P&ID A1, phone photo 12 MP", lambda s: pid(s, "A1"), "A1", lambda d, s: photo(d, s), [1, 2]),
-    ("P&ID A0, scan 200 dpi", lambda s: pid(s, "A0"), "A0", lambda d, s: scan(d, s, dpi=200), [1]),
-    ("P&ID A0, phone photo 12 MP", lambda s: pid(s, "A0"), "A0", lambda d, s: photo(d, s), [1]),
-    ("P&ID A0, phone photo 48 MP", lambda s: pid(s, "A0"), "A0", lambda d, s: photo(d, s, camera=MP48), [1]),
+    ("Floor plan A3 1:100 with fixtures, scan 300 dpi", PLAN, lambda s: building_plan(s, fixtures=True, scale=100),
+     "A3", lambda d, s: scan(d, s, dpi=300), [1, 2, 3]),
+    ("Floor plan A3 1:100 with fixtures, phone photo 12 MP", PLAN,
+     lambda s: building_plan(s, fixtures=True, scale=100), "A3", lambda d, s: photo(d, s), [1, 2, 3]),
+    ("Floor plan A3 with red markups, scan 300 dpi", PLAN, lambda s: mark_up(building_plan(s), s, "red"), "A3",
+     lambda d, s: scan(d, s, dpi=300), [1, 2]),
+    ("Floor plan A3 with pencil markups, scan 300 dpi", PLAN, lambda s: mark_up(building_plan(s), s, "pencil"), "A3",
+     lambda d, s: scan(d, s, dpi=300), [1, 2]),
+    ("P&ID A1, scan 200 dpi", PID, lambda s: pid(s, "A1"), "A1", lambda d, s: scan(d, s, dpi=200), [1, 2]),
+    ("P&ID A1, phone photo 12 MP", PID, lambda s: pid(s, "A1"), "A1", lambda d, s: photo(d, s), [1, 2]),
+    ("P&ID A1 printed on A3, scan 300 dpi", PID, lambda s: printed_on(pid(s, "A1"), "A3"), "A3",
+     lambda d, s: scan(d, s, dpi=300), [1, 2]),
+    ("P&ID A1 printed on A4, phone photo 12 MP", PID, lambda s: printed_on(pid(s, "A1"), "A4"), "A4",
+     lambda d, s: photo(d, s), [1, 2]),
+    ("P&ID A1 printed on A3 with black markups, scan 300 dpi", PID,
+     lambda s: mark_up(printed_on(pid(s, "A1"), "A3"), s, "black"), "A3", lambda d, s: scan(d, s, dpi=300), [1, 2]),
+    ("P&ID A0, scan 200 dpi", PID, lambda s: pid(s, "A0"), "A0", lambda d, s: scan(d, s, dpi=200), [1]),
+    ("P&ID A0, phone photo 12 MP", PID, lambda s: pid(s, "A0"), "A0", lambda d, s: photo(d, s), [1]),
+    ("P&ID A0, phone photo 48 MP", PID, lambda s: pid(s, "A0"), "A0", lambda d, s: photo(d, s, camera=MP48), [1]),
+    ("Circuit diagram A3, clean plot 200 dpi", CIRCUIT, schematic, "A3", lambda d, s: plot(d, 200), [1, 2],
+     {"dpi": 200}),
+    ("Circuit diagram A3, scan 300 dpi", CIRCUIT, schematic, "A3", lambda d, s: scan(d, s, dpi=300), [1, 2]),
+    ("Circuit diagram A3, poor scan 200 dpi skewed", CIRCUIT, schematic, "A3",
+     lambda d, s: scan(d, s, dpi=200, poor=True, skew=4.0), [1, 2]),
+    ("Circuit diagram A3 with black markups, scan 300 dpi", CIRCUIT, lambda s: mark_up(schematic(s), s, "black"),
+     "A3", lambda d, s: scan(d, s, dpi=300), [1, 2]),
+    ("Section A3 1:50, scan 300 dpi", SECTION, section, "A3", lambda d, s: scan(d, s, dpi=300), [1, 2]),
+    ("Section A3 1:50, phone photo 12 MP", SECTION, section, "A3", lambda d, s: photo(d, s), [1, 2]),
+    ("Section A3 1:50 with blue markups, scan 300 dpi", SECTION, lambda s: mark_up(section(s), s, "blue"), "A3",
+     lambda d, s: scan(d, s, dpi=300), [1, 2]),
+    ("Site plan A3 1:500, scan 300 dpi", SITE, site_plan, "A3", lambda d, s: scan(d, s, dpi=300), [1, 2]),
+    ("Site plan A3 1:500, poor scan 200 dpi skewed", SITE, site_plan, "A3",
+     lambda d, s: scan(d, s, dpi=200, poor=True, skew=4.0), [1, 2]),
+    ("Site plan A3 1:500 with pencil markups, phone photo 12 MP", SITE, lambda s: mark_up(site_plan(s), s, "pencil"),
+     "A3", lambda d, s: photo(d, s), [1, 2]),
 ]
 SWEEP = [3, 4, 5, 6, 8, 10]  # px/mm on the A0 P&ID
 KEYS = ["recall_1mm", "precision_1mm", "recall_05mm", "precision_05mm", "deviation_mm", "dashed_recall_1mm",
@@ -52,13 +85,16 @@ KEYS = ["recall_1mm", "precision_1mm", "recall_05mm", "precision_05mm", "deviati
         "pieces_per_object", "objects_whole", "entities", "reference_objects", "short_pieces",
         "breaks_per_m", "curve_pieces", "curves_as_arcs",
         "symbol_recall", "symbol_precision", "symbol_attributes", "symbol_review", "symbol_unflagged",
-        "connection_recall", "connection_precision",
+        "connection_recall", "connection_precision", "gap_ends", "crumbs",
+        "token_exact", "uncertain_share", "deviation_areas", "symbol_false",
+        "markup_recall", "markup_precision", "markup_leaked", "markup_phantom_texts", "markup_fills",
+        "crossings_kept", "junctions_kept", "pens_correct",
         "scale_ok", "seconds", "source_ppm"]
 
 
-def run_one(d, paper, img):
+def run_one(d, paper, img, features=None, **options):
     started = time.perf_counter()
-    r = convert(img, paper=paper)
+    r = convert(img, paper=paper, features=features, **options)
     m = evaluate(d, r.drawing) | {"seconds": time.perf_counter() - started, "source_ppm": r.info["source_ppm"]}
     return r, m
 
@@ -135,7 +171,12 @@ def main() -> None:
     ap.add_argument("--quick", action="store_true", help="one seed per case, no A0 and no sweep")
     ap.add_argument("--real", nargs="*", default=[], help="real photos as path:paper (no ground truth)")
     ap.add_argument("--report-only", action="store_true", help="rebuild report and chart from results.json")
+    ap.add_argument("--only", default="", help="comma-separated words: only the cases whose name contains one")
+    ap.add_argument("--on", default="", help="comma-separated features to switch on (app/plan2cad/features.py)")
+    ap.add_argument("--off", default="", help="comma-separated features to switch off")
     args = ap.parse_args()
+    features = Features.of([f for f in args.on.split(",") if f], [f for f in args.off.split(",") if f])
+    only = [w.lower() for w in args.only.split(",") if w]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     if args.report_only:
@@ -144,27 +185,27 @@ def main() -> None:
             sweep_chart(results["sweep"], out / "sweep.png")
         (out / "report.md").write_text(report(results))
         return
-    results = {"cases": [], "sweep": [], "real": []}
+    results = {"cases": [], "sweep": [], "real": [], "on": args.on, "off": args.off}
 
-    for name, make, paper, image, seeds in CASES:
-        if args.quick and (paper == "A0"):
+    for name, kind, make, paper, image, seeds, *options in CASES:
+        if args.quick and (paper == "A0") or only and not any(w in name.lower() for w in only):
             continue
         rows = []
         for seed in seeds[:1] if args.quick else seeds:
             d = make(seed)
             img = image(d, seed)
-            r, m = run_one(d, paper, img)
+            r, m = run_one(d, paper, img, features, **(options[0] if options else {}))
             rows.append(m)
             shown = ("recall_1mm", "precision_1mm", "text_exact", "symbol_recall", "symbol_precision", "seconds")
             print(f"{name} seed {seed}: " + ", ".join(f"{k}={m[k]:.3f}" for k in shown if m.get(k) is not None), flush=True)
             if seed == seeds[0]:
                 panel(img, r, out, name.replace(" ", "_").replace(",", "").replace("&", ""))
-        results["cases"].append({"name": name, "paper": paper, "seeds": len(rows)} | mean(rows))
+        results["cases"].append({"name": name, "kind": kind, "paper": paper, "seeds": len(rows)} | mean(rows))
 
-    if not args.quick:
+    if not args.quick and not only:
         d = pid(1, "A0")
         for ppm in SWEEP:
-            r, m = run_one(d, "A0", scan(d, 1, dpi=ppm * 25.4, blur=0.8))
+            r, m = run_one(d, "A0", scan(d, 1, dpi=ppm * 25.4, blur=0.8), features)
             results["sweep"].append({"ppm": ppm} | {k: m.get(k) for k in KEYS})
             print(f"sweep {ppm} px/mm: recall={m['recall_1mm']:.3f} text={m['text_exact']:.3f}", flush=True)
         sweep_chart(results["sweep"], out / "sweep.png")
@@ -173,7 +214,7 @@ def main() -> None:
         path, paper = spec.rsplit(":", 1)
         img, dpi = load_image(Path(path).read_bytes())
         started = time.perf_counter()
-        r = convert(img, paper=paper, dpi=dpi)
+        r = convert(img, paper=paper, dpi=dpi, features=features)
         info = r.info | {"seconds": time.perf_counter() - started, "file": Path(path).name}
         results["real"].append(info)
         panel(cv2.resize(img, None, fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA), r, out, "real_" + Path(path).stem)
@@ -185,7 +226,9 @@ def main() -> None:
 
 def report(results: dict) -> str:
     lines = ["# cad-ingest photo and scan benchmark", "",
-             "Synthetic drawings with ground truth; deviations measured on paper.", "",
+             "Synthetic drawings with ground truth; deviations measured on paper."
+             + (f" Switched on: {results['on']}." if results.get("on") else "")
+             + (f" Switched off: {results['off']}." if results.get("off") else ""), "",
              "| Case | px/mm | Lines found ≤ 1 mm | Lines correct ≤ 1 mm | found/correct ≤ 0.5 mm "
              "| Mean deviation | Dashed lines | Circles found/correct | Texts exact | Character error rate | Scale | Runtime |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -212,6 +255,13 @@ def report(results: dict) -> str:
     for c in results["cases"]:
         lines.append(f"| {c['name']} | {num(c.get('breaks_per_m'), 1)} | {num(c.get('curve_pieces'))} "
                      f"| {pct(c.get('curves_as_arcs'))} |")
+    lines += ["", "## Connected linework", "",
+              "What has to be joined or cleaned up by hand in CAD. Ends stopping short: ends of lines and polylines "
+              "that stop up to 2 mm short of other linework without touching it (a pipe that does not reach its "
+              "junction, valve or vessel). Crumbs: pieces under 2 mm that touch nothing. The references have none.", "",
+              "| Case | Ends stopping short | Crumbs |", "|---|---|---|"]
+    for c in results["cases"]:
+        lines.append(f"| {c['name']} | {num(c.get('gap_ends'), 0)} | {num(c.get('crumbs'), 0)} |")
     lines += ["", "## Texts by kind and errors left unmarked", "",
               "Exact texts among codes (letters and digits: tags, line numbers), numbers and words. Unmarked errors: "
               "reference texts read wrong without a text marked for review in their place, so nobody is pointed to "
@@ -233,6 +283,42 @@ def report(results: dict) -> str:
                          f"| {pct(c['symbol_attributes'])} "
                          f"| {pct(c.get('connection_recall'))} / {pct(c.get('connection_precision'))} "
                          f"| {num(c.get('symbol_review'), 0)} | {pct(c.get('symbol_unflagged'), 1)} |")
+    lines += ["", "## By kind of drawing", "",
+              "Means over the cases of each kind. Tokens: words and numbers of the reference texts read exactly. "
+              "Marked uncertain: texts and symbols marked to check, as a share of all. Deviation areas: patches of at "
+              "least 2 mm² where the recognised linework and the reference differ by more than 1 mm. Crossings kept: "
+              "lines that cross without joining still do; junctions kept: lines that join still do. Pens: the share "
+              "of the linework drawn with the pen (ISO line width) of the reference.", "",
+              "| Kind | Cases | Lines found / correct ≤ 1 mm | Texts exact | Tokens exact | Symbols found / correct "
+              "| Marked uncertain | Deviation areas | Ends stopping short | Crossings / junctions kept | Pens right |",
+              "|---|---|---|---|---|---|---|---|---|---|---|"]
+    kinds: dict[str, list[dict]] = {}
+    for c in results["cases"]:
+        kinds.setdefault(c.get("kind", "?"), []).append(c)
+    for kind, cs in kinds.items():
+        m = mean(cs)
+        lines.append(f"| {kind} | {len(cs)} | {pct(m['recall_1mm'], 1)} / {pct(m['precision_1mm'], 1)} "
+                     f"| {pct(m['text_exact'])} | {pct(m['token_exact'])} "
+                     f"| {pct(m['symbol_recall'])} / {pct(m['symbol_precision'])} | {pct(m['uncertain_share'])} "
+                     f"| {num(m['deviation_areas'], 0)} | {num(m['gap_ends'], 0)} "
+                     f"| {pct(m['crossings_kept'])} / {pct(m['junctions_kept'])} | {pct(m['pens_correct'])} |")
+    lines += ["", "## New measures per case", "",
+              "Symbols on a drawing without symbols: blocks placed where the reference has none. Markups (the cases "
+              "with markups added by hand): the share of the markup strokes put on a markup layer (found), the share of "
+              "what is on a markup layer that is markup (correct), the share of the markup taken for the drawing "
+              "(leaked), texts of the drawing read on a markup (phantoms) and fills made there.", "",
+              "| Case | Tokens exact | Marked uncertain | Deviation areas | Symbols where there are none "
+              "| Markup found / correct | Markup leaked | Phantom texts | Fills from markups | Crossings / junctions kept "
+              "| Pens right |",
+              "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for c in results["cases"]:
+        lines.append(f"| {c['name']} | {pct(c.get('token_exact'))} | {pct(c.get('uncertain_share'))} "
+                     f"| {num(c.get('deviation_areas'), 0)} | {num(c.get('symbol_false'), 0)} "
+                     f"| {pct(c.get('markup_recall'))} / {pct(c.get('markup_precision'))} "
+                     f"| {pct(c.get('markup_leaked'))} | {num(c.get('markup_phantom_texts'), 0)} "
+                     f"| {num(c.get('markup_fills'), 0)} "
+                     f"| {pct(c.get('crossings_kept'))} / {pct(c.get('junctions_kept'))} "
+                     f"| {pct(c.get('pens_correct'))} |")
     if results["sweep"]:
         lines += ["", "## Resolution (P&ID A0, scan-like)", "",
                   "| px/mm | Lines found | Lines correct | Circles | Texts exact | Character error rate |",

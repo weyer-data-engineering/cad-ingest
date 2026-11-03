@@ -37,3 +37,18 @@ def test_polyline_arcs_keep_their_side_in_dxf():
     assert pl.dxf.layer == "P2C-DOOR"
     arc = [e for e in pl.virtual_entities() if e.dxftype() == "ARC"][0]
     assert tuple(arc.dxf.center)[:2] == pytest.approx((0, 100), abs=1e-3) and arc.dxf.radius == pytest.approx(10)
+
+
+def test_a_text_is_fitted_to_its_length_as_printed():
+    text = Text(100, 100, 2.5, "P-101", length=12.0)
+    e = to_dxf(Drawing(420, 297, texts=[text])).modelspace().query("TEXT")[0]
+    assert e.dxf.halign == 5  # fit
+    assert e.dxf.insert[0] == pytest.approx(94) and e.dxf.align_point[0] == pytest.approx(106)
+
+
+def test_a_drawing_printed_small_is_written_at_its_drawn_size():
+    d = Drawing(420, 297, lines=[Line(10, 20, 110, 20, 0.25)], texts=[Text(100, 100, 1.25, "P-101")], printed=0.5)
+    msp = to_dxf(d).modelspace()
+    line = msp.query("LINE")[0]
+    assert tuple(line.dxf.end)[:2] == pytest.approx((220, 554)) and line.dxf.lineweight == 50
+    assert msp.query("TEXT")[0].dxf.height == pytest.approx(2.5)

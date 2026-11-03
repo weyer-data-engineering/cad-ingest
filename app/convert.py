@@ -17,6 +17,7 @@ from .config import Settings
 from .errors import JobError
 from .formats import FORMATS, PREVIEW, SCAN_2D
 from .jobs import _convert
+from .plan2cad.features import Features
 from .plan2cad import library
 
 
@@ -35,8 +36,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="photos and scans: paper size of the sheet (default A3)")
     ap.add_argument("--scale", type=int, help="photos and scans: e.g. 50 for 1:50; read from the title block if not set")
     ap.add_argument("--dpi", type=float, help="scans without visible paper edges: their resolution")
-    ap.add_argument("--drawing", default="auto", choices=["auto", "building", "pid"],
-                    help="photos and scans: floor plan, P&ID or recognised from the texts (default)")
+    ap.add_argument("--drawing", default="auto", choices=["auto", "building", "pid", "electrical", "site"],
+                    help="photos and scans: the kind of drawing, recognised from the texts by default (profiles/)")
+    ap.add_argument("--on", default="", metavar="LIST",
+                    help="photos and scans: steps of the recognition to switch on, e.g. read_handwriting")
+    ap.add_argument("--off", default="", metavar="LIST",
+                    help="photos and scans: steps of the recognition to switch off, e.g. freehand")
     ap.add_argument("--pages", type=_pages, metavar="LIST",
                     help="PDF and TIFF scans: the pages to convert, e.g. 1-3,5 (default: all, up to MAX_SCAN_PAGES)")
     ap.add_argument("--library", action="append", default=[], metavar="ID_OR_PATH",
@@ -58,7 +63,12 @@ def main(argv: list[str] | None = None) -> int:
     os.makedirs(args.out, exist_ok=True)
     stem = os.path.join(args.out, source.stem)
     outputs = {"preview": f"{stem}.{PREVIEW[kind][0]}", "vectorize": f"{stem}.zip"}
-    options = {"paper": args.paper, "scale": args.scale, "dpi": args.dpi, "drawing": args.drawing, "pages": args.pages}
+    options = {"paper": args.paper, "scale": args.scale, "dpi": args.dpi, "drawing": args.drawing, "pages": args.pages,
+               "on": [f for f in args.on.split(",") if f], "off": [f for f in args.off.split(",") if f]}
+    try:
+        Features.of(options["on"], options["off"])
+    except ValueError as e:
+        ap.error(str(e))
 
     # stdout carries only the paths of the results; libraries that print notices go to stderr
     with tempfile.TemporaryDirectory(prefix="cad-ingest-") as work, contextlib.redirect_stdout(sys.stderr):

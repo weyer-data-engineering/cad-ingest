@@ -1,7 +1,8 @@
 import pytest
 
 from app.plan2cad.model import Arc, Circle, Drawing, Line, Polyline, Text
-from app.plan2cad.objects import classify, doors, drawing_type
+from app.plan2cad.objects import classify, doors
+from app.plan2cad.profiles import installed, recognise
 
 
 def test_door_swing_is_one_object_and_the_jamb_stays_with_the_wall():
@@ -25,6 +26,7 @@ def test_pid_lines_become_equipment_pipes_and_signal_lines():
     (["Blatt 1/1"], None, ""),
     (["R+I-Schema", "DN50-W-1011", "WT 101 A = 12 m²"], None, "pid"),  # the area of a heat exchanger, not a room
     (["Küche 12,40 m²", "Bad 6,10 m²", "DN 100"], None, "building"),
+    (["Stromlaufplan", "-K1", "L+"], None, "electrical"), (["Lageplan", "Blatt 1/1"], 500, "site"),
 ])
 def test_drawing_type(texts, scale, kind):
-    assert drawing_type([Text(0, 0, 2.5, t) for t in texts], [], scale) == kind
+    assert recognise([Text(0, 0, 2.5, t) for t in texts], [], scale, installed()) == kind

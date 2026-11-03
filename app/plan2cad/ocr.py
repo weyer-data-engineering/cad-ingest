@@ -30,9 +30,11 @@ CAP_PX = 32  # cap height in pixels that Tesseract reads well
 MOSAIC_H = 6000
 UNSURE = 0.8  # spotted lines the recogniser is less sure of are marked for review
 SHORT = 2  # characters: a spotted line this short is new text only if the recogniser is SURE of it
+GLYPH = 7.5  # mm: the largest character on a sheet
 SURE = 0.9
 TALL = 1.6  # nor much higher than the usual text of the sheet (two stacked circles read as "8")
 SPACE = 2.5
+NARROW = 0.35  # cap heights a character takes along the line at least, on average ("1", "I" and "." with their gaps)
 LATIN = 0x24F  # last code point of the Latin scripts; the recogniser also knows Chinese, Korean, ...
 
 
@@ -48,13 +50,16 @@ class Components:
 
 
 def find_texts(ink: np.ndarray, gray: np.ndarray, ppm: float, rotation_check: bool = False,
-               frame: np.ndarray | None = None) -> tuple[list[Text], np.ndarray, int | None]:
-    """Returns recognised text lines (sheet mm), a label image of their pixels (0: no text, k: the
+               frame: np.ndarray | None = None, printed: float = 1.0) -> tuple[list[Text], np.ndarray, int | None]:
+    """Returns recognised text lines (mm at ``ppm`` pixels each), a label image of their pixels (0: no text, k: the
     k-th text line) and, if requested, the clockwise rotation in degrees (0, 90, 180, 270) that
     makes the text upright (None if the text is not readable enough to tell). ``frame``: all strokes of the sheet,
-    which may enclose a single letter (see _framed)."""
+    which may enclose a single letter (see _framed). ``printed``: the share of its drawn size the sheet shows the
+    drawing at, where ``ppm`` counts the pixels per millimetre as drawn."""
     cc = Components(ink, gray)
-    cand = np.flatnonzero((np.maximum(cc.w, cc.h) <= 7.5 * ppm) & (cc.area >= 3))
+    # a character is at most GLYPH mm on the sheet, whatever size it is drawn at: on a small print blur runs the
+    # letters of a word together into one shape, which is read as well
+    cand = np.flatnonzero((np.maximum(cc.w, cc.h) <= GLYPH * ppm / printed) & (cc.area >= 3))
     cand = np.setdiff1d(cand, _enclosing(cc, cand, ppm))
     h_groups, singles = _group(cc, cand, horizontal=True)
     framed = _framed(cc, singles, h_groups, ppm, frame)  # before vertical lines: a bubble's letter above its stem
@@ -197,18 +202,64 @@ def spotted(texts: list[Text], labels: np.ndarray, ink: np.ndarray, gray: np.nda
     groups += [(near.tolist(), s.vertical) for s, _, near, _, _ in lines]
     read = _voted(cc, groups, [(t.text, t.confidence) for t in texts] + [(t, 100 * s.score) for s, t, _, _, _ in lines])
     keep = [k for k in range(1, len(texts) + 1) if k not in claimed]
-    kind = np.min_scalar_type(len(keep) + len(lines))
+    dark = gray < 128
+    parts = []  # (spotted line, its letters, their text, cap height, whether the line is whole)
+    for (s, _, near, letters, cap), (text, _) in zip(lines, read[len(texts):]):
+        split = _split(cc, letters, s.vertical, _spaced(cc, near, s.vertical, text), dark)
+        parts += [(s, part, piece, cap, len(split) == 1) for part, piece in split]
+    kind = np.min_scalar_type(len(keep) + len(parts))
     ids = np.zeros(len(texts) + 1, kind)
     ids[keep] = np.arange(1, len(keep) + 1)
     line = np.zeros(cc.n + 1, kind)
     out = [texts[k - 1] for k in keep]
-    for (s, _, near, letters, cap), (text, _) in zip(lines, read[len(texts):]):
-        out.append(Text((s.x0 + s.x1) / 2 / ppm, (s.y0 + s.y1) / 2 / ppm, cap / ppm,
-                        _spaced(cc, near, s.vertical, text), 90.0 if s.vertical else 0.0, round(100 * s.score, 1),
-                        s.score < UNSURE))
+    for s, letters, text, cap, whole in parts:
+        box = (s.y0, s.y1) if s.vertical else (s.x0, s.x1)
+        lo, hi = _metrics(cc, letters.tolist(), s.vertical)[2:] if len(letters) else box  # its letters along the line
+        if (length := _length(lo, hi, cap, text, ppm)) is None and whole:  # only some of its letters found: on its box
+            lo, hi = box
+        x, y = ((s.x0 + s.x1) / 2, (lo + hi) / 2) if s.vertical else ((lo + hi) / 2, (s.y0 + s.y1) / 2)
+        out.append(Text(x / ppm, y / ppm, cap / ppm, text, 90.0 if s.vertical else 0.0, round(100 * s.score, 1),
+                        s.score < UNSURE, length))
         line[letters + 1] = len(out)
     take = line[cc.lab]
     return out, np.where(take > 0, take, ids[labels])
+
+
+def _split(cc: Components, letters: np.ndarray, vertical: bool, text: str, dark: np.ndarray
+           ) -> list[tuple[np.ndarray, str]]:
+    """A spotted line cut into the texts on either side of a stroke that crosses it between two glyphs from above its
+    letters to below them: the end of a line number's frame or the ring of the bubble next to it, a break between two
+    labels. The two glyphs must be a letter's height apart or the reading must have a space there, since a wall may run
+    through a room's area between two digits. Its characters go with its glyphs one to one; where a character or two
+    were not read, across a single cut the shorter side takes as many characters from its end as it has glyphs (at a
+    space the reader put next to it). As it is if it reads vertically or that does not work out."""
+    glyphs = _glyphs(cc, letters.tolist(), vertical)
+    chars = [j for j, ch in enumerate(text) if ch != " "]
+    if vertical or len(glyphs) < 2:
+        return [(letters, text)]
+    top, base = int(cc.y[letters].min()), int((cc.y[letters] + cc.h[letters]).max())
+    reach = round(0.3 * (base - top))  # a curve, as the end of a frame, runs this far aside above and below the letters
+    band = ndimage.maximum_filter1d(dark[max(0, top - reach):base + reach], 2 * reach + 1, axis=1)
+    cuts = {n: x1 - x0 >= base - top for n, (p, g) in enumerate(zip(glyphs, glyphs[1:]), 1)
+            if (x0 := max(cc.x[i] + cc.w[i] for i in p)) < (x1 := min(cc.x[i] for i in g))
+            and (band[:, x0:x1].mean(axis=0) >= 0.9).any()}  # cut: whether wide
+    if not cuts or len(glyphs) != len(chars) and (len(cuts) > 1 or abs(len(glyphs) - len(chars)) > 2):
+        return [(letters, text)]
+    if len(glyphs) == len(chars):
+        at = {n: chars[n] for n in cuts}
+    else:  # the shorter side is read whole more likely
+        n = next(iter(cuts))
+        k = n if n <= len(glyphs) - n else len(chars) - (len(glyphs) - n)
+        if not 0 < k < len(chars):
+            return [(letters, text)]
+        spaces = [j for j in range(chars[max(0, k - 2)], chars[min(len(chars) - 1, k + 1)] + 1) if text[j] == " "]
+        at = {n: min(spaces, key=lambda j: abs(j - chars[k])) if spaces else chars[k]}
+    at = {n: j for n, j in at.items() if cuts[n] or " " in text[j - 1:j + 1]}
+    if not at:
+        return [(letters, text)]
+    glyph_bounds, text_bounds = [0, *at, len(glyphs)], [0, *at.values(), len(text)]
+    return [(np.array([i for g in glyphs[a:b] for i in g]), text[c:e].strip())
+            for a, b, c, e in zip(glyph_bounds, glyph_bounds[1:], text_bounds, text_bounds[1:])]
 
 
 def _spaced(cc: Components, near: np.ndarray, vertical: bool, text: str) -> str:
@@ -550,7 +601,15 @@ def _text(cc: Components, g: list[int], vertical: bool, s: str, conf: float, ppm
     top, base, lo, hi = _metrics(cc, g, vertical)
     mid_across, mid_along = (top + base) / 2, (lo + hi) / 2
     x, y = (mid_across, mid_along) if vertical else (mid_along, mid_across)
-    return Text(x / ppm, y / ppm, (base - top) / ppm, s, 90.0 if vertical else 0.0, round(conf, 1))
+    return Text(x / ppm, y / ppm, (base - top) / ppm, s, 90.0 if vertical else 0.0, round(conf, 1),
+                length=_length(lo, hi, base - top, s, ppm))
+
+
+def _length(lo: float, hi: float, cap: float, text: str, ppm: float) -> float | None:
+    """The length of a text line as printed, in mm, from the extent of its letters along the line (in pixels); none
+    where they are too short for the text, as when letters that touch a line were not found as letters: fitted to
+    that, the text would shrink to a fraction of its size."""
+    return (hi - lo) / ppm if hi - lo >= NARROW * cap * sum(not ch.isspace() for ch in text) else None
 
 
 def _rotation(cc: Components, h_groups: list, v_groups: list) -> int | None:

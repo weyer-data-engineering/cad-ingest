@@ -7,6 +7,26 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 
 ### Added
 
+- Marks by hand in black or pencil (notes, revision clouds, freehand hatching) are kept apart from the drawing, on
+  `P2C-MARKUP` and in `markups`, before lines and texts are read: told apart by their shape (neither straight nor
+  an arc nor an ellipse between their corners, or turning too often for anything else; chains of arcs for clouds) and
+  their grey (pencil), with rules that hold on any kind of drawing (`docs/photos-and-scans.md#markups`).
+- Steps of the recognition can be switched on and off by name: job API `options.on` and `options.off` (`400` for an
+  unknown name), command line and benchmark `--on` and `--off`. Steps: `freehand`, `read_handwriting`, `vocabulary`,
+  `dedupe`, `pens` (`docs/photos-and-scans.md#steps-that-can-be-switched`).
+- Profiles of kinds of drawing as data (`profiles/`, `docs/profiles.md`): the evidence that recognises the kind and the
+  vocabulary its texts are written in, for P&IDs, building drawings, site plans and circuit diagrams. New kinds
+  `electrical` and `site` for `options.drawing`; new setting `PROFILES` for further profile folders. A token read with
+  letters for digits ("-KI") is read in the vocabulary where that makes it a word of it ("-K1").
+- A starter library of circuit diagram symbols after IEC 60617 (`iec-60617`), used on circuit diagrams;
+  `DEFAULT_SYMBOL_LIBRARIES` is now `din-10628,floor-plan,iec-60617`.
+- A text read twice at one place is kept once. The step `pens` (off by default) gives the linework a few pens, as many
+  as the drawing has.
+- The benchmark has circuit diagrams, building sections and site plans, as clean plots, scans, poor and skewed scans
+  and photos, and cases with markups by hand in black, pencil and colour. New measures: tokens exact, the share marked
+  to check, areas where output and reference differ, symbols placed where there are none, markups found, correct and
+  taken for the drawing, phantom texts and fills on markups, and crossings and junctions kept; and a table by kind of
+  drawing.
 - Symbol libraries as add-ons (see `docs/symbol-libraries.md`). A library is a folder with a `library.toml` and a
   DXF, the same folder as a ZIP, or a bare DXF; units come from `$INSUNITS`, blocks are read around their base point,
   and splines, ellipses and nested blocks count towards a symbol's outline. The result DXF holds the library's
@@ -77,8 +97,41 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 - Benchmark: exact texts by kind (codes such as tags and line numbers, numbers, words), errors left unmarked (texts
   read wrong without a review mark in their place), and connections between symbols (pairs joined by linework, found
   and correct).
+- Large drawings printed small (an A1 P&ID on A3 or A4) are recognised at their drawn size, since the tolerances of
+  recognition are made for drawings at their drawn size; the share they are printed at is measured on the height of
+  the character-sized shapes of ink. On an image with fewer than 5 pixels per drawn millimetre (a phone photo of a
+  small print) lines and texts are still found on the sheet. `report.json` has the new field `printed`. The benchmark
+  has two such cases (A1 on A3, scanned; A1 on A4, photographed).
+- Connected linework on photos and scans: once the symbols are placed, line ends that stop up to 2 mm short of other
+  linework are joined to it (a branch to its pipe, a signal line to its bubble, a pipe to its valve or vessel), two
+  loose ends whose lines meet nearby form a corner, a symbol port that faces a pipe or the next symbol's port within
+  6 mm is piped to it, a line drawn broken where it crosses another becomes one line across it (without a junction),
+  pieces that then meet end to end become one polyline, and loose pieces under 2 mm are dropped. The benchmark counts
+  the ends that stop short and the loose crumbs.
+- Fewer wrong symbols: a symbol needs 85 % of its outline instead of 80 % (a symbol not placed keeps its strokes as
+  lines, which is better than a wrong block); a symbol whose strokes end freely in the library, such as the barbs of a
+  flow arrow, is not placed where those strokes run on (the edges of a line number's frame, the cross in a box,
+  letters); letters inside a symbol that holds none, such as a reducer, count against it; and what is left of letters
+  that could not be read in an instrument bubble is dropped, the bubble marked to check ("its text could not be read").
 
 ### Changed
+
+- Handwriting in colour markups is no longer read by default: Tesseract made up most of what it read. `reading` is
+  `null`; the step `read_handwriting` reads it as before. The markdown section is now `Markups (added by hand)`.
+- A pen stroke in colour no longer leaves a faint grey line in the drawing: the grey image lifts it and its fringe to
+  the paper.
+- The DXF of a drawing printed small is at its drawn size, so its texts and symbols have the sizes they were drawn
+  with; positions in `report.json` stay in sheet millimetres.
+- Texts in the DXF, the tags in symbols included, are lettered as with a stencil: texts of about one height get one
+  height and one width per character, so the same label looks the same everywhere, and are fitted to that length in
+  any font. A text printed clearly narrower keeps its printed length, so a tag stays inside its bubble and a line
+  number inside its frame; one spaced wider keeps where it starts, so notes stay flush left. The preview squeezes a
+  text along its line only, as CAD does, and a text whose letters were found only in part keeps its size.
+- A spotted text line through which a stroke runs from above to below its letters (the end of a line number's frame,
+  the ring of the bubble beside it, the line between two labels) is cut there into two texts, where the letters on
+  either side are a letter's height apart or read with a space between them.
+- A thick round ring, such as the mark of a note, is a circle with a wide pen instead of a filled disc, and the letter
+  in it is read.
 
 - The starter library moved from `app/plan2cad/symbols.dxf` to `libraries/din-10628`.
 - A symmetric symbol (one that looks the same turned or mirrored) takes the pose in which most of its attribute

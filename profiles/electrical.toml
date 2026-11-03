@@ -1,0 +1,12 @@
+# A profile: what the texts of one kind of drawing look like (docs/profiles.md).
+format = 1
+id = "electrical"
+name = "Circuit diagram"
+drawing = "electrical"
+
+[evidence]
+titles = ['Stromlaufplan', 'Schaltplan', 'Circuit diagram', 'Wiring diagram']
+patterns = ['^-[A-Z]{1,3}\d{1,3}$', '^L\+$', '\b\d+ ?V ?(?:AC|DC)\b']  # device tags (IEC 81346), supply
+
+[vocabulary]
+device = ['-[A-Z]{1,3}\d{1,3}']

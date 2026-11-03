@@ -61,6 +61,26 @@ def test_symbols_go_with_the_text_size_of_the_sheet(height, count, size):
     assert _printed([Text(0, 0, height, "P-101")] * count) == pytest.approx(size)
 
 
+@pytest.mark.parametrize("height, share", [(2.5, 1.0), (1.25, 0.57), (0.8, 0.36)])
+def test_a_drawing_printed_small_is_told_by_its_small_lettering(height, share):
+    from app.plan2cad.model import Drawing, Text
+    from app.plan2cad.pipeline import printed_size
+
+    texts = [Text(20 + 30 * (k % 8), 10 + 8 * (k // 8), height, "P-101 AB") for k in range(80)]
+    ink = (render(Drawing(260, 100, texts=texts), 12) < 128).astype(np.uint8)
+    assert printed_size(ink, 12) == pytest.approx(share, abs=0.08)
+
+
+def test_a_drawing_printed_small_is_recognised_at_its_drawn_size():
+    from synth import pid, printed_on
+
+    d = printed_on(pid(3, "A2"), "A4")  # an A2 P&ID on A4: lettering of 1 mm instead of 2
+    r = convert(scan(d, 3, dpi=300), paper="A4")
+    m = evaluate(d, r.drawing)
+    assert r.info["printed"] == pytest.approx(0.47, abs=0.08) and r.drawing.printed == r.info["printed"]
+    assert m["symbol_recall"] > 0.85 and m["symbol_precision"] > 0.9 and m["recall_1mm"] > 0.95
+
+
 def test_title_block_decides_orientation_when_text_is_unreadable(plan):
     from app.plan2cad.model import Line
     from app.plan2cad.pipeline import title_block_rotation
@@ -82,3 +102,17 @@ def test_text_lying_on_a_circle_ring_is_dropped():
     texts, mask = _off_rings([Text(0, 0, 1, "N"), Text(0, 5, 1, "LIC")], labels, rings)
     assert [t.text for t in texts] == ["LIC"]
     assert mask.sum() == 4 and mask[5, :4].all()
+
+
+def test_texts_of_one_size_are_lettered_alike_but_a_tight_one_stays_inside_its_frame():
+    from app.plan2cad.model import Drawing, Text
+    from app.plan2cad.pipeline import _lettering
+
+    d = Drawing(100, 100, texts=[Text(10, 10, 1.1, "AB=CD", length=4.6), Text(10, 20, 1.2, "AB=CD", length=5.4),
+                                 Text(10, 30, 1.25, "AB=CD"), Text(10, 40, 1.2, "EF-12", length=2.5),
+                                 Text(10, 50, 3.3, "TITLE", length=14), Text(50, 60, 1.2, "AB=CD", length=7.0)])
+    _lettering(d)
+    same = [(t.height, t.length) for t in d.texts[:3] + d.texts[5:]]
+    assert same[0] == same[1] == same[2] == same[3] and same[0][0] == pytest.approx(1.2, abs=0.05)
+    assert d.texts[3].length == 2.5 and (d.texts[4].height, d.texts[4].length) == (3.3, 14)
+    assert d.texts[5].x - d.texts[5].length / 2 == pytest.approx(50 - 7.0 / 2)  # spaced wider: starts where it did

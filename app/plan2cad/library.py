@@ -29,10 +29,10 @@ from ezdxf import recover, units
 from .model import Arc, Circle, Line, Symbol
 
 FORMAT = 1  # the library format this version reads
-DRAWINGS = ("pid", "building")  # the drawing types symbols are recognised on: P&IDs and floor plans
+DRAWINGS = ("pid", "building", "electrical", "site")  # the kinds of drawing symbols are recognised on (profiles.py)
 SIZES = ("printed", "real")  # blocks drawn at the size they have on the sheet, or at the size of the real object
 ASSUMED_SCALES = (50, 100)  # drawing scales tried for real-size symbols while the scale of a drawing is unknown
-DEFAULTS = "din-10628,floor-plan"  # the built-in libraries used when nothing else is chosen
+DEFAULTS = "din-10628,floor-plan,iec-60617"  # the built-in libraries used when nothing else is chosen
 ID = r"[a-z0-9][a-z0-9-]{0,63}"
 MANIFEST = "library.toml"
 BUILT_IN = Path(__file__).resolve().parents[2] / "libraries"  # shipped with cad-ingest, always installed

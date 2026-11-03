@@ -4,12 +4,11 @@ the drawing frame, each of which the export puts on its own layer."""
 from __future__ import annotations
 
 import math
-import re
 
 import numpy as np
 from scipy.spatial import cKDTree
 
-from .model import Arc, Circle, Drawing, Line, Polyline, Text
+from .model import Arc, Circle, Drawing, Line, Polyline
 
 
 def doors(lines: list[Line], arcs: list[Arc], tol: float = 0.8) -> tuple[list[Polyline], list[Line], list[Arc]]:
@@ -103,19 +102,42 @@ def _on_frame(pl: Polyline, width: float, height: float, margin: float = 25.0) -
     return False
 
 
-def drawing_type(texts: list[Text], circles: list[Circle], scale: int | None) -> str:
-    """"building" for floor plans (room areas, a building scale), "pid" for P&IDs (nominal sizes,
-    instrument bubbles, a title such as "R&I"), "" if neither. The evidence is weighed: a P&ID may list
-    areas in m², a floor plan may name a pipe size."""
-    read = " ".join(t.text for t in texts if not t.uncertain)
-    rooms = len(re.findall(r"\d m[²2]\b", read)) + (3 if scale in (20, 25, 50, 75, 100, 200) else 0)
-    bubbles = sum(any(math.hypot(t.x - c.cx, t.y - c.cy) < c.r for t in texts) for c in circles if 3 <= c.r <= 8)
-    pid = len(re.findall(r"\bDN ?\d+", read)) + bubbles + (5 if re.search(r"R&I|R\+I|P&ID", read) else 0)
-    if rooms and rooms >= pid:
-        return "building"
-    if pid >= 2 or re.search(r"\bDN ?\d+|R&I|R\+I|P&ID", read):
-        return "pid"
-    return ""
+PEN = 0.08  # spread of the log of the widths measured for one pen (about 8 %)
+PEN_SHARE = 0.03  # a pen draws at least this share of the linework's length
+
+
+def pens(d: Drawing) -> None:
+    """Gives the linework a few pens, as CAD draws it: the widths measured, weighted by length, gather around one value
+    per pen, as many as there are (the modes of their distribution, each with PEN_SHARE of the length at least); every
+    line, arc, circle and polyline gets the pen nearest to its width, at that pen's median width. Marks by hand keep
+    theirs."""
+    items = [q for q in d.lines + d.arcs + d.circles + d.polylines if q.width > 0 and getattr(q, "kind", "") != "markup"]
+    if len(items) < 2:
+        return
+    x = np.log([q.width for q in items])
+    w = np.array([_extent(q) for q in items])
+    grid = np.arange(x.min() - 3 * PEN, x.max() + 3 * PEN, PEN / 8)
+    density = (w * np.exp(-0.5 * ((grid[:, None] - x) / PEN) ** 2)).sum(axis=1)
+    peaks = grid[1:-1][(density[1:-1] >= density[:-2]) & (density[1:-1] > density[2:])]
+    owner = np.abs(x[:, None] - peaks).argmin(axis=1)
+    kept = [k for k in range(len(peaks)) if w[owner == k].sum() >= PEN_SHARE * w.sum()]
+    owner = np.abs(x[:, None] - peaks[kept]).argmin(axis=1)
+    for k in range(len(kept)):
+        mine = np.flatnonzero(owner == k)
+        order = mine[np.argsort(x[mine])]
+        middle = order[np.searchsorted(np.cumsum(w[order]), w[order].sum() / 2)]  # the length-weighted median
+        for i in mine:
+            items[i].width = items[middle].width
+
+
+def _extent(q) -> float:
+    if isinstance(q, Line):
+        return math.hypot(q.x2 - q.x1, q.y2 - q.y1)
+    if isinstance(q, Arc):
+        return math.radians((q.end - q.start) % 360 or 360) * q.r
+    if isinstance(q, Circle):
+        return 2 * math.pi * q.r
+    return _length(q)
 
 
 def _thick(items: list[Polyline]) -> float | None:

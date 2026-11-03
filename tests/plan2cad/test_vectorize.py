@@ -174,3 +174,16 @@ def test_a_letter_touching_the_round_end_of_a_box_is_read_but_not_the_round_end(
     mask = joints(rem, hv, 10)
     assert mask[110:120, 312:317].any()  # the round end
     assert not mask[110:120, 295:299].any()  # the letter
+
+
+def test_a_thick_ring_is_a_wide_circle_and_keeps_its_letter_but_a_solid_area_is_filled():
+    from app.plan2cad.model import Text
+    from app.plan2cad.vectorize import fills
+
+    d = Drawing(60, 30, circles=[Circle(15, 15, 4, 2.5)], texts=[Text(15, 15, 2.5, "A")])
+    ink = (render(d, 10) < 128).astype(np.uint8)
+    cv2.rectangle(ink, (350, 100), (500, 200), 1, cv2.FILLED)  # a solid area beside it
+    polys, rings, fill = fills(ink, 10)
+    assert len(polys) == 1 and len(rings) == 1
+    assert (rings[0].cx, rings[0].cy, rings[0].r, rings[0].width) == pytest.approx((15, 15, 4, 2.5), abs=0.3)
+    assert ink[140:160, 140:160].any() and not fill[140:160, 140:160].any()  # the letter stays ink

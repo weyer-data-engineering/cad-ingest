@@ -5,7 +5,7 @@ they would mangle both, and they mean something else (a change, a question, a pa
 On a black and white print every stroke in strong colour is a markup. On a colour plot, where coloured lines are a
 large share of the ink, they are print; markups on a colour plot are not told apart. Highlighter is colour that
 covers areas; the print under it shows through. Pen strokes become polylines in their colour, highlighter becomes
-transparent fills, and handwriting is read where Tesseract manages (marked as a reading to check)."""
+transparent fills; handwriting is read only if asked (features.read_handwriting), as a reading to check."""
 
 from __future__ import annotations
 
@@ -46,6 +46,14 @@ def split(bgr: np.ndarray, ppm: float) -> tuple[np.ndarray, np.ndarray | None, d
         np.copyto(gray, darkest, where=coloured)
         return gray, None, {}
     np.copyto(gray, brightest, where=coloured)
+    # A pen takes some light away in its brightest channel too, enough to be read as faint ink: lifted back to the
+    # paper, a pen stroke over paper is gone, and the print under it stays dark. So is its fringe, where pen and paper
+    # mix to a grey that is not colourful enough to count as colour.
+    pen = coloured & ~broad
+    if pen.any():
+        lift = float(np.percentile(gray, 90)) / max(float(np.median(brightest[pen])), 1.0)
+        fringe = cv2.dilate(pen.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        np.copyto(gray, np.minimum(brightest * lift, 255).astype(np.uint8), where=fringe)
     marks = np.zeros(gray.shape, np.uint8)
     colours = {}
     pen = coloured
@@ -73,19 +81,17 @@ def split(bgr: np.ndarray, ppm: float) -> tuple[np.ndarray, np.ndarray | None, d
     return gray, marks if marks.any() else None, colours
 
 
-def extract(marks: np.ndarray, colours: dict[int, Color], ppm: float, lang: str, texts: list[Text]
+def extract(marks: np.ndarray, colours: dict[int, Color], ppm: float, lang: str, texts: list[Text], read: bool = False
             ) -> tuple[list[Polyline], list[Polygon], list[Text], list[Markup]]:
     """The markups of a map in sheet coordinates (``ppm`` pixels per mm): pen strokes as polylines, highlighter as
-    filled polygons, readings of handwriting as texts, and one Markup per note and per highlighted area, naming the
-    printed ``texts`` it covers (by their centre, so a symbol's tag counts where the symbol is): highlighted, inside a
-    pen loop (a cloud) or under a pen stroke (struck out)."""
+    filled polygons, readings of handwriting as texts if asked to ``read`` it, and one Markup per note and per
+    highlighted area, naming the printed ``texts`` it covers (by their centre, so a symbol's tag counts where the
+    symbol is): highlighted, inside a pen loop (a cloud) or under a pen stroke (struck out). Handwriting is not read
+    by default: Tesseract is made for print and makes up words in most of it; the note keeps its strokes."""
     polylines, polygons, readings, markups = [], [], [], []
-    order = sorted(texts, key=lambda t: (round(t.y / 5), t.x))
 
     def covers(area: np.ndarray, x: int, y: int) -> list[str]:
-        h, w = area.shape
-        return [t.text for t in order if 0 <= int(t.y * ppm) - y < h and 0 <= int(t.x * ppm) - x < w
-                and area[int(t.y * ppm) - y, int(t.x * ppm) - x]]
+        return covered(texts, area, x, y, ppm)
 
     if HIGHLIGHT in colours:
         n, lab, stats, _ = cv2.connectedComponentsWithStats((marks == HIGHLIGHT).astype(np.uint8))
@@ -106,7 +112,7 @@ def extract(marks: np.ndarray, colours: dict[int, Color], ppm: float, lang: str,
         for i in range(1, n):
             x, y, w, h = stats[i, :4]
             strokes = pen[y:y + h, x:x + w] * (lab[y:y + h, x:x + w] == i).astype(np.uint8)
-            text = _reading(strokes, lang, ppm)
+            text = _reading(strokes, lang, ppm) if read else None
             if text:
                 (tx, ty, tw, th), words = text
                 readings.append(Text((x + tx + tw / 2) / ppm, (y + ty + th / 2) / ppm, max(th / ppm, 1.0) * 0.7,
@@ -114,6 +120,25 @@ def extract(marks: np.ndarray, colours: dict[int, Color], ppm: float, lang: str,
             markups.append(Markup("note", _box(x, y, w, h, ppm), colour, text[1] if text else None,
                                   covers(_marked(strokes, ppm), x, y)))
     return polylines, polygons, readings, markups
+
+
+def covered(texts: list[Text], area: np.ndarray, x: int, y: int, ppm: float) -> list[str]:
+    """The ``texts`` whose centre lies in ``area`` (a mask whose corner is pixel x, y), in reading order."""
+    h, w = area.shape
+    return [t.text for t in sorted(texts, key=lambda t: (round(t.y / 5), t.x))
+            if 0 <= int(t.y * ppm) - y < h and 0 <= int(t.x * ppm) - x < w and area[int(t.y * ppm) - y, int(t.x * ppm) - x]]
+
+
+def notes(strokes: np.ndarray, ppm: float, colour: Color, texts: list[Text]) -> list[Markup]:
+    """One note per group of pen ``strokes`` (closer than NOTE to each other), with the ``texts`` it marks."""
+    reach = _odd(NOTE * ppm)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(cv2.dilate(strokes, np.ones((reach, reach), np.uint8)))
+    out = []
+    for i in range(1, n):
+        x, y, w, h = stats[i, :4]
+        mine = strokes[y:y + h, x:x + w] * (lab[y:y + h, x:x + w] == i).astype(np.uint8)
+        out.append(Markup("note", _box(x, y, w, h, ppm), colour, None, covered(texts, _marked(mine, ppm), x, y, ppm)))
+    return out
 
 
 def _marked(strokes: np.ndarray, ppm: float) -> np.ndarray:

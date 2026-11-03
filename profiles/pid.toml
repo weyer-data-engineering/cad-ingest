@@ -1,0 +1,14 @@
+# A profile: what the texts of one kind of drawing look like (docs/profiles.md). Patterns are Python regular
+# expressions; a pattern under [vocabulary] matches a whole token (a word of a text).
+format = 1
+id = "pid"
+name = "P&ID (piping and instrumentation diagram)"
+drawing = "pid"
+
+[evidence]  # recognising the kind of drawing from the texts read on it
+titles = ['R&I', 'R\+I', 'P&ID']  # each counts TITLE
+patterns = ['\bDN ?\d+']  # each match counts once
+bubbles = true  # each circle with text in it (an instrument bubble) counts once
+
+[vocabulary]
+nominal_size = ['DN\d{1,4}', 'PN\d{1,3}']

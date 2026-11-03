@@ -144,15 +144,16 @@ def test_installed_libraries_are_listed_and_checked(api, origin, worker, tmp_pat
     worker(SYMBOL_LIBRARIES=tmp_path / "libs")
 
     catalogue = api.get("/libraries").json()
-    assert [lib["id"] for lib in catalogue["libraries"]] == ["din-10628", "floor-plan", "acme-pid"]
-    assert catalogue["default"] == ["din-10628", "floor-plan"]
-    assert catalogue["libraries"][2]["symbols"] == [{"name": "MY_VALVE", "description": "Box valve"}]
+    assert [lib["id"] for lib in catalogue["libraries"]] == ["din-10628", "floor-plan", "iec-60617", "acme-pid"]
+    assert catalogue["default"] == ["din-10628", "floor-plan", "iec-60617"]
+    assert catalogue["libraries"][3]["symbols"] == [{"name": "MY_VALVE", "description": "Box valve"}]
     vectorize = {"operations": ["vectorize"], "result_url": origin.url("/preview/result")}
     origin.source_status["plan.jpg"].append(404)  # the accepted job ends at once
     assert submit(api, origin, "plan.jpg", options={"libraries": ["acme-pid", "din-10628"]}, **vectorize).status_code == 202
     unknown = submit(api, origin, "plan.jpg", "unknown", options={"libraries": ["nope"]}, **vectorize)
     assert unknown.status_code == 400 and unknown.json()["detail"].startswith("Unknown symbol library: nope")
     assert submit(api, origin, "plan.jpg", "path", options={"libraries": ["../x"]}, **vectorize).status_code == 400
+    assert submit(api, origin, "plan.jpg", "step", options={"off": ["nonsense"]}, **vectorize).status_code == 400
     assert submit(api, origin, "drawing.dxf", library_urls=[origin.url("/src/acme.zip")]).status_code == 400
 
 

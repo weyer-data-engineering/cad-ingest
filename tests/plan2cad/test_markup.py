@@ -57,7 +57,7 @@ def test_markups_in_the_result(marked, tmp_path):
     assert all(m["image"] in files.namelist() for m in report["markups"])
     image = cv2.imdecode(np.frombuffer(files.read(report["markups"][0]["image"]), np.uint8), cv2.IMREAD_COLOR)
     assert np.median(image) > 200  # the markup on the faded print, mostly paper
-    assert "## Markups (added by hand in colour)" in markdown and "Highlighted in green; covers: Bad" in markdown
+    assert "## Markups (added by hand)" in markdown and "Highlighted in green; covers: Bad" in markdown
 
 
 def test_a_colour_plot_has_no_markups(plan):

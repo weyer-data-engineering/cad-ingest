@@ -19,6 +19,7 @@ from rq.job import Job
 from . import store
 from .config import RETRY_AFTER_SECONDS, VERSION, Settings
 from .formats import FORMATS, SCAN_2D, formats_by_kind
+from .plan2cad.features import Features
 
 logging.basicConfig(level=logging.INFO)
 
@@ -53,6 +54,7 @@ jobs = APIRouter(prefix="/jobs", dependencies=[Depends(_authorized)])
 LibraryId = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")]  # as plan2cad.library.ID
 HeaderName = Annotated[str, Field(pattern=r"^[A-Za-z0-9-]{1,100}$")]
 Url = Annotated[str, Field(pattern=r"^https?://")]
+FeatureName = Annotated[str, Field(pattern=r"^[a-z_]{1,64}$")]  # as plan2cad.features.Features
 
 
 class VectorizeOptions(BaseModel):
@@ -61,12 +63,21 @@ class VectorizeOptions(BaseModel):
     paper: Literal["A0", "A1", "A2", "A3", "A4"] = "A3"  # the paper the drawing is printed on
     scale: int | None = Field(default=None, ge=1, le=10_000)  # e.g. 50 for 1:50; read from the title block if not set
     dpi: float | None = Field(default=None, gt=50, le=1200)  # scan resolution, only needed without visible paper edges
-    drawing: Literal["auto", "building", "pid"] = "auto"  # floor plan or P&ID; recognised from the texts if "auto"
+    # The kind of drawing, as the built-in profiles (profiles/) name them; recognised from the texts if "auto"
+    drawing: Literal["auto", "building", "pid", "electrical", "site"] = "auto"
     # Installed symbol libraries (GET /libraries) to recognise symbols from, earlier ones first; the default ones if
     # neither these nor library_urls are given
     libraries: list[LibraryId] | None = Field(default=None, min_length=1, max_length=20)
     # Pages of a PDF or TIFF to convert, counted from 1; all of them (up to MAX_SCAN_PAGES) if not set
     pages: list[Annotated[int, Field(ge=1)]] | None = Field(default=None, min_length=1, max_length=1000)
+    # Steps of the recognition to switch on or off (app/plan2cad/features.py), such as "freehand" or "read_handwriting"
+    on: list[FeatureName] | None = Field(default=None, max_length=20)
+    off: list[FeatureName] | None = Field(default=None, max_length=20)
+
+    @model_validator(mode="after")
+    def _known_features(self) -> "VectorizeOptions":
+        Features.of(self.on or [], self.off or [])  # ValueError: a 400 naming the unknown feature
+        return self
 
 
 class Reviewer(BaseModel):

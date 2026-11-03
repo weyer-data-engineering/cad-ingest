@@ -32,7 +32,7 @@ JSON. If `API_TOKEN` is set, every `/jobs` call needs `Authorization: Bearer <to
 | `operations` | `extract`, `preview` and/or `vectorize`, at least one. `vectorize` is required for photos and scans and allowed only for them |
 | `preview_url` | presigned `PUT` target of the preview, required with `preview`. The converter sends `Content-Type` `application/pdf` (2D, photos and scans) or `model/gltf-binary` (3D) |
 | `result_url` | presigned `PUT` target of the ZIP of `vectorize` (`Content-Type` `application/zip`), required with `vectorize` |
-| `options` | optional, for `vectorize`: `paper` the drawing is printed on (`A0` ... `A4`, default `A3`), `scale` denominator (e.g. `50` for 1:50; read from the title block if not set), `dpi` of a scan without visible paper edges, `drawing`: `building` (floor plan), `pid` (P&ID) or `auto` (default, recognised from the texts), `libraries`: ids of installed symbol libraries to recognise symbols from (see `GET /libraries`; at most 20, earlier ones win on equal block names; default: `DEFAULT_SYMBOL_LIBRARIES`); each is used on the kind of drawing it is for (`drawing`: P&IDs, floor plans), `pages`: the pages of a PDF or TIFF to convert, counted from 1 (default: all, at most `MAX_SCAN_PAGES`) |
+| `options` | optional, for `vectorize`: `paper` the drawing is printed on (`A0` ... `A4`, default `A3`), `scale` denominator (e.g. `50` for 1:50; read from the title block if not set), `dpi` of a scan without visible paper edges, `drawing`: `building` (floor plan, section), `pid` (P&ID), `electrical` (circuit diagram), `site` (site plan) or `auto` (default, recognised from the texts by the built-in [profiles](profiles.md)), `libraries`: ids of installed symbol libraries to recognise symbols from (see `GET /libraries`; at most 20, earlier ones win on equal block names; default: `DEFAULT_SYMBOL_LIBRARIES`); each is used on the kind of drawing it is for (`drawing`: P&IDs, floor plans), `pages`: the pages of a PDF or TIFF to convert, counted from 1 (default: all, at most `MAX_SCAN_PAGES`), `on` and `off`: steps of the recognition to switch on or off by name (see [Steps that can be switched](photos-and-scans.md#steps-that-can-be-switched); `400` for an unknown name) |
 | `library_urls` | optional, only with `vectorize`: presigned `GET`s of symbol libraries the job brings along, a library ZIP or a DXF (at most 10, each up to `MAX_LIBRARY_SIZE_BYTES`). They come before the installed `libraries`; the default libraries are only used when the job names none at all. See [Symbol libraries](symbol-libraries.md) |
 | `callback_url` | optional, see Callback |
 | `priority` | `interactive` (default) or `bulk` |
@@ -134,12 +134,20 @@ Everything else stays as it was. `report.json` then has `reviewer` with the `mod
 how many were `confirmed`, `corrected`, `kept` or left `unanswered`; a model that cannot be reached gives a warning
 naming its host, and the job still succeeds.
 
-Markups added by hand in colour on a black and white print (pen notes, clouds, strike-outs, highlighter) are kept
-apart from the drawing (see [Markups](photos-and-scans.md#markups)): the DXF has them on the layers `P2C-MARKUP`,
-`P2C-HIGHLIGHT` and `P2C-MARKUP-TEXT`, `report.json` lists them under `markups` (`kind` `note` or `highlight`,
-`box_mm`, `color`, the handwriting `reading` or `null`, the printed `texts` and symbol tags they cover and their `image`), the ZIP
-holds an image `markup-k.png` of each one, and the markdown has a section `Markups (added by hand in colour)`. The
-fields and files are new; a client that does not know them can ignore them.
+A large drawing printed small, such as an A1 P&ID on A3, is recognised at its drawn size (see [Print
+size](photos-and-scans.md#how-it-works)): `report.json` has `printed`, the share of its drawn size the sheet shows it at
+(1 for a drawing printed at its size, 0.5 for A1 on A3), and the DXF is at the drawn size, so its texts and symbols have
+the sizes they were drawn with. Positions in `report.json` stay in sheet millimetres. The field is new; a client that
+does not know it can ignore it.
+
+Markups added by hand on a print (pen notes, clouds, strike-outs, highlighter in colour; notes, clouds and freehand
+hatching in black or pencil) are kept apart from the drawing (see [Markups](photos-and-scans.md#markups)): the DXF has
+them on the layers `P2C-MARKUP`, `P2C-HIGHLIGHT` and `P2C-MARKUP-TEXT`, `report.json` lists them under `markups`
+(`kind` `note` or `highlight`, `box_mm`, `color`, the handwriting `reading` or `null`, the printed `texts` and symbol
+tags they cover and their `image`), the ZIP holds an image `markup-k.png` of each one, and the markdown has a section
+`Markups (added by hand)`. The fields and files are new; a client that does not know them can ignore them.
+Handwriting is no longer read by default (`reading` is `null`): what Tesseract read in it was mostly wrong. The step
+`read_handwriting` in `options.on` reads it as before.
 
 PDF and TIFF scans may have several pages, and each page with a drawing is converted. The first one goes to the root
 of the ZIP (`plan.dxf`, `plan.pdf`, `overlay.png`, `underlay.png`, `report.json`), every further page n to the folder

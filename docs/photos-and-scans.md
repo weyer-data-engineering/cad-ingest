@@ -19,7 +19,20 @@ job handler in `app/scan.py`.
    divides by the paper brightness (a closing that follows soft shadow edges) and binarises against the darkest ink
    nearby, so glare and light toner keep their lines. Fainter stretches of a stroke are added where they hang together
    with clear ink, so a pale or dotted line stays one line.
-3. **Vectors**: filled areas (thicker than 1.5 mm), horizontal and vertical lines (morphology), circles (Hough, verified
+3. **Print size**: a large drawing is often printed small to take along, an A1 P&ID on A3 or A4. Its lettering is then
+   much smaller than drawings are lettered (about 2.5 mm), and so are its symbols, pens and gaps. The most common
+   height of the shapes of ink the size of a character tells the share it is printed at (half for A1 on A3); it is
+   measured on the ink, not on what is read, as the text of a small print may be too small to read. Such a sheet is
+   recognised at the drawing's drawn size, because the measures of recognition, such as how far a line may lie off a
+   symbol's outline or how short a pipe may stop of a junction, are made for drawings at their drawn size: on a small
+   print a plain line fitted a flow arrow, and pipes were not joined to their valves. Where the image has fewer than 5
+   pixels per drawn millimetre, as a phone photo of a small print, lines and texts are found on the sheet as it is
+   (at the drawn size they would fall apart into short pieces), and only objects and symbols are recognised and the
+   linework connected at the drawn size. `report.json` gives the share as `printed` (1 for a drawing printed at its
+   size), and the DXF is at the drawn size.
+4. **Vectors**: filled areas (thicker than 1.5 mm; a round one with a round opening, such as the thick ring of a note
+   mark, is a circle with a wide pen, and the letter in its opening is read), horizontal and vertical lines
+   (morphology), circles (Hough, verified
    on all ink; text found on a ring is dropped as misread symbol arcs, and a ring whose quarters OCR took for brackets,
    such as a circle in a box, is found as well), everything else by skeleton tracing. A traced stroke that is round
    becomes one arc; one that runs straight and then bends is cut into the fewest straight lines and true arcs that
@@ -35,11 +48,11 @@ job handler in `app/scan.py`.
    paper, such as dashes and line jumps, and the inside of a small symbol stay open. The round ends of a line-number
    box and rounded corners between two lines are kept from text recognition, which would read them as brackets; only
    the part beyond the two line ends, so a letter touching a round end from inside the box is still read.
-4. **Objects**: pieces that meet end to end become one polyline (a wall outline, a pipe run through its bends, a vessel
+5. **Objects**: pieces that meet end to end become one polyline (a wall outline, a pipe run through its bends, a vessel
    with its heads); slivers and loose specks from the tracing are dropped. Floor plans get door swings (leaf and quarter
    arc) and walls, P&IDs equipment (large closed outlines), signal lines (dashed or ending at an instrument bubble) and
    pipes.
-5. **Text**: characters of similar height are grouped into lines first, and small marks such as dots, hyphens and
+6. **Text**: characters of similar height are grouped into lines first, and small marks such as dots, hyphens and
    quotes join the line they sit in, so two text lines beside a slanted stroke stay apart. The lines are read by
    Tesseract in batches with its most accurate models (`tessdata_best`). A drawing is written in one font, so a
    character read unlike the glyphs that look most like it on the same sheet is corrected by their vote: the slashed
@@ -64,7 +77,10 @@ job handler in `app/scan.py`.
    Tesseract. A spotted line replaces the texts whose letters lie in its box, unless it is a shorter reading across
    part of a text written the other way (a vertical dimension read as two numbers). Its letters are the components
    wholly in the box and about as high as most of them, so a pipe or a ring that touches the line, or a dash, stays
-   linework.
+   linework. A line through which a stroke runs from above its letters to below them, between two of them, is two
+   texts where the two are a letter's height apart or read with a space between them: the spotter reads a line
+   number and the tag in the bubble next to it as one line, across the end of the frame and the ring of the bubble,
+   and two labels across the line between them; a wall through a room's area, close between two digits, cuts nothing.
    Where no text was found before, a reading needs a score of 0.8, and one of one or two characters 0.9 and no more
    than 1.6 times the usual text height: such a reading is as likely a symbol (a valve read as "D8", a fixture as
    "8"). A replacement scored below 0.8 is marked for review, and the characters both readers confuse go to the vote
@@ -77,10 +93,22 @@ job handler in `app/scan.py`.
    such a size, or after a nominal pipe size on its own, is an inch mark, whatever was read for it (`2°-AB12`, `2'`);
    angles (`45°`), temperatures (`60°C`) and feet and inches (`12'-6"`) keep theirs. On a sheet with at least two
    key=value labels (`PN=16`), a colon between a short key and its value (`PN:16`) is the equals sign.
-6. **Symbols**: valves, pumps and instruments on P&IDs (and on drawings of unknown kind), toilets, washbasins, bathtubs
+7. **Symbols**: valves, pumps and instruments on P&IDs (and on drawings of unknown kind), toilets, washbasins, bathtubs
    and other fixtures on floor plans are looked up in symbol libraries and placed as their CAD blocks instead of loose
    strokes, see below.
-7. **Markups**: pen strokes and highlighter in colour on a black and white print become their own layers, see
+   Then the linework is connected, so that it can be worked on in CAD without closing gaps by hand: tracing stops a
+   line short of a junction by about the width of the line it meets, and taking out the strokes of a symbol leaves its
+   pipes a little short of it. An end of a line or polyline that stops up to 2 mm short of other linework is moved
+   along its line onto it (a branch onto its pipe, a signal line onto its bubble, a pipe onto its valve or vessel), or
+   cut back onto a line it runs past by a little; two loose ends whose lines meet nearby form a corner there, and two
+   that point at each other along one line meet halfway. A line drawn broken where it crosses another, to show that
+   the two do not join, becomes one line across it, without a junction: two ends further than 2 mm from a single line
+   between them, which point at each other along one line no more than 8 mm apart. A port of a symbol that no line reaches, but that faces a
+   pipe or the port of the next symbol within 6 mm, is piped to it: the short pipe between a valve and its junction,
+   with its flanges, is often lost with the strokes of the symbols around it. Pieces that then meet end to end become
+   one polyline, through a crossing the ones that go straight on, and pieces under 2 mm that touch nothing are dropped
+   as leftovers.
+8. **Markups**: pen strokes and highlighter in colour on a black and white print become their own layers, see
    [Markups](#markups).
 
 ## Output
@@ -94,6 +122,16 @@ straightened photo `underlay.png` as raster underlay on `P2C-UNDERLAY`),
 teal, for checking), `markup-k.png` for each markup and `report.json` (sheet, resolution, drawing type, scale, counts, timings, all texts, the symbols
 with their attributes and ports, the lines joining two symbol ports, the markups and what to check). `extract` lists
 the recognised texts, symbols (with their tags) and markups as markdown, so photographed plans become searchable too.
+
+Texts are lettered as with a stencil, since a drawing is lettered in a few sizes: a text whose height is within 20 %
+of a height at least three texts share takes it, and the texts of one size get one width per character (narrow ones,
+such as spaces, points and the digit 1, half of it), so the same label looks the same wherever it is. Every text of
+the DXF, the tags in a symbol's bubble included, is fitted between the ends of its baseline at that width (DXF
+alignment "fit"), so it looks the same in whatever font the CAD program shows it; a text printed clearly narrower
+than that (by more than 15 %) keeps its printed length, so a tag stays inside its bubble and a line number inside
+its frame. A text spaced wider than that keeps where it starts, so notes and legends stay flush left. The preview
+squeezes a text along its line only, as CAD does. A text whose letters were found only in part (where they touch a
+line) is lettered at the usual width of its size, as fitted to that part it would shrink to a fraction of its size.
 
 `report.json` lists what to check under `review`, least confident first: texts that could not be read
 reliably (on `P2C-TEXT-CHECK`) and symbols that may be the wrong ones (on `P2C-SYMBOL-CHECK`, and in magenta in
@@ -133,13 +171,14 @@ LibreDWG writes only old DWG versions, experimentally. AutoCAD and other CAD pro
 Plans come back from site and review with notes on them: a cloud around a valve with "removed" next to it, a pipe
 struck out, a line marked with a highlighter. On a black and white print, every stroke in strong colour is such a
 markup. Read as part of the drawing, it would turn into stray lines and symbols and garble the printed text under
-it. So the converter takes markups out before it reads the drawing and keeps them on their own layers:
+it. So the converter takes markups out before it reads the drawing and keeps them on their own layers, not deleted:
 
 - **Pen strokes** become polylines in their colour on `P2C-MARKUP`. Strokes close to one another make one note.
 - **Highlighter** (light colour at least 1 mm wide) becomes a transparent fill in its colour on `P2C-HIGHLIGHT`. The
   print under it shows through and is read as usual.
-- **Handwriting** in a note is read by Tesseract where it can. The reading goes on `P2C-MARKUP-TEXT` as a guess to
-  check: Tesseract is made for print, so it reads clear block letters and misses much of joined-up writing.
+- **Handwriting** is kept as strokes and not read: Tesseract is made for print, and what it read in joined-up writing
+  was mostly made up. The step `read_handwriting` (see [Steps that can be switched](#steps-that-can-be-switched))
+  reads it as before, as a guess to check on `P2C-MARKUP-TEXT`.
 - **What a markup covers**: the printed texts and the tags of the symbols inside a pen loop, under a pen stroke or
   under highlighter, such as the instruments in a revision cloud.
 
@@ -149,8 +188,40 @@ ZIP holds `markup-k.png` for each markup, the markup in colour on the faded prin
 person or a vision model to read what Tesseract could not. The markdown has a section `Markups (added by hand in
 colour)`, for example `- Note in red: “removed” (handwriting, read automatically); covers: FV 101, FT 101`.
 
-On a colour plot, where coloured lines are a large share of the ink, all colour is print and no markups are taken out.
-Markups in black or grey cannot be told from the print.
+On a colour plot, where coloured lines are a large share of the ink, all colour is print and no colour markups are
+taken out.
+
+**Markups in black or pencil** are told apart by their shape and their grey, with features that hold on any kind of
+drawing (`app/plan2cad/freehand.py`; step `freehand`):
+
+- CAD draws straight lines, circular and elliptic arcs and smooth curves, joined at sharp corners. A stroke whose
+  pieces between its corners are none of these, or that turns so often that its pieces are too short to be anything
+  (joined-up writing), and that has few straight pieces, is a mark.
+- A chain of six or more arcs of about one size, bulging to one side and meeting in points, is a revision cloud.
+- Pencil is lighter than print: a light stroke needs less of the above.
+- Characters of print are left to the text recognition: only strokes at least three characters long are judged, and
+  none that stand in a row of characters of their height. Neither are strokes across half the sheet: a mark drawn
+  into the drawing's own linework stays in it.
+
+A mark found goes on `P2C-MARKUP` in black or its grey, with a note in `markups`, before lines and texts are read: the
+text recognition sees paper where it was. The rules favour the drawing: a mark that looks like CAD (a straight
+strike-out, freehand hatching of nearly straight strokes) stays in the drawing rather than a CAD shape going to the
+markup layer. On the synthetic benchmark about a third of the black marks and three quarters of the pencil marks are
+found, and almost nothing of the drawing is taken for a mark (see the [Benchmark](#benchmark)).
+
+## Steps that can be switched
+
+Some steps of the recognition can be switched on and off by name, to measure what each brings on every kind of drawing
+and to turn one off where it does not suit a kind of drawing or a customer's sheets (`app/plan2cad/features.py`; job
+API `options.on` and `options.off`, command line and benchmark `--on` and `--off`):
+
+| Step | Default | What it does |
+|---|---|---|
+| `freehand` | on | marks by hand in black or pencil go to the markup layer ([Markups](#markups)) |
+| `read_handwriting` | off | handwriting in colour markups is read by Tesseract, as a guess to check |
+| `vocabulary` | on | a token read with letters for digits or digits for letters ("-KI") is read in the vocabulary of the kind of drawing's [profile](profiles.md) where that alone makes it a word of it ("-K1") |
+| `dedupe` | on | a text read twice at one place, in the same direction, is kept once, the surer reading |
+| `pens` | off | the linework gets a few pens, as many as the drawing has: the measured widths, weighted by length, are clustered around the modes of their distribution. Off by default: widths measured on a scan come out about one ISO pen too thick, and the clusters merge pens rather than put them right (on the benchmark the right pen on 14-39 % of the linework without it, 0-6 points more with it) |
 
 ## Vector PDFs
 
@@ -181,7 +252,8 @@ beside the pipe that runs through two of them (a flow arrow on its pipe), is mov
 snapped onto the ports of the symbols they lead to where the port lies on the pipe's course (within 0.5 mm), so that no
 pipe is turned askew; of parallel pipes ending beside one port, only the one pointing at it. Strokes left wholly inside
 a symbol with ports, such as the one between the two triangles of a gate valve, are dropped: they would join the pipes
-on either side through the valve.
+on either side through the valve. So are strokes left inside a symbol that holds text, such as an instrument bubble:
+they are letters that could not be read, and the bubble is marked to check ("its text could not be read").
 
 The symbols come from symbol libraries: DXF files with one block per symbol, with points where pipes connect and the
 places of their attributes. Each library is for P&IDs or for floor plans, and only used on its kind of drawing. Two
@@ -206,14 +278,18 @@ stand within 1.5 mm beside a straight line of at least 10 mm (a word traced as a
 signal line), both ways along it: the pipe joins such strokes into one large group, so they are not found as a group
 of their own. Each candidate is matched against the image itself (the centre lines of
 the ink, not the traced vectors, which round off arrowheads and springs): a point of the symbol counts as found where
-ink runs close by in the same direction. A symbol needs 80 % of its outline and half of each of its parts (a ball
+ink runs close by in the same direction. A symbol needs 85 % of its outline and half of each of its parts (a ball
 valve needs its ball), a line leaving at least one port and, if it has one, a line through it that goes on for at
 least a millimetre past both ends: where an arc runs into a line, the bend looks like an arrowhead, but no pipe goes
 on past it. A symbol drawn the same as another one plus a small circle (a ball valve and a gate valve) is the one with
 the circle where half of the circle's rim is there, or a blob as thick as the circle and one and a half times as thick
 as the usual stroke of the sheet: a filled ball leaves that, and so does a ring that blur has filled in on a photo,
 but not the crossing of two strokes. Ink inside the symbol that it does not explain counts against it, except for text
-at its attribute positions. Of overlapping candidates the one explaining the most ink wins. A symmetric symbol fits as
+at its attribute positions and, in a symbol that holds text such as an instrument bubble, other text: letters in a
+reducer are the cross of a box read as an "X". A stroke that ends freely in the library, such as a barb of a flow
+arrow or a bar of an orifice plate, has to end on the sheet too: where the ink runs on past its end, the strokes belong
+to something else, the pointed end of an off-page connector, the edge of a line number's frame or a letter. Of
+overlapping candidates the one explaining the most ink wins. A symmetric symbol fits as
 well turned half way or mirrored; it takes the pose in which most of its attribute positions have a text, and then the
 one with its back on the wall: a fixture's insertion point is in the middle of its back, and the linework left around
 it continues that side. Nothing is placed in the title block in the bottom right corner of the frame, whose small text
@@ -244,11 +320,14 @@ Fixtures are left alone, as their size is that of the real object.
 ## Benchmark
 
 `bench/` generates drawings with an exact reference solution (floor plan A3, also with fixtures at 1:50 and 1:100;
-P&ID A1/A0), simulates scans and phone photos (perspective, waviness, folds, shadow, glare, defocus, hand shake, noise,
-phone sharpening, JPEG) and measures the result against the reference:
+P&ID A1/A0, also printed on A3 and A4; circuit diagram, building section and site plan A3), simulates clean plots,
+scans (good, poor and skewed) and phone photos (perspective, waviness, folds, shadow, glare, defocus, hand shake, noise,
+phone sharpening, JPEG), adds markups by hand in black, pencil and colour to some, and measures the result against the
+reference. The corpus is there so that an improvement is measured on every kind of drawing at once: one that helps a
+kind and harms another shows up.
 
 ```bash
-python bench/run.py --out bench/out [--quick] [--real photo.heic:A4]
+python bench/run.py --out bench/out [--quick] [--only WORDS] [--on STEPS] [--off STEPS] [--real photo.heic:A4]
 ```
 
 Metrics: share of reference linework found within 1 mm / 0.5 mm on paper (completeness) and share of found linework
@@ -271,6 +350,19 @@ as arcs, symbols placed as the right block within 1.5 mm, attributes read, runti
 | P&ID A0, phone photo 12 MP | 2.8 | 90.6 % / 94.9 % | 0.33 mm | 82 % | 1 % | 62 % / 61 % | 0 % | 62.1 s |
 | P&ID A0, phone photo 48 MP | 5.6 | 99.1 % / 98.3 % | 0.23 mm | 85 % | 34 % | 82 % / 85 % | 23 % | 45.4 s |
 
+By kind of drawing (`--quick`, means over the cases of each kind, with and without markups):
+
+| Kind | Cases | Lines found / correct (<= 1 mm) | Tokens exact | Symbols found / correct | Crossings / junctions kept | Markup taken for the drawing |
+|---|---|---|---|---|---|---|
+| Floor plan | 9 | 96.7 % / 96.8 % | 96 % | 100 % / 100 % | 92 % / 92 % | 0 % (red), 26 % (pencil) |
+| P&ID | 5 | 99.6 % / 97.3 % | 81 % | 78 % / 93 % | - / 98 % | 84 % (black) |
+| Circuit diagram | 4 | 100 % / 97.3 % | 59 % | 46 % / 70 % | 100 % / 100 % | 82 % (black) |
+| Section | 3 | 96.0 % / 99.7 % | 88 % | - | 19 % / 78 % | 0 % (blue) |
+| Site plan | 3 | 95.0 % / 95.0 % | 65 % | - | - / 27 % | 70 % (pencil, photo) |
+
+Circuit diagrams and site plans read fewer of their texts: wire numbers are vertical and many site plan texts are
+turned to a street or a parcel, which the text recognition does not read yet (see [Limits](#limits)).
+
 Linework and circles hold up down to 3 px per mm of paper, text does not: on the A0 P&ID, exact texts (2 mm high, many
 of them inside instrument bubbles) rise from 14 % at 3 px/mm to 58 % at 6 and about 82 % from 8 px/mm. 81-99 % of the
 objects of the reference drawing come out in one piece (1.13-1.88 DXF elements per object). Symbols that are missed
@@ -279,7 +371,15 @@ stay linework. On floor plans, all fixtures are found at 1:50; at 1:100, where O
 
 ## Limits
 
-- Handwriting is read only in part (see [Markups](#markups)); the markup images in the ZIP show what it says.
+- Handwriting is not read (see [Markups](#markups)); the markup images in the ZIP show what it says.
+- Text is read horizontally and vertically only: text turned to another angle (a street name, a parcel number on a
+  site plan) is not read. A vertical text may be read the wrong way round ("09'0" for "0,60").
+- Pen widths measured on a scan are about one ISO pen too thick; the right pen comes out on 10-25 % of the linework.
+- A scan whose paper is about as grey as the scanner lid around it has no visible paper edge: give its `dpi`, or the
+  sheet is taken to be the whole image and the scale is off by the lid's border.
+- Marks by hand in black are found only in part (about a third on the benchmark): those that look like CAD (straight
+  strokes, a strike-out through a text, hatching of nearly straight strokes) and those drawn into the drawing's own
+  linework stay in the drawing.
 - Small text needs about 8 px per mm of paper. An A0 sheet as one 12 MP photo has 2.8 px/mm, so its text is not
   readable; use 200-300 dpi scans for A0/A1. Unread text is kept as a guess on `P2C-TEXT-CHECK`.
 - Thin lines (0.18 mm, e.g. dimension lines) need about 6 px per mm of paper. On a 12 MP photo of an A1 floor plan
