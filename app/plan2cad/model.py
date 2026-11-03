@@ -126,8 +126,9 @@ class Symbol:
 
 @dataclass
 class Markup:
-    """Something added by hand in colour on a print (see markup): a pen note, cloud or strike-out ("note"), with
-    what could be read of its handwriting, or a highlighted area ("highlight"); with the printed texts it covers."""
+    """Something added by hand on a print, in colour (see markup) or in black or pencil (see freehand): a pen note,
+    cloud or strike-out ("note"), with what was read of its handwriting if that was asked for, or a highlighted area
+    ("highlight"); with the printed texts it covers."""
 
     kind: str
     box: tuple[float, float, float, float]  # x0, y0, x1, y1 in sheet mm

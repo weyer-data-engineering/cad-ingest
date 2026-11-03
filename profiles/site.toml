@@ -1,0 +1,14 @@
+# A profile: what the texts of one kind of drawing look like (docs/profiles.md).
+format = 1
+id = "site"
+name = "Site plan"
+drawing = "site"
+
+[evidence]
+titles = ['Lageplan', 'Site plan', 'Flurstück', 'Gemarkung']
+patterns = []  # parcel numbers ("123/4") are written like sheet numbers ("Blatt 1/2"): no evidence
+scales = [250, 500, 1000]
+
+[vocabulary]
+parcel = ['\d{1,4}/\d{1,3}']
+height = ['[+-]?\d{1,4},\d{1,2}']

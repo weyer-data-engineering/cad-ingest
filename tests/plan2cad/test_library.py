@@ -16,9 +16,12 @@ from .conftest import write_library, zipped
 
 def test_starter_libraries_are_built_in_and_the_default():
     starter, fixtures = library.installed()["din-10628"], library.installed()["floor-plan"]
+    circuits = library.installed()["iec-60617"]
     assert starter.version == "1.0.0" and starter.licence == "Apache-2.0" and starter.drawing == ["pid"]
     assert (fixtures.drawing, fixtures.size, len(fixtures.symbols)) == (["building"], "real", 7)
-    assert library.select() == [starter, fixtures] and len(starter.symbols) == 18 and not starter.warnings
+    assert (circuits.drawing, circuits.size, len(circuits.symbols)) == (["electrical"], "printed", 6)
+    assert library.select() == [starter, fixtures, circuits] and len(starter.symbols) == 18 and not starter.warnings
+    assert not circuits.warnings
     assert {"name": "PUMP", "description": "Centrifugal pump"} in starter.summary()["symbols"]
     assert not fixtures.warnings and fixtures.summary()["size"] == "real"
 
@@ -77,7 +80,7 @@ def test_installed_libraries_come_from_folders_and_must_have_distinct_ids(tmp_pa
     write_library(tmp_path / "libs" / "acme")
     (tmp_path / "libs" / "lost+found").mkdir()  # no library.toml: not a library
     folders = str(tmp_path / "libs")
-    assert list(library.installed(folders)) == ["din-10628", "floor-plan", "acme-pid"]
+    assert list(library.installed(folders)) == ["din-10628", "floor-plan", "iec-60617", "acme-pid"]
     assert library.select(defaults="acme-pid, din-10628", folders=folders)[0].id == "acme-pid"
     with pytest.raises(LibraryError, match="'nope' is not installed"):
         library.select(["nope"], folders=folders)

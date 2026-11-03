@@ -75,6 +75,7 @@ RUN pip install --no-cache-dir -r requirements-dev.txt
 COPY pytest.ini ./
 COPY app app
 COPY libraries libraries
+COPY profiles profiles
 COPY bench bench
 COPY tests tests
 USER 10001
@@ -86,6 +87,7 @@ ENV APP_VERSION=$VERSION
 COPY LICENSE NOTICE ./
 COPY app app
 COPY libraries libraries
+COPY profiles profiles
 # One image, two processes: the default command is the API, `worker` runs the RQ workers (see README).
 # `cad-ingest` converts a single local file without Redis (python -m app.convert); `cad-ingest library` checks and
 # builds symbol libraries. Add your own libraries in /libraries (SYMBOL_LIBRARIES, see docs/symbol-libraries.md).

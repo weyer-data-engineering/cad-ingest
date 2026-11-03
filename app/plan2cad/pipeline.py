@@ -11,7 +11,9 @@ import cv2
 import numpy as np
 import pypdfium2 as pdfium
 
-from . import library, markup, objects, ocr, pdfvector, sheet, spotting, symbols, topology, vectorize
+from . import (freehand, library, markup, objects, ocr, pdfvector, profiles, sheet, spotting, symbols, topology,
+               vectorize)
+from .features import Features
 from .model import PAPER, Circle, Drawing, Line, Text
 
 MAX_PIXELS = 80e6  # upper bound for the rectified sheet image
@@ -48,16 +50,19 @@ class _Timer:
 
 
 def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: float | None = None,
-            ppm: float | None = None, drawing: str | None = None,
-            libraries: list[library.Library] | None = None) -> Result:
+            ppm: float | None = None, drawing: str | None = None, libraries: list[library.Library] | None = None,
+            features: Features | None = None, kinds: tuple[profiles.Profile, ...] | None = None) -> Result:
     """Converts a BGR photo or scan of a drawing printed on ``paper`` (A0 to A4).
 
     ``scale`` is the drawing scale denominator (read from the title block if omitted), ``dpi`` the
     scan resolution for scans without visible paper edges, ``ppm`` forces the working resolution,
-    ``drawing`` the kind of drawing ("building" or "pid", recognised from the texts if omitted),
+    ``drawing`` the kind of drawing ("building", "pid", "electrical", "site", ...: the profiles' kinds), recognised
+    from the texts by the profiles ``kinds`` if omitted (profiles.installed() if those are omitted),
     ``libraries`` the symbol libraries to recognise symbols from (library.select; the built-in ones if omitted);
-    those for the kind of drawing are used, P&ID symbols on drawings of an unknown kind.
+    those for the kind of drawing are used, P&ID symbols on drawings of an unknown kind. ``features``: the steps
+    switched on (features.py; all if omitted).
     """
+    features = features or Features()
     timer = _Timer()
     bgr = img if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     found = sheet.locate(bgr, PAPER[paper])
@@ -90,21 +95,32 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
     printed = printed_size(ink, out)
     first = printed if out * printed >= DRAWN_PPM else 1.0  # the size lines and texts are found at
     timer.lap("binarize")
+    # Marks by hand in black or grey go their own way before anything is traced or read: lines and texts of the
+    # drawing they are not, and the text recognition would read letters into them
+    hand = freehand.find(ink, norm, out, printed * DRAWN * out) if features.freehand else None
+    clean = norm
+    if hand is not None and hand.any():
+        ink, clean = ink & (1 - hand), np.where(hand > 0, np.uint8(255), norm)
+        timer.lap("freehand")
     rotation = 0
-    parts = _vectorize(ink, norm, out * first, timer, True, first)
+    parts = _vectorize(ink, clean, out * first, timer, True, first)
     if isinstance(parts, int):  # text is sideways or upside down: turn the sheet and start again
         rotation = parts
         k = -rotation // 90  # np.rot90 turns counter-clockwise
-        norm, ink = np.ascontiguousarray(np.rot90(norm, k)), np.ascontiguousarray(np.rot90(ink, k))
+        norm, ink, clean = (np.ascontiguousarray(np.rot90(a, k)) for a in (norm, ink, clean))
         marks = None if marks is None else np.ascontiguousarray(np.rot90(marks, k))
+        hand = None if hand is None else np.ascontiguousarray(np.rot90(hand, k))
         if rotation in (90, 270):
             size = (size[1], size[0])
-        parts = _vectorize(ink, norm, out * first, timer, False, first)
+        parts = _vectorize(ink, clean, out * first, timer, False, first)
     polygons, lines, arcs, circles, texts, (linework, text_mask, straight, frame) = parts
     scale = scale or detect_scale([t for t in texts if not t.uncertain])
     size, grow = (size[0] / first, size[1] / first), first / printed  # what is still to be brought to the drawn size
     drawn = Drawing(*size, circles=circles, texts=texts).scaled(grow)
-    drawing_type = drawing or objects.drawing_type(drawn.texts, drawn.circles, scale)
+    kinds = profiles.installed() if kinds is None else kinds
+    drawing_type = drawing or profiles.recognise(drawn.texts, drawn.circles, scale, kinds)
+    if features.vocabulary:
+        texts = _vocabulary(texts, [p for p in kinds if p.drawing == drawing_type])
     swings, lines, arcs = objects.doors(lines, arcs) if drawing_type == "building" else ([], lines, arcs)
     # below 3.5 px per mm lines fall apart into short pieces themselves: no crumbs are dropped
     polylines, lines, arcs = topology.join(lines, arcs, topology.CRUMB if src * first >= 3.5 else 0.0)
@@ -118,6 +134,10 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
         symbols.recognise(d, templates, symbols.ink_samples(linework, text_mask, out * printed, straight, frame))
         timer.lap("symbols")
     topology.connect(d)
+    if features.dedupe:
+        d.texts = _deduped(d.texts)
+    if features.pens:
+        objects.pens(d)
     _lettering(d)
     timer.lap("connect")
     d = d.scaled(printed)
@@ -126,10 +146,15 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
     if marks is not None:  # after the recognition of the print, which they would only disturb
         tags = [Text(s.x, s.y, TEXT, " ".join(t.text for t in s.attributes.values()))
                 for s in d.symbols if s.attributes]  # an instrument in a cloud is covered by it
-        strokes, fills, readings, d.markups = markup.extract(marks, colours, out, ocr.LANG, d.texts + tags)
+        strokes, fills, readings, d.markups = markup.extract(marks, colours, out, ocr.LANG, d.texts + tags,
+                                                             features.read_handwriting)
         d.polylines, d.polygons, d.texts = d.polylines + strokes, d.polygons + fills, d.texts + readings
         crops = [markup.crop(norm, marks, colours, out, m) for m in d.markups]
         timer.lap("markups")
+    if hand is not None and hand.any():
+        strokes, notes = freehand.marks(hand, norm, out, d.texts)
+        d.polylines, d.markups = d.polylines + strokes, d.markups + notes
+        crops += [markup.crop(norm, hand * markup.PEN, {markup.PEN: m.color}, out, m) for m in notes]
     info = {
         "paper": paper,
         "sheet": found.method if found else "image",
@@ -160,7 +185,7 @@ def convert_vectors(pdf: pdfium.PdfDocument, page: pdfium.PdfPage, scale: int | 
     image = np.asarray(page.render(scale=ppm * 25.4 / 72, grayscale=True).to_pil().convert("L"))  # for the review
     timer.lap("render")
     d.scale = scale or detect_scale(d.texts)
-    drawing_type = drawing or objects.drawing_type(d.texts, d.circles, d.scale)
+    drawing_type = drawing or profiles.recognise(d.texts, d.circles, d.scale, profiles.installed())
     timer.lap("objects")  # no classification: the entities stay as drawn, on their CAD layers
     paper = next((name for name, size in PAPER.items()
                   if max(abs(a - b) for a, b in zip(sorted(size), sorted((d.width, d.height)))) <= 2), None)
@@ -216,6 +241,31 @@ def _vectorize(ink: np.ndarray, norm: np.ndarray, ppm: float, timer: _Timer, che
     lines = vectorize.links(lines, arcs, round_ + circles + more, norm, ppm)
     timer.lap("vectorize")
     return polygons, lines, arcs, round_ + circles + more, texts, (linework, text_mask * (1 + words), hv, frame)
+
+
+def _deduped(texts: list[Text]) -> list[Text]:
+    """The texts without those read twice: the same characters (spaces and case aside) in the same direction, centred
+    within a character height of each other. The surer reading stays."""
+    def key(t: Text) -> str:
+        return "".join(t.text.split()).casefold()
+
+    kept: list[Text] = []
+    for t in sorted(texts, key=lambda t: (t.uncertain, -t.confidence)):
+        if not any(key(k) == key(t) and abs((k.angle - t.angle + 180) % 360 - 180) <= 10
+                   and math.hypot(k.x - t.x, k.y - t.y) <= max(k.height, t.height) for k in kept):
+            kept.append(t)
+    return [t for t in texts if any(t is k for k in kept)]
+
+
+def _vocabulary(texts: list[Text], kinds: list[profiles.Profile]) -> list[Text]:
+    """The texts read anew in the vocabulary of the profiles of the kind of drawing (Profile.read)."""
+    out = []
+    for t in texts:
+        s = t.text
+        for p in kinds:
+            s = p.read(s)
+        out.append(t if s == t.text else replace(t, text=s))
+    return out
 
 
 def _in_circles(texts: list[Text], labels: np.ndarray, readable: np.ndarray, ink: np.ndarray, circles: list[Circle],

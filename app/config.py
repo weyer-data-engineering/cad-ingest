@@ -30,7 +30,7 @@ def cgroup_memory_limit_bytes() -> int | None:
 @dataclass(frozen=True)
 class Settings:
     """Each field is overridden by the upper-case environment variable of the same name (REDIS_URL, API_TOKEN,
-    OCR_LANGUAGES, SYMBOL_LIBRARIES, DEFAULT_SYMBOL_LIBRARIES: strings, all others: integers)."""
+    OCR_LANGUAGES, SYMBOL_LIBRARIES, DEFAULT_SYMBOL_LIBRARIES, PROFILES: strings, all others: integers)."""
 
     redis_url: str = "redis://localhost:6379/0"
     api_token: str = ""  # empty: no authentication
@@ -52,11 +52,13 @@ class Settings:
     # Folders with symbol libraries added to the built-in ones (separated by ':'), read when a worker starts.
     symbol_libraries: str = "/libraries"
     # Installed libraries (comma-separated ids) used when a job names none; earlier ones win on equal block names.
-    default_symbol_libraries: str = "din-10628,floor-plan"
+    default_symbol_libraries: str = "din-10628,floor-plan,iec-60617"
     # Largest library a job may bring along (library_urls), per library.
     max_library_size_bytes: int = 52_428_800
     # Pages of a PDF or TIFF scan converted per job at most (each takes 5 to 60 seconds).
     max_scan_pages: int = 20
+    # Folders with profiles of kinds of drawing added to the built-in ones (separated by ':'): docs/profiles.md.
+    profiles: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":

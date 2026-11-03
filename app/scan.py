@@ -17,8 +17,9 @@ from . import review
 from .config import Settings
 from .drawing import _count_lines
 from .errors import ConversionError, JobError
-from .plan2cad import library, markup, pdfvector, symbols
+from .plan2cad import library, markup, pdfvector, profiles, symbols
 from .plan2cad.export import overlay, to_dxf, to_figure
+from .plan2cad.features import Features
 from .plan2cad.imageio import load_image, page_count
 from .plan2cad.model import Drawing
 from .plan2cad.pipeline import Result, convert, convert_vectors
@@ -108,7 +109,9 @@ def _page(data: bytes, page: int, options: dict, libraries: list[library.Library
     except ValueError as e:
         raise ConversionError(str(e)) from None
     r = convert(img, paper=options.get("paper", "A3"), scale=options.get("scale"), dpi=options.get("dpi") or dpi,
-                drawing=drawing, libraries=libraries)
+                drawing=drawing, libraries=libraries,
+                features=Features.of(options.get("on") or [], options.get("off") or []),
+                kinds=profiles.installed(Settings.from_env().profiles))
     return r if any(r.info["counts"][k] for k in ("lines", "arcs", "circles", "polylines")) else None
 
 
@@ -208,7 +211,7 @@ def _page_markdown(info: dict, d: Drawing, heading: str) -> list[str]:
             lines += ["", f"{heading} {title}", ""] + _count_lines(found)
     notes = [_markup_line(m) for m in d.markups]
     if notes:
-        lines += ["", f"{heading} Markups (added by hand in colour)", ""] + notes
+        lines += ["", f"{heading} Markups (added by hand)", ""] + notes
     layers = Counter(e.layer for e in d.lines + d.arcs + d.circles + d.polygons + d.polylines + d.texts if e.layer)
     if layers and d.exact:  # the CAD layers of a vector PDF, such as "Valves": what is drawn where
         lines += ["", f"{heading} Layers (elements on each)", ""] + _count_lines(Counter(dict(layers.most_common())))
@@ -216,13 +219,16 @@ def _page_markdown(info: dict, d: Drawing, heading: str) -> list[str]:
 
 
 def _markup_line(m) -> str:
-    what = (f"Note in {_colour_name(m.color)}" + (f": “{m.reading}” (handwriting, read automatically)" if m.reading else "")
-            if m.kind == "note" else f"Highlighted in {_colour_name(m.color)}")
+    read = f": “{m.reading}” (handwriting, read automatically)" if m.reading else " (handwriting, if any, not read)"
+    what = f"Note in {_colour_name(m.color)}{read}" if m.kind == "note" else f"Highlighted in {_colour_name(m.color)}"
     return f"- {what}" + (f"; covers: {', '.join(m.texts[:MAX_COVERED])}" if m.texts else "")
 
 
 def _colour_name(rgb) -> str:
-    hue = 2 * int(cv2.cvtColor(np.uint8([[rgb[::-1]]]), cv2.COLOR_BGR2HSV)[0, 0, 0])  # degrees
+    h, s, v = (int(c) for c in cv2.cvtColor(np.uint8([[rgb[::-1]]]), cv2.COLOR_BGR2HSV)[0, 0])
+    if s < 50:  # black ink or pencil
+        return "black" if v < 90 else "grey"
+    hue = 2 * h  # degrees
     return next(name for limit, name in ((15, "red"), (40, "orange"), (70, "yellow"), (160, "green"), (200, "cyan"),
                                          (260, "blue"), (300, "purple"), (340, "magenta"), (361, "red"))
                 if hue < limit)
@@ -239,9 +245,12 @@ def main() -> None:
     ap.add_argument("--paper", default="A3", choices=["A0", "A1", "A2", "A3", "A4"])
     ap.add_argument("--scale", type=int, help="e.g. 50 for 1:50; read from the title block if not given")
     ap.add_argument("--dpi", type=float, help="scan resolution, only needed without visible paper edges")
-    ap.add_argument("--drawing", default="auto", choices=["auto", "building", "pid"])
+    ap.add_argument("--drawing", default="auto", choices=["auto", "building", "pid", "electrical", "site"])
+    ap.add_argument("--on", default="", help="comma-separated steps to switch on (app/plan2cad/features.py)")
+    ap.add_argument("--off", default="", help="comma-separated steps to switch off")
     a = ap.parse_args()
-    options = {"paper": a.paper, "scale": a.scale, "dpi": a.dpi, "drawing": a.drawing}
+    options = {"paper": a.paper, "scale": a.scale, "dpi": a.dpi, "drawing": a.drawing,
+               "on": [f for f in a.on.split(",") if f], "off": [f for f in a.off.split(",") if f]}
     markdown, warnings = vectorize(a.source, os.path.basename(a.source), options, a.result, None)
     print(markdown + "".join(f"\nWarning: {w}" for w in warnings))
 
