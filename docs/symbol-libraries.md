@@ -40,7 +40,7 @@ file = "symbols.dxf"
 
 Every field is optional. Without one, `id` comes from the folder or file name, `name` is the id, `format` is 1,
 `drawing` is `["pid"]`, `size` is `printed` and `file` is `symbols.dxf`. Unknown fields are ignored, and
-`cad-ingest library check` points them out.
+`cad-ingest library check` points them out. The file may be at most 64 KB.
 
 **P&ID symbols and floor plan fixtures.** A library is used on the kind of drawing it is for: a P&ID gets the
 libraries with `"pid"`, a floor plan those with `"building"`. P&ID symbols are drawn at the size they have on the
@@ -148,16 +148,18 @@ Time per sheet: scan 9.5 s, photo 18.7 s, of which symbol recognition 2.9 s and 
 
 A library for floor plans is tested on floor plan sheets, a real-size library at 1:50 (`--scale 100` for 1:100).
 `--out folder` writes the review overlay of every sheet, with the symbols that were found in teal. `--no-self-test`
-only checks the format, which takes a second; the self-test takes about half a minute per sheet. The command exits
-with 1 if the library cannot be read.
+only checks the format, which takes a second. The self-test takes about half a minute per sheet for a small library,
+and longer the more symbols the library has, since every sheet is read with the whole library: minutes per sheet for
+a library of a few hundred symbols. The command exits with 1 if the library cannot be read.
 
 The output above is the starter library. It shows a known weakness: the orifice plate, two short bars across a pipe,
 is not found yet.
 
 **Through the job API.** A service that takes libraries from its users can check each one the same way before it
 uses it: the job operation `check_library` reads the library in a work-horse, under the limits of a job, and returns
-the library, its symbols and the notes as JSON, and the self-test only when the job asks for it (see [Job
-API](api.md#checking-a-library)). A library that cannot be read fails the job with the reason.
+the library, its symbols and the notes as JSON, and the self-test only when the job asks for it and as far as it gets
+within the job's time limit (see [Job API](api.md#checking-a-library)). The JSON is cut to size: texts to 300
+characters, at most 1000 symbols and 100 notes. A library that cannot be read fails the job with the reason.
 
 ## Using libraries
 

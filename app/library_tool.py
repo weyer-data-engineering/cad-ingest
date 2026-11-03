@@ -13,11 +13,13 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from contextlib import suppress
 from pathlib import Path
 
 import cv2
 import ezdxf
 from ezdxf import units, xref
+from rq.timeouts import JobTimeoutException
 
 from .config import Settings
 from .drawing import _load_dxf
@@ -36,6 +38,10 @@ SAMPLE = "B12"  # the text written at every attribute position in the self-test
 SCALE = 50  # drawing scale of the self-test sheets for real-size symbols, unless another is given (1:50)
 RUNS = (("scan", "200 dpi scan", lambda d, seed: simulate.scan(d, seed, dpi=200)),
         ("photo", "12 MP phone photo", lambda d, seed: simulate.photo(d, seed)))
+# The check of the job operation check_library goes into the job's document, and its texts come from the library,
+# which is hostile input: each text is cut to CHECK_TEXT characters, at most CHECK_SYMBOLS symbols and CHECK_NOTES
+# notes are listed, and a check larger than CHECK_BYTES as JSON even so is refused
+CHECK_TEXT, CHECK_SYMBOLS, CHECK_NOTES, CHECK_BYTES = 300, 1000, 100, 1_000_000
 
 
 def main(argv: list[str]) -> int:
@@ -100,9 +106,28 @@ def notes(lib: Library) -> list[str]:
 def check(lib: Library, test: bool = False, scale: int = SCALE,
           deadline: float | None = None) -> tuple[dict, list[str]]:
     """The check of the job operation check_library: the library as GET /libraries lists it, with its notes as
-    ``warnings`` and, if ``test``, the results of the self-test (else None); and warnings on the self-test."""
+    ``warnings`` and, if ``test``, the results of the self-test (else None); and warnings on what was left out. It is
+    cut to size (see CHECK_TEXT); LibraryError if it is still too large."""
     tested, warnings = self_test(lib, scale=scale, deadline=deadline) if test else (None, [])
-    return lib.summary() | {"warnings": notes(lib), "self_test": tested}, warnings
+    remarks = notes(lib)
+    warnings += [f"Only the first {limit} of {n} {what} are listed" for what, n, limit in
+                 (("symbols", len(lib.symbols), CHECK_SYMBOLS), ("notes", len(remarks), CHECK_NOTES)) if n > limit]
+    checked = _cut(lib.summary() | {"warnings": remarks[:CHECK_NOTES], "self_test": tested})
+    if (size := len(json.dumps(checked))) > CHECK_BYTES:
+        raise LibraryError(f"{lib.id}: the names and descriptions of its symbols are too long ({size} bytes as JSON, "
+                           f"at most {CHECK_BYTES})")
+    return checked, warnings
+
+
+def _cut(value):
+    """The JSON ``value`` with each text cut to CHECK_TEXT characters and each list to CHECK_SYMBOLS entries."""
+    if isinstance(value, str):
+        return value[:CHECK_TEXT]
+    if isinstance(value, list):
+        return [_cut(v) for v in value[:CHECK_SYMBOLS]]
+    if isinstance(value, dict):
+        return {_cut(k): _cut(v) for k, v in value.items()}
+    return value
 
 
 def advice(t: Template) -> list[str]:
@@ -128,8 +153,9 @@ def self_test(lib: Library, out: Path | None = None, scale: int = SCALE,
     """Draws every symbol in two poses on synthetic sheets with pipes at its ports and text at its attributes,
     simulates a scan and a phone photo of each sheet and recognises them with this library alone, on a drawing of
     the library's first type; real-size symbols at the drawing ``scale``. Sheets that would end after the
-    ``deadline`` (time.monotonic) are left out. Returns the results (see `_results`; None if the symbols do not fit
-    on a sheet) and warnings on what was skipped or left out."""
+    ``deadline`` (time.monotonic) are left out, and when the time limit of the job comes within a sheet, that sheet
+    and the rest. Returns the results (see `_results`; None if no sheet was read) and warnings on what was skipped or
+    left out."""
     drawing, scale = lib.drawing[0], scale if lib.size == "real" else None
     templates = list(library.combine([lib], drawing, scale).values())
     placements = [(t, angle, mirror) for t in templates for angle, mirror in POSES]
@@ -139,45 +165,57 @@ def self_test(lib: Library, out: Path | None = None, scale: int = SCALE,
     if not cols or not rows:
         return None, ["Self-test skipped: the largest symbol does not fit on an A3 sheet twice"]
     sheets = [placements[i:i + cols * rows] for i in range(0, len(placements), cols * rows)]
-    found: dict[str, dict[str, list]] = {t.name: {kind: [] for kind, _, _ in RUNS} for t in lib.symbols.values()}
-    extra, seconds, symbol_seconds = Counter(), Counter(), Counter()
-    started, done = time.monotonic(), 0
-    for n, batch in enumerate(sheets, 1):
-        if deadline and done and time.monotonic() + (time.monotonic() - started) / done > deadline:
-            break
-        d, drawn = _sheet(batch, cols, cell, [f"Library {lib.id}", f"Self-test sheet {n}", "cad-ingest library check"])
-        for kind, _, image in RUNS:
-            began = time.perf_counter()
-            r = convert(image(d, n), paper=SHEET, drawing=drawing, scale=scale, libraries=[lib])
-            seconds[kind] += time.perf_counter() - began
-            symbol_seconds[kind] += r.info["timings_s"].get("symbols", 0)
-            names = _match(drawn, r.drawing.symbols)
-            for s, name in zip(drawn, names):
-                found[s.name][kind].append(name)
-            extra[kind] += len(r.drawing.symbols) - sum(name is not None for name in names)
-            if out:
-                out.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(out / f"sheet-{n}-{kind}.png"), overlay(r.image, r.drawing, r.ppm))
-        done += 1
-    left = len(sheets) - done
-    return (_results(found, extra, seconds, symbol_seconds, done, scale),
+    read, started = [], time.monotonic()  # a sheet counts once all runs have read it, so a stop leaves no half sheet
+    with suppress(JobTimeoutException):  # every sheet is read with the whole library, so one can outlast the job
+        for n, batch in enumerate(sheets, 1):
+            if deadline and read and time.monotonic() + (time.monotonic() - started) / len(read) > deadline:
+                break
+            read.append(_read(lib, n, batch, cols, cell, drawing, scale, out))
+    left = len(sheets) - len(read)
+    return (_results(lib, read, scale) if read else None,
             [f"Self-test: {left} of {len(sheets)} sheets left out to stay within the time limit"] if left else [])
 
 
-def _results(found: dict[str, dict[str, list]], extra: Counter, seconds: Counter, symbol_seconds: Counter,
-             sheets: int, scale: int | None) -> dict:
-    """The self-test as data, per run (scan, photo) and per symbol. ``found``: for each symbol and run, the names of
-    the symbols found where it was drawn (None where none was); ``seconds`` and ``symbol_seconds`` per run, summed
-    over the ``sheets`` tested."""
+def _read(lib: Library, n: int, batch: list, cols: int, cell: float, drawing: str, scale: int | None,
+          out: Path | None) -> dict[str, dict]:
+    """Self-test sheet ``n`` with the symbols ``batch``, read in each run: per run its ``seconds``, those of the
+    symbol recognition, for each symbol drawn its name and the name of the symbol found in its place (``found``, None
+    where none was), and the number of symbols found where none was drawn (``extra``)."""
+    d, drawn = _sheet(batch, cols, cell, [f"Library {lib.id}", f"Self-test sheet {n}", "cad-ingest library check"])
+    runs = {}
+    for kind, _, image in RUNS:
+        began = time.perf_counter()
+        r = convert(image(d, n), paper=SHEET, drawing=drawing, scale=scale, libraries=[lib])
+        seconds = time.perf_counter() - began
+        names = _match(drawn, r.drawing.symbols)
+        runs[kind] = {"seconds": seconds, "symbol_seconds": r.info["timings_s"].get("symbols", 0),
+                      "found": [(s.name, name) for s, name in zip(drawn, names)],
+                      "extra": len(r.drawing.symbols) - sum(name is not None for name in names)}
+        if out:
+            out.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(out / f"sheet-{n}-{kind}.png"), overlay(r.image, r.drawing, r.ppm))
+    return runs
+
+
+def _results(lib: Library, read: list[dict[str, dict]], scale: int | None) -> dict:
+    """The self-test as data, per run (scan, photo) and per symbol, from the sheets ``read`` (see `_read`)."""
     kinds = [kind for kind, _, _ in RUNS]
+    found: dict[str, dict[str, list]] = {t.name: {kind: [] for kind in kinds} for t in lib.symbols.values()}
+    for sheet in read:
+        for kind in kinds:
+            for name, as_what in sheet[kind]["found"]:
+                found[name][kind].append(as_what)
     symbols = [{"name": name, "drawn": len(runs[kinds[0]]), "found": {kind: runs[kind].count(name) for kind in kinds},
                 "mistaken_for": dict(Counter(n for kind in kinds for n in runs[kind] if n not in (None, name))
                                      .most_common())} for name, runs in found.items()]
-    return {"sheets": sheets, "scale": scale, "drawn": sum(s["drawn"] for s in symbols),
+
+    def per_sheet(key: str) -> dict[str, float]:
+        return {kind: round(sum(sheet[kind][key] for sheet in read) / len(read), 1) for kind in kinds}
+
+    return {"sheets": len(read), "scale": scale, "drawn": sum(s["drawn"] for s in symbols),
             "found": {kind: sum(s["found"][kind] for s in symbols) for kind in kinds},
-            "extra": {kind: extra[kind] for kind in kinds},
-            "seconds_per_sheet": {kind: round(seconds[kind] / sheets, 1) for kind in kinds},
-            "symbol_seconds_per_sheet": {kind: round(symbol_seconds[kind] / sheets, 1) for kind in kinds},
+            "extra": {kind: sum(sheet[kind]["extra"] for sheet in read) for kind in kinds},
+            "seconds_per_sheet": per_sheet("seconds"), "symbol_seconds_per_sheet": per_sheet("symbol_seconds"),
             "symbols": symbols}
 
 

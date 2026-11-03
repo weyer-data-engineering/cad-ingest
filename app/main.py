@@ -74,8 +74,9 @@ class VectorizeOptions(BaseModel):
     # Steps of the recognition to switch on or off (app/plan2cad/features.py), such as "freehand" or "read_handwriting"
     on: list[FeatureName] | None = Field(default=None, max_length=20)
     off: list[FeatureName] | None = Field(default=None, max_length=20)
-    # check_library: also test how well the symbols are found on simulated scans and photos, about half a minute per
-    # sheet of up to 48 symbols; a library of real-size blocks at `scale` (default 50)
+    # check_library: also test how well the symbols are found on simulated scans and photos, a sheet of up to 48
+    # symbols at a time, each read with the whole library (half a minute for a small one, minutes for hundreds of
+    # symbols); a library of real-size blocks at `scale` (default 50)
     self_test: bool = False
 
     @model_validator(mode="after")

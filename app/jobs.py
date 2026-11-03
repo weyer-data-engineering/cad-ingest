@@ -177,7 +177,8 @@ def _libraries(urls: list[str], directory: str, settings: Settings) -> list[libr
 def _check_library(path: str, name: str, options: dict, deadline: float) -> dict:
     """Reads a symbol library like one of library_urls and describes it (operation check_library), with the self-test
     on simulated scans and photos if the options ask for it; the self-test leaves out the sheets it would not finish
-    before the ``deadline``. Whatever keeps the library from being used fails the job as invalid_library."""
+    before the ``deadline`` or within the job's time limit. Whatever keeps the library from being used fails the job
+    as invalid_library."""
     try:
         from . import library_tool  # in the work-horse only, like the format modules: it loads the recognition
 

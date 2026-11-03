@@ -32,7 +32,7 @@ JSON. If `API_TOKEN` is set, every `/jobs` call needs `Authorization: Bearer <to
 | `operations` | `extract`, `preview` and/or `vectorize`, at least one. `vectorize` is required for photos and scans and allowed only for them. Or `check_library` alone: the file is a symbol library to read and describe (see [Checking a library](#checking-a-library)) |
 | `preview_url` | presigned `PUT` target of the preview, required with `preview`. The converter sends `Content-Type` `application/pdf` (2D, photos and scans) or `model/gltf-binary` (3D) |
 | `result_url` | presigned `PUT` target of the ZIP of `vectorize` (`Content-Type` `application/zip`), required with `vectorize` |
-| `options` | optional, for `vectorize`: `paper` the drawing is printed on (`A0` ... `A4`, default `A3`), `scale` denominator (e.g. `50` for 1:50; read from the title block if not set), `dpi` of a scan without visible paper edges, `drawing`: `building` (floor plan, section), `pid` (P&ID), `electrical` (circuit diagram), `site` (site plan) or `auto` (default, recognised from the texts by the built-in [profiles](profiles.md)), `libraries`: ids of installed symbol libraries to recognise symbols from (see `GET /libraries`; at most 20, earlier ones win on equal block names; default: `DEFAULT_SYMBOL_LIBRARIES`); each is used on the kind of drawing it is for (`drawing`: P&IDs, floor plans), `pages`: the pages of a PDF or TIFF to convert, counted from 1 (default: all, at most `MAX_SCAN_PAGES`), `on` and `off`: steps of the recognition to switch on or off by name (see [Steps that can be switched](photos-and-scans.md#steps-that-can-be-switched); `400` for an unknown name). For `check_library`: `self_test` (default `false`) also tests the library on simulated scans and photos, which takes about half a minute per sheet of up to 48 symbols, and `scale` is then the drawing scale for a library of real-size blocks (default `50`) |
+| `options` | optional, for `vectorize`: `paper` the drawing is printed on (`A0` ... `A4`, default `A3`), `scale` denominator (e.g. `50` for 1:50; read from the title block if not set), `dpi` of a scan without visible paper edges, `drawing`: `building` (floor plan, section), `pid` (P&ID), `electrical` (circuit diagram), `site` (site plan) or `auto` (default, recognised from the texts by the built-in [profiles](profiles.md)), `libraries`: ids of installed symbol libraries to recognise symbols from (see `GET /libraries`; at most 20, earlier ones win on equal block names; default: `DEFAULT_SYMBOL_LIBRARIES`); each is used on the kind of drawing it is for (`drawing`: P&IDs, floor plans), `pages`: the pages of a PDF or TIFF to convert, counted from 1 (default: all, at most `MAX_SCAN_PAGES`), `on` and `off`: steps of the recognition to switch on or off by name (see [Steps that can be switched](photos-and-scans.md#steps-that-can-be-switched); `400` for an unknown name). For `check_library`: `self_test` (default `false`) also tests the library on simulated scans and photos, which takes from half a minute to the whole time limit of the job (see [Checking a library](#checking-a-library)), and `scale` is then the drawing scale for a library of real-size blocks (default `50`) |
 | `library_urls` | optional, only with `vectorize`: presigned `GET`s of symbol libraries the job brings along, a library ZIP or a DXF (at most 10, each up to `MAX_LIBRARY_SIZE_BYTES`). They come before the installed `libraries`; the default libraries are only used when the job names none at all. See [Symbol libraries](symbol-libraries.md) |
 | `callback_url` | optional, see Callback |
 | `priority` | `interactive` (default) or `bulk` |
@@ -74,7 +74,7 @@ for `RESULT_TTL_SECONDS`. `attempts` counts the runs (re-runs after infrastructu
 | `preview_upload_failed` | the `PUT` failed (same rule) | yes |
 | `result_upload_failed` | the `PUT` of the `vectorize` result failed (same rule) | yes |
 | `library_unavailable` | the download of a library in `library_urls`, or of the library to check (`check_library`), failed (same rule as `source_unavailable`) | yes |
-| `invalid_library` | a library in `library_urls` or the library to check is not a usable symbol library or larger than `MAX_LIBRARY_SIZE_BYTES`, or a library in `options.libraries` is not installed on the worker; the message says why | no |
+| `invalid_library` | a library in `library_urls` or the library to check is not a usable symbol library or larger than `MAX_LIBRARY_SIZE_BYTES` (or its check too large, see [Checking a library](#checking-a-library)), or a library in `options.libraries` is not installed on the worker; the message says why | no |
 | `internal` | the worker was lost on the last attempt | yes |
 
 `retryable` tells the client that submitting again (with fresh URLs) may help.
@@ -180,10 +180,11 @@ curl -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '
 
 The worker downloads the library (up to `MAX_LIBRARY_SIZE_BYTES`) and reads it in its work-horse, under the time and
 memory limits of a conversion, as it reads a library in `library_urls`; nothing in it is run, and the file is not
-kept. The job then
-has `library`: what `GET /libraries` lists for an installed library, the notes of `cad-ingest library check` on what
-was ignored and what may keep a symbol from being found (`warnings`), and the results of the self-test (`self_test`,
-`null` unless `options.self_test` asks for it):
+kept. The job then has `library`: what `GET /libraries` lists for an installed library, the notes of `cad-ingest
+library check` on what was ignored and what may keep a symbol from being found (`warnings`), and the results of the
+self-test (`self_test`). `self_test` is `null` unless `options.self_test` asks for it, and also when the self-test
+could not be done; the job's `warnings` then say why: `"Self-test skipped: the largest symbol does not fit on an A3
+sheet twice"`, or `"Self-test: 2 of 2 sheets left out to stay within the time limit"` (see below).
 
 ```json
 {"id": "...", "external_id": "library-7:3", "status": "succeeded", "attempts": 1, "operations": ["check_library"],
@@ -201,11 +202,22 @@ A bare DXF, or a ZIP with a `library.toml` at its top that has no `id`, is named
 `file_name`, in `library_urls` after the last part of the URL's path. Give it the same file name in both, so that it
 keeps its id.
 
-The self-test draws every symbol twice, as in the block and turned and mirrored, on A3 sheets, and reads a simulated
-200 dpi scan (`scan`) and a simulated 12 MP phone photo (`photo`) of each sheet with this library alone (see [Checking
-a library](symbol-libraries.md#checking-a-library)). It takes about half a minute per sheet of up to 48 symbols; a
-check without it takes a second or two. Sheets it would not finish within the time limit are left out, and the job's
-`warnings` say how many:
+A library is hostile input, and its check goes into the job, so it is cut to size: each text (the `name`, `version`
+and `licence`, the names and descriptions of the symbols and the notes) to 300 characters, `symbols` to the first
+1000 symbols and `warnings` to the first 100 notes. The job's `warnings` then say how many there were: `"Only the
+first 1000 of 1520 symbols are listed"`, `"Only the first 100 of 1520 notes are listed"`. A check that is still larger
+than 1 MB as JSON, which takes names or descriptions of hundreds of characters on most symbols, fails the job with
+`invalid_library`. A `library.toml` may be at most 64 KB.
+
+The self-test draws every symbol twice, as in the block and turned and mirrored, on A3 sheets of up to 48 symbols,
+and reads a simulated 200 dpi scan (`scan`) and a simulated 12 MP phone photo (`photo`) of each sheet with this
+library alone (see [Checking a library](symbol-libraries.md#checking-a-library)). Each sheet is read with the whole
+library, so a sheet takes longer the more symbols the library has: on an idle machine about half a minute for a
+small library such as the starter library, and minutes for a library of a few hundred symbols. A check without it
+takes a second or two. The self-test keeps to the time limit of the job (`CONVERSION_TIMEOUT_SECONDS`): it leaves out
+the sheets it would not finish, and when the time is up in the middle of a sheet, that sheet and the rest. The job
+still succeeds with the format check and the sheets read, and its `warnings` say how many were left out, as in
+`"Self-test: 9 of 12 sheets left out to stay within the time limit"`; so a large library is tested only in part.
 
 ```json
 "self_test": {"sheets": 1, "scale": null, "drawn": 4, "found": {"scan": 4, "photo": 3},
@@ -218,13 +230,13 @@ check without it takes a second or two. Sheets it would not finish within the ti
 
 | Field of `self_test` | |
 |---|---|
-| `sheets` | the A3 sheets drawn and read |
+| `sheets` | the A3 sheets drawn and read (not those left out) |
 | `scale` | the drawing scale of the sheets for a library of real-size blocks (`options.scale`, default 50), else `null` |
 | `drawn` | the symbols drawn on them |
 | `found` | how many of them were found as themselves, in the scan and in the photo |
 | `extra` | symbols found where none was drawn |
 | `seconds_per_sheet`, `symbol_seconds_per_sheet` | the seconds to read one sheet, and of those the seconds of the symbol recognition |
-| `symbols` | per symbol: how often it was `drawn` and `found`, and which symbols it was `mistaken_for` how often |
+| `symbols` | per symbol, for the symbols in `library.symbols`: how often it was `drawn` and `found` (0 for a symbol on a sheet left out), and which symbols it was `mistaken_for` how often |
 
 A library that cannot be used fails the job with `invalid_library` and the reason as the `message`, as a library in
 `library_urls` does; one that cannot be downloaded with `library_unavailable`:

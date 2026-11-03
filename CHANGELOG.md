@@ -11,8 +11,11 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   downloads it (up to `MAX_LIBRARY_SIZE_BYTES`) and reads it in its work-horse, as a library in `library_urls`, and
   the job's new field `library` holds what `GET /libraries` lists for an installed library, the notes of `cad-ingest
   library check` as `warnings` and, with the new option `self_test`, the results of the self-test on simulated scans
-  and photos, which leaves out the sheets it would not finish in time. A library that cannot be used fails the job
-  with `invalid_library` and the reason. Such a job has no `kind`, and `POST /jobs/status` leaves out `library` as it
+  and photos. The self-test leaves out the sheets it would not finish in time, and when the job's time limit comes
+  within a sheet, that sheet and the rest, so the job still succeeds. The library is hostile input, so its texts are
+  cut to 300 characters, at most 1000 symbols and 100 notes are listed (the job's `warnings` say how many there
+  were), and a check still larger than 1 MB as JSON fails. A library that cannot be used fails the job with
+  `invalid_library` and the reason. Such a job has no `kind`, and `POST /jobs/status` leaves out `library` as it
   leaves out `markdown` (`docs/api.md#checking-a-library`).
 - Marks by hand in black or pencil (notes, revision clouds, freehand hatching) are kept apart from the drawing, on
   `P2C-MARKUP` and in `markups`, before lines and texts are read: told apart by their shape (neither straight nor
@@ -123,6 +126,8 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 
 ### Changed
 
+- A `library.toml` may be at most 64 KB, since its texts end up in job results; a few hundred bytes are usual. A
+  drawing type it names twice counts once.
 - Handwriting in colour markups is no longer read by default: Tesseract made up most of what it read. `reading` is
   `null`; the step `read_handwriting` reads it as before. The markdown section is now `Markups (added by hand)`.
 - A pen stroke in colour no longer leaves a faint grey line in the drawing: the grey image lifts it and its fringe to
