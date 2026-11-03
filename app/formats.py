@@ -9,6 +9,8 @@ PREVIEW = {DRAWING_2D: ("pdf", "application/pdf"), MODEL_3D: ("glb", "model/gltf
            SCAN_2D: ("pdf", "application/pdf")}
 # What "vectorize" uploads to result_url: a ZIP with the DXF, a PDF, the review overlay and a report.
 RESULT_CONTENT_TYPE = "application/zip"
+# What "check_library" reads: a symbol library as a ZIP or as a bare DXF (see plan2cad/library.py).
+LIBRARY_FILES = ("zip", "dxf")
 
 _TABLE = {
     DRAWING_2D: {"drawing": "dxf dwg plt hpgl hpg hp2"},

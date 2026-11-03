@@ -1,5 +1,6 @@
-"""The functions RQ runs in a work-horse: `run_job` (download, convert, upload the preview and result, store it) and
-`send_callback`. They are queued by name (see store.enqueue), so the API process never imports the heavy parsers.
+"""The functions RQ runs in a work-horse: `run_job` (download, convert, upload the preview and result, store it; or
+check a symbol library) and `send_callback`. They are queued by name (see store.enqueue), so the API process never
+imports the heavy parsers.
 
 Failures that are the file's fault end the job at once. Transient ones (source, symbol library, preview or result
 target unreachable) raise, which makes RQ run the job again with backoff until MAX_ATTEMPTS. Never log a full URL, it
@@ -20,7 +21,7 @@ from rq.timeouts import JobTimeoutException
 from . import store
 from .config import Settings
 from .errors import ConversionError, JobError
-from .formats import FORMATS, PREVIEW, RESULT_CONTENT_TYPE
+from .formats import FORMATS, LIBRARY_FILES, PREVIEW, RESULT_CONTENT_TYPE
 from .plan2cad import library
 
 log = logging.getLogger(__name__)
@@ -96,16 +97,19 @@ def run_job(job_id: str) -> None:
 def _process(doc: dict, settings: Settings) -> dict:
     deadline = time.monotonic() + PAGES_UNTIL * settings.conversion_timeout_seconds
     ext = PurePosixPath(doc["file_name"]).suffix.lstrip(".").lower()
-    if ext not in FORMATS:
+    check = doc["operations"] == ["check_library"]
+    if ext not in (LIBRARY_FILES if check else FORMATS):
         raise JobError("unsupported", f"Unsupported file extension '{ext}'")
-    suffix, content_type = PREVIEW[FORMATS[ext][0]]
     directory = workdir(doc["id"])
     shutil.rmtree(directory, ignore_errors=True)  # left over from an attempt that was killed
     os.makedirs(directory)
     try:
         _check_disk(0, settings)
         path = os.path.join(directory, "input." + ext)
-        _download(doc["source_url"], path, settings)
+        _download(doc["source_url"], path, settings, symbol_library=check)
+        if check:
+            return _check_library(path, doc["file_name"], doc.get("options") or {}, deadline)
+        suffix, content_type = PREVIEW[FORMATS[ext][0]]
         preview = os.path.join(directory, "preview." + suffix)
         vectorized = os.path.join(directory, "result.zip")
         libraries = _libraries(doc.get("library_urls") or [], directory, settings)  # only with vectorize
@@ -168,6 +172,31 @@ def _libraries(urls: list[str], directory: str, settings: Settings) -> list[libr
         except library.LibraryError as e:
             raise JobError("invalid_library", f"Symbol library {n} of library_urls: {e}") from None
     return out
+
+
+def _check_library(path: str, name: str, options: dict, deadline: float) -> dict:
+    """Reads a symbol library like one of library_urls and describes it (operation check_library), with the self-test
+    on simulated scans and photos if the options ask for it; the self-test leaves out the sheets it would not finish
+    before the ``deadline`` or within the job's time limit. Whatever keeps the library from being used fails the job
+    as invalid_library."""
+    try:
+        from . import library_tool  # in the work-horse only, like the format modules: it loads the recognition
+
+        with open(path, "rb") as f:
+            lib = library.from_bytes(f.read(), name)
+        checked, warnings = library_tool.check(lib, options.get("self_test", False),
+                                               options.get("scale") or library_tool.SCALE, deadline)
+    except JobTimeoutException:
+        raise
+    except library.LibraryError as e:
+        raise JobError("invalid_library", str(e)) from None
+    except MemoryError:
+        raise JobError("out_of_memory", "The library needs more memory than allowed") from None
+    except Exception as e:  # ezdxf and the recognition raise arbitrary exception types for broken input
+        log.exception("Library check failed")
+        raise JobError("invalid_library", f"The library could not be used: {type(e).__name__}: {str(e)[:300]}") \
+            from None
+    return {"library": checked, "warnings": warnings}
 
 
 def _convert(operations: list[str], ext: str, path: str, directory: str, name: str, preview: str,

@@ -166,8 +166,8 @@ attributes, and toilets, washbasins, bathtubs and other fixtures on floor plans.
 Your own symbols plug in as a library: a folder with your CAD blocks and a short `library.toml`. The DXF then holds
 your original blocks, with your layers and attribute names. Install libraries on the server, or let each job bring
 its own (one per tenant, say). `cad-ingest library build` collects existing DWG or DXF blocks into a library, and
-`cad-ingest library check` tests it on simulated scans and photos. [Symbol libraries](docs/symbol-libraries.md)
-explains the format.
+`cad-ingest library check` tests it on simulated scans and photos; a platform has a tenant's library checked the same
+way through the job API before it uses it. [Symbol libraries](docs/symbol-libraries.md) explains the format.
 
 A PDF exported from CAD needs no recognition: its pages are read as vectors, so the DXF has the exact lines, arcs,
 texts, colours and pen widths, on the CAD layers of the PDF.

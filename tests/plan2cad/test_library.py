@@ -98,6 +98,7 @@ def test_installed_libraries_come_from_folders_and_must_have_distinct_ids(tmp_pa
     ('file = "../symbols.dxf"', "'file' must be a DXF file inside the library"),
     ("version = 2.1", "'version' must be a string"),
     ("id = ", "library.toml: "),  # not TOML
+    (f'name = "{"N" * 70_000}"', "library.toml is larger than 64 KB"),  # its texts would go into job results
 ])
 def test_a_wrong_manifest_is_rejected_with_the_reason(tmp_path, manifest, reason):
     folder = write_library(tmp_path / "acme")
@@ -105,6 +106,12 @@ def test_a_wrong_manifest_is_rejected_with_the_reason(tmp_path, manifest, reason
     with pytest.raises(LibraryError, match=reason) as e:
         library.read(folder)
     assert str(e.value).startswith("acme: ")
+
+
+def test_a_drawing_type_named_twice_counts_once(tmp_path):
+    folder = write_library(tmp_path / "acme")
+    (folder / "library.toml").write_text('drawing = ["building", "pid", "building"]')
+    assert library.read(folder).drawing == ["building", "pid"]
 
 
 def test_unusable_files_are_rejected_with_the_reason(tmp_path, monkeypatch):

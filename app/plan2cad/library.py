@@ -43,6 +43,7 @@ OUTLINE = {"LINE", "ARC", "CIRCLE", "LWPOLYLINE", "POLYLINE", "SPLINE", "ELLIPSE
 FLATTEN = 0.05  # mm: splines and ellipses become straight pieces this close to the curve
 NESTING = 8  # levels of blocks inside blocks that are followed
 MAX_BYTES = 50 * 2**20  # largest DXF taken from a ZIP (after decompression)
+MAX_MANIFEST_BYTES = 64 * 2**10  # largest library.toml (a few hundred bytes are usual): its texts end up in results
 
 
 class LibraryError(ValueError):
@@ -112,7 +113,7 @@ def read(path: Path | str) -> Library:
 def from_bytes(data: bytes, name: str) -> Library:
     """A library from the bytes of a ZIP or a DXF (a download); ``name`` is its file name, for the id and messages."""
     try:
-        if data.startswith(b"PK\x03\x04"):
+        if data.startswith(b"PK\x03\x04") or Path(name).suffix.lower() == ".zip":  # a broken .zip is told so
             return _library(*_unzip(data, name))
         if Path(name).suffix.lower() not in ("", ".dxf"):
             raise LibraryError("a library is a folder, a ZIP or a DXF file (convert others with "
@@ -210,6 +211,8 @@ def slug(name: str) -> str:
 
 def _manifest(raw: bytes | None, default_id: str) -> dict:
     """The fields of library.toml (``raw``, None for a bare DXF) with their defaults, checked."""
+    if raw is not None and len(raw) > MAX_MANIFEST_BYTES:
+        raise LibraryError(f"{MANIFEST} is larger than {MAX_MANIFEST_BYTES // 2**10} KB")
     try:
         m = tomllib.loads(raw.decode("utf-8")) if raw is not None else {}
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
@@ -234,6 +237,7 @@ def _manifest(raw: bytes | None, default_id: str) -> dict:
     if not out["drawing"] or not all(d in DRAWINGS for d in out["drawing"]):
         raise LibraryError(f"{MANIFEST}: 'drawing' must list drawing types out of {', '.join(DRAWINGS)} "
                            "(P&IDs and floor plans)")
+    out["drawing"] = list(dict.fromkeys(out["drawing"]))  # each type once, in the order given
     if out["size"] not in SIZES:
         raise LibraryError(f"{MANIFEST}: 'size' must be one of {', '.join(SIZES)}: '{out['size']}'")
     file = PurePosixPath(out["file"])
