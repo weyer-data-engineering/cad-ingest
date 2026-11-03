@@ -10,8 +10,9 @@ kind of drawing:
 - Pencil is lighter than print: the darkest part of its stroke stays grey (LIGHT); a light stroke needs less of the
   rest.
 
-Only strokes larger than a few characters are judged (SIZE), and not those in a row of characters of their height:
-printed characters bend all along too and are left to the text recognition. Neither are strokes that run across much
+Only strokes larger than a few characters are judged (SIZE), not those in a row of characters of their height and not
+those no taller across than a line of print (LINE), the words of a blurred photo whose letters ran together: printed
+characters bend all along too and are left to the text recognition. Neither are strokes that run across much
 of the sheet (FAR): they are the drawing's own network, and a mark drawn into it stays in it. The marks found are kept
 apart from the drawing on their own layer, as they are, not deleted."""
 
@@ -24,7 +25,10 @@ import numpy as np
 
 from .model import Color, Markup, Polyline, Text
 
-SIZE = 3.0  # characters: a stroke at least this many characters long or wide is judged (a short word)
+SIZE = 3.0  # characters: a stroke at least this long or wide is judged (a short word)
+MARK = 6.0  # mm: and at least this, as specks of dirt on a poor scan can make the print look smaller than it is
+LINE = 1.3  # characters: a stroke no wider across than this is a line of print whose letters ran together (blur)
+ACROSS = 3.0  # mm: or no wider than this
 FAR = 0.5  # share of the sheet's longer side: a stroke larger than this is the drawing's network, not judged
 STEP = 0.25  # mm between the samples along a stroke
 CORNER = math.radians(12)  # a turn of at least this within CORNER_SPAN, three times as sharp as on either side of
@@ -49,8 +53,9 @@ def find(ink: np.ndarray, gray: np.ndarray, ppm: float, letter: float) -> np.nda
     pixels high; ``gray`` the normalised image (paper 255)."""
     out = np.zeros_like(ink)
     n, lab, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
-    side = np.maximum(stats[1:, 2], stats[1:, 3])
-    big = np.flatnonzero((side >= SIZE * letter) & (side <= FAR * max(ink.shape))) + 1
+    side, across = np.maximum(stats[1:, 2], stats[1:, 3]), np.minimum(stats[1:, 2], stats[1:, 3])
+    long = (side >= max(SIZE * letter, MARK * ppm)) & (side <= FAR * max(ink.shape))
+    big = np.flatnonzero(long & (across > max(LINE * letter, ACROSS * ppm))) + 1
     if not len(big):
         return out
     darkest = _print_level(gray, ink)
@@ -131,14 +136,16 @@ def _drawn_by_hand(mask: np.ndarray, gray: np.ndarray, ppm: float, darkest: floa
     if total < 2 * PIECE:
         return False
     hand, loose, straight = kinds["hand"] / total, (kinds["hand"] + kinds["short"]) / total, kinds["line"] / total
+    bent = (kinds["hand"] + kinds["arc"]) / total
     if hand >= HAND:
         return True
     if max(mask.shape) > WIDE * ppm and straight > NETWORK:  # a mark drawn into linework: a part of it, not all
         return False
-    if loose >= SHORT and straight <= STRAIGHT and (kinds["hand"] + kinds["arc"]) / total >= BENT or _cloud(arcs):
+    if loose >= SHORT and straight <= STRAIGHT and bent >= BENT or _cloud(arcs):
         return True
+    # pencil; a thin printed line blurred in a poor scan is light too, but it is straight
     core = float(np.percentile(gray[mask > 0], 10))
-    return core > darkest + LIGHT * (255 - darkest) and loose >= SHORT / 2  # pencil
+    return core > darkest + LIGHT * (255 - darkest) and loose >= SHORT / 2 and bent >= BENT
 
 
 def _pieces(path: np.ndarray, ppm: float, tol: float, kinds: dict[str, float]) -> list[tuple[float, int]]:
