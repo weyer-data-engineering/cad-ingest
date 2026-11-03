@@ -18,7 +18,7 @@ from rq.job import Job
 
 from . import store
 from .config import RETRY_AFTER_SECONDS, VERSION, Settings
-from .formats import FORMATS, SCAN_2D, formats_by_kind
+from .formats import FORMATS, LIBRARY_FILES, SCAN_2D, formats_by_kind
 from .plan2cad.features import Features
 
 logging.basicConfig(level=logging.INFO)
@@ -58,7 +58,8 @@ FeatureName = Annotated[str, Field(pattern=r"^[a-z_]{1,64}$")]  # as plan2cad.fe
 
 
 class VectorizeOptions(BaseModel):
-    """How a photo or scan is read (operation "vectorize")."""
+    """How a photo or scan is read (operation "vectorize"), and whether a library check also tests the library
+    (operation "check_library"). The name stays, as clients may have generated code from the OpenAPI schema."""
 
     paper: Literal["A0", "A1", "A2", "A3", "A4"] = "A3"  # the paper the drawing is printed on
     scale: int | None = Field(default=None, ge=1, le=10_000)  # e.g. 50 for 1:50; read from the title block if not set
@@ -73,6 +74,9 @@ class VectorizeOptions(BaseModel):
     # Steps of the recognition to switch on or off (app/plan2cad/features.py), such as "freehand" or "read_handwriting"
     on: list[FeatureName] | None = Field(default=None, max_length=20)
     off: list[FeatureName] | None = Field(default=None, max_length=20)
+    # check_library: also test how well the symbols are found on simulated scans and photos, about half a minute per
+    # sheet of up to 48 symbols; a library of real-size blocks at `scale` (default 50)
+    self_test: bool = False
 
     @model_validator(mode="after")
     def _known_features(self) -> "VectorizeOptions":
@@ -96,7 +100,8 @@ class JobRequest(BaseModel):
     external_id: str = Field(min_length=1, max_length=255)
     file_name: str = Field(min_length=1, max_length=512)
     source_url: str = Field(pattern=r"^https?://")
-    operations: list[Literal["extract", "preview", "vectorize"]] = Field(min_length=1)
+    # check_library: the file is a symbol library to read and describe, not a drawing; it stands alone
+    operations: list[Literal["extract", "preview", "vectorize", "check_library"]] = Field(min_length=1)
     preview_url: str | None = Field(default=None, pattern=r"^https?://")
     result_url: str | None = Field(default=None, pattern=r"^https?://")
     options: VectorizeOptions | None = None
@@ -110,6 +115,8 @@ class JobRequest(BaseModel):
 
     @model_validator(mode="after")
     def _uploads_need_a_target(self) -> "JobRequest":
+        if "check_library" in self.operations and set(self.operations) != {"check_library"}:
+            raise ValueError("the operation 'check_library' cannot be combined with other operations")
         if "preview" in self.operations and not self.preview_url:
             raise ValueError("preview_url is required for the operation 'preview'")
         if "vectorize" in self.operations and not self.result_url:
@@ -126,17 +133,12 @@ def submit(body: JobRequest, response: Response) -> dict:
     """Queues a job. A non-terminal job with the same external_id is returned instead (200)."""
     name = os.path.basename(body.file_name.replace("\\", "/"))
     ext = PurePosixPath(name).suffix.lstrip(".").lower()
-    if ext not in FORMATS:
-        raise HTTPException(415, f"Unsupported file extension '{ext}'")
-    scan = FORMATS[ext][0] == SCAN_2D
-    if scan != ("vectorize" in body.operations):  # a photo is only read when asked for: it takes a while
-        raise HTTPException(415, f"'{ext}' files need the operation 'vectorize'" if scan
-                            else f"The operation 'vectorize' is for photos and scans, not for '{ext}' files")
+    kind = _kind(ext, body.operations)
     _check_libraries(body.options.libraries if body.options else None)
     if sum(store.queued_count().values()) >= Settings.from_env().max_queued_jobs:
         raise _busy("Too many jobs are queued, please retry later")
     doc, created = store.create({
-        "external_id": body.external_id, "file_name": name, "kind": FORMATS[ext][0], "format": ext,
+        "external_id": body.external_id, "file_name": name, "kind": kind, "format": ext,
         "operations": sorted(set(body.operations)), "source_url": body.source_url, "preview_url": body.preview_url,
         "result_url": body.result_url, "options": body.options.model_dump() if body.options else None,
         "library_urls": body.library_urls, "callback_url": body.callback_url, "priority": body.priority,
@@ -150,6 +152,21 @@ def submit(body: JobRequest, response: Response) -> dict:
         store.delete(doc["id"])  # no half-queued job that would answer this external_id forever
         raise
     return {"id": doc["id"], "status": "queued"}
+
+
+def _kind(ext: str, operations: list[str]) -> str | None:
+    """The kind of the file (None for a symbol library to check); 415 for a file that the operations are not for."""
+    if "check_library" in operations:
+        if ext not in LIBRARY_FILES:
+            raise HTTPException(415, f"The operation 'check_library' reads a ZIP or a DXF file, not '{ext}'")
+        return None
+    if ext not in FORMATS:
+        raise HTTPException(415, f"Unsupported file extension '{ext}'")
+    scan = FORMATS[ext][0] == SCAN_2D
+    if scan != ("vectorize" in operations):  # a photo is only read when asked for: it takes a while
+        raise HTTPException(415, f"'{ext}' files need the operation 'vectorize'" if scan
+                            else f"The operation 'vectorize' is for photos and scans, not for '{ext}' files")
+    return FORMATS[ext][0]
 
 
 def _check_libraries(ids: list[str] | None) -> None:
@@ -167,9 +184,11 @@ class StatusRequest(BaseModel):
 
 @jobs.post("/status")
 def job_status(body: StatusRequest) -> dict:
-    """Status of many jobs in one request (for reconciliation): like GET /jobs/<id> but without the markdown."""
+    """Status of many jobs in one request (for reconciliation): like GET /jobs/<id> but without the markdown and the
+    checked library, which can be large; GET returns them for the jobs that succeeded."""
     docs = store.get_many(body.ids)
-    return {"jobs": [{k: v for k, v in store.view(doc).items() if k != "markdown"} for doc in docs if doc],
+    return {"jobs": [{k: v for k, v in store.view(doc).items() if k not in ("markdown", "library")}
+                     for doc in docs if doc],
             "missing": [i for i, doc in zip(body.ids, docs) if not doc]}
 
 

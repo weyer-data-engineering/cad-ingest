@@ -154,6 +154,11 @@ with 1 if the library cannot be read.
 The output above is the starter library. It shows a known weakness: the orifice plate, two short bars across a pipe,
 is not found yet.
 
+**Through the job API.** A service that takes libraries from its users can check each one the same way before it
+uses it: the job operation `check_library` reads the library in a work-horse, under the limits of a job, and returns
+the library, its symbols and the notes as JSON, and the self-test only when the job asks for it (see [Job
+API](api.md#checking-a-library)). A library that cannot be read fails the job with the reason.
+
 ## Using libraries
 
 **Command line.** `--library` names a library, either an installed one by id or a folder, ZIP or DXF. Repeat it for
@@ -173,7 +178,8 @@ libraries a job gets when it names none. A job chooses others with `"options": {
 more libraries (a ZIP or a DXF) with the job, for example a library that each tenant of a platform keeps in its own
 storage. They come first, then the installed ones the job names. The default libraries are only used when the job
 names no library at all, so add `"libraries": ["din-10628", "floor-plan"]` to keep the starter symbols. A library a
-job brings along is read in its work-horse under the same limits as the file, and never stored.
+job brings along is read in its work-horse under the same limits as the file, and never stored. Check a new library
+once with `check_library` (see above) before jobs bring it along: a broken one fails every job that brings it.
 
 The `report.json` of every result lists the libraries that were used for the kind of drawing, with their versions,
 and for every symbol the library it came from.

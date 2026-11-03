@@ -1,6 +1,8 @@
-"""Photos and scans through the job API: the operation "vectorize" with a real Redis and worker (see tests/conftest.py)."""
+"""Photos and scans through the job API: the operation "vectorize" with a real Redis and worker (see tests/conftest.py),
+and the symbol libraries a job brings along or has checked ("check_library")."""
 import io
 import json
+import time
 import zipfile
 
 import cv2
@@ -10,12 +12,12 @@ import pypdfium2
 import pytest
 from PIL import Image
 
-from app import jobs, scan
+from app import jobs, library_tool, scan
 from app.config import Settings
 from app.errors import ConversionError, JobError
 from app.plan2cad import library
 
-from ..conftest import submit, wait_for_status
+from ..conftest import submit, until, wait_for_status
 from .conftest import valve_scan, write_library, zipped
 
 
@@ -177,3 +179,104 @@ def test_a_library_the_worker_does_not_have_fails_the_job(tmp_path):
         jobs._convert(["vectorize"], "png", str(path), str(tmp_path), "plan.png", str(tmp_path / "preview.pdf"),
                       Settings(), {"libraries": ["nope"]}, str(tmp_path / "result.zip"))
     assert e.value.code == "invalid_library" and "'nope' is not installed" in e.value.message
+
+
+def _bare_library() -> bytes:
+    """A library as a bare DXF: a valve inserted at one of its ports, which `cad-ingest library check` notes."""
+    doc = ezdxf.new("R2018", units=ezdxf.units.MM)
+    doc.layers.add("PORT")
+    valve = doc.blocks.new("VALVE_AT_PORT", dxfattribs={"description": "Gate valve, inserted at a port"})
+    valve.add_lwpolyline([(0, -1.6), (0, 1.6), (5, -1.6), (5, 1.6)], close=True)
+    for x in (0, 5):
+        valve.add_point((x, 0), dxfattribs={"layer": "PORT"})
+    out = io.StringIO()
+    doc.write(out)
+    return out.getvalue().encode()
+
+
+def test_a_library_is_checked_before_it_is_used(api, origin, worker, tmp_path):
+    worker()
+    origin.files["acme.zip"] = zipped(write_library(tmp_path / "acme"), "acme/")
+    origin.files["valves.dxf"] = _bare_library()
+    checked = {}
+    for name in ("acme.zip", "valves.dxf"):
+        response = submit(api, origin, name, operations=["check_library"], preview_url=None)
+        assert response.status_code == 202
+        checked[name] = job = wait_for_status(api, response.json()["id"], "succeeded", "failed")
+        assert (job["status"], job["operations"], job["format"], job["warnings"]) == \
+            ("succeeded", ["check_library"], name[-3:], []), job
+        assert "kind" not in job and "markdown" not in job  # a library is no drawing
+        until(lambda: origin.callbacks_of(name), 10)
+        assert origin.callbacks_of(name) == [(job, 200)]  # the callback carries what GET returns
+
+    assert checked["acme.zip"]["library"] == {
+        "id": "acme-pid", "name": "ACME symbols", "version": "2.1.0", "licence": "LicenseRef-ACME-internal",
+        "drawing": ["pid"], "size": "printed", "symbols": [{"name": "MY_VALVE", "description": "Box valve"}],
+        "warnings": [], "self_test": None}
+    bare = checked["valves.dxf"]["library"]  # no library.toml: named after the file
+    assert (bare["id"], bare["version"], bare["symbols"]) == \
+        ("valves", None, [{"name": "VALVE_AT_PORT", "description": "Gate valve, inserted at a port"}])
+    assert bare["warnings"] == ["VALVE_AT_PORT: the insertion point lies on a port; put it in the middle of the "
+                                "symbol, because a port is recognised by its direction from there"]
+    status = api.post("/jobs/status", json={"ids": [checked["acme.zip"]["id"]]}).json()["jobs"]
+    assert status[0]["status"] == "succeeded" and "library" not in status[0]  # like the markdown: GET has it
+
+
+def test_an_unusable_library_fails_its_check(api, origin, worker, tmp_path):
+    worker(MAX_LIBRARY_SIZE_BYTES=2000)
+    origin.files.update({"broken.dxf": b"not a drawing", "broken.zip": b"not a zip either",
+                         "large.zip": zipped(write_library(tmp_path / "acme"), "acme/")})
+    origin.source_status["gone.zip"].append(404)
+    for name, code, message in [
+            ("broken.dxf", "invalid_library", "broken.dxf: not a readable DXF file (DXFStructureError)"),
+            ("broken.zip", "invalid_library", "broken.zip: not a readable ZIP file"),
+            ("large.zip", "invalid_library", "A symbol library is larger than 2000 bytes"),
+            ("gone.zip", "library_unavailable", "The symbol library download answered HTTP 404 (127.0.0.1)")]:
+        response = submit(api, origin, name, operations=["check_library"], preview_url=None)
+        job = wait_for_status(api, response.json()["id"], "succeeded", "failed")
+        assert (job["status"], job["error"]["code"], job["error"]["message"], job["attempts"]) == \
+            ("failed", code, message, 1), job
+        assert job["error"]["retryable"] == (code == "library_unavailable") and "library" not in job
+
+
+def test_a_dxf_without_symbols_is_no_library(tmp_path):
+    doc = ezdxf.new("R2018")
+    doc.modelspace().add_line((0, 0), (10, 0))  # a drawing, but no block
+    doc.saveas(tmp_path / "drawing.dxf")
+    with pytest.raises(JobError) as e:
+        jobs._check_library(str(tmp_path / "drawing.dxf"), "drawing.dxf", {}, time.monotonic() + 60)
+    assert (e.value.code, e.value.message) == \
+        ("invalid_library", "drawing.dxf: no block with lines, arcs, circles or polylines")
+
+
+def test_check_library_stands_alone(api, origin):
+    check = {"operations": ["check_library"], "preview_url": None}
+    assert submit(api, origin, "acme.zip", **check).status_code == 202
+    assert submit(api, origin, "acme.dxf", **check, options={"self_test": True}).status_code == 202
+    combined = submit(api, origin, "acme.zip", operations=["check_library", "extract"], preview_url=None)
+    assert combined.status_code == 400 and "'check_library' cannot be combined" in combined.json()["detail"]
+    assert submit(api, origin, "acme.zip", operations=["check_library", "vectorize"],
+                  result_url=origin.url("/preview/r")).status_code == 400
+    assert submit(api, origin, "acme.zip", **check, library_urls=[origin.url("/src/other.zip")]).status_code == 400
+    assert submit(api, origin, "acme.toml", **check).status_code == 415  # a ZIP or a DXF
+    assert submit(api, origin, "plan.png", **check).status_code == 415
+    assert submit(api, origin, "acme.zip", operations=["extract"], preview_url=None).status_code == 415
+
+
+def test_the_check_tests_the_library_if_asked_and_stops_in_time(tmp_path, monkeypatch):
+    """The self-test as data; sheets it would not finish before the deadline are left out."""
+    monkeypatch.setattr(library_tool, "RUNS", library_tool.RUNS[:1])  # the scan only, to keep the test short
+    folder = write_library(tmp_path / "acme")
+    doc = ezdxf.readfile(folder / "symbols.dxf")  # a tank too large for more than two cells on a sheet
+    doc.blocks.new("TANK").add_lwpolyline([(-80, -50), (80, -50), (80, 50), (-80, 50)], close=True)
+    doc.saveas(folder / "symbols.dxf")
+    (tmp_path / "acme.zip").write_bytes(zipped(folder, "acme/"))
+
+    result = jobs._check_library(str(tmp_path / "acme.zip"), "acme.zip", {"self_test": True}, 1.0)  # long past
+    tested = result["library"]["self_test"]
+    assert result["warnings"] == ["Self-test: 1 of 2 sheets left out to stay within the time limit"]
+    assert (tested["sheets"], tested["scale"], tested["drawn"], tested["found"], tested["extra"]) == \
+        (1, None, 2, {"scan": 2}, {"scan": 0})
+    assert tested["seconds_per_sheet"]["scan"] > 0
+    assert tested["symbols"] == [{"name": "MY_VALVE", "drawn": 2, "found": {"scan": 2}, "mistaken_for": {}},
+                                 {"name": "TANK", "drawn": 0, "found": {"scan": 0}, "mistaken_for": {}}]

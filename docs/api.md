@@ -27,19 +27,21 @@ JSON. If `API_TOKEN` is set, every `/jobs` call needs `Authorization: Bearer <to
 | Field | |
 |---|---|
 | `external_id` | idempotency key: an existing job with the same key that is not finished (`queued`, `running`) is returned instead of a second one |
-| `file_name` | its extension decides the format (see Formats) |
+| `file_name` | its extension decides the format (see Formats); for `check_library` it is `.zip` or `.dxf` |
 | `source_url` | presigned `GET` of the original |
-| `operations` | `extract`, `preview` and/or `vectorize`, at least one. `vectorize` is required for photos and scans and allowed only for them |
+| `operations` | `extract`, `preview` and/or `vectorize`, at least one. `vectorize` is required for photos and scans and allowed only for them. Or `check_library` alone: the file is a symbol library to read and describe (see [Checking a library](#checking-a-library)) |
 | `preview_url` | presigned `PUT` target of the preview, required with `preview`. The converter sends `Content-Type` `application/pdf` (2D, photos and scans) or `model/gltf-binary` (3D) |
 | `result_url` | presigned `PUT` target of the ZIP of `vectorize` (`Content-Type` `application/zip`), required with `vectorize` |
-| `options` | optional, for `vectorize`: `paper` the drawing is printed on (`A0` ... `A4`, default `A3`), `scale` denominator (e.g. `50` for 1:50; read from the title block if not set), `dpi` of a scan without visible paper edges, `drawing`: `building` (floor plan, section), `pid` (P&ID), `electrical` (circuit diagram), `site` (site plan) or `auto` (default, recognised from the texts by the built-in [profiles](profiles.md)), `libraries`: ids of installed symbol libraries to recognise symbols from (see `GET /libraries`; at most 20, earlier ones win on equal block names; default: `DEFAULT_SYMBOL_LIBRARIES`); each is used on the kind of drawing it is for (`drawing`: P&IDs, floor plans), `pages`: the pages of a PDF or TIFF to convert, counted from 1 (default: all, at most `MAX_SCAN_PAGES`), `on` and `off`: steps of the recognition to switch on or off by name (see [Steps that can be switched](photos-and-scans.md#steps-that-can-be-switched); `400` for an unknown name) |
+| `options` | optional, for `vectorize`: `paper` the drawing is printed on (`A0` ... `A4`, default `A3`), `scale` denominator (e.g. `50` for 1:50; read from the title block if not set), `dpi` of a scan without visible paper edges, `drawing`: `building` (floor plan, section), `pid` (P&ID), `electrical` (circuit diagram), `site` (site plan) or `auto` (default, recognised from the texts by the built-in [profiles](profiles.md)), `libraries`: ids of installed symbol libraries to recognise symbols from (see `GET /libraries`; at most 20, earlier ones win on equal block names; default: `DEFAULT_SYMBOL_LIBRARIES`); each is used on the kind of drawing it is for (`drawing`: P&IDs, floor plans), `pages`: the pages of a PDF or TIFF to convert, counted from 1 (default: all, at most `MAX_SCAN_PAGES`), `on` and `off`: steps of the recognition to switch on or off by name (see [Steps that can be switched](photos-and-scans.md#steps-that-can-be-switched); `400` for an unknown name). For `check_library`: `self_test` (default `false`) also tests the library on simulated scans and photos, which takes about half a minute per sheet of up to 48 symbols, and `scale` is then the drawing scale for a library of real-size blocks (default `50`) |
 | `library_urls` | optional, only with `vectorize`: presigned `GET`s of symbol libraries the job brings along, a library ZIP or a DXF (at most 10, each up to `MAX_LIBRARY_SIZE_BYTES`). They come before the installed `libraries`; the default libraries are only used when the job names none at all. See [Symbol libraries](symbol-libraries.md) |
 | `callback_url` | optional, see Callback |
 | `priority` | `interactive` (default) or `bulk` |
 | `reviewer` | optional, only with `vectorize`: a vision model behind an OpenAI-compatible endpoint (`base_url` up to `/v1`, `api_key`, `model`, optionally further `headers` such as the customer a LiteLLM proxy books the calls to), such as a LiteLLM proxy, that is asked about the texts and symbols to check. It sees only a crop around each of them (at most 40 per page). The key is kept only until the job ends; it is never returned or logged. See `review` below |
 
 Answers: `202 {"id","status":"queued"}`; `200` with the existing job for a repeated `external_id`; `400` invalid body
-(`{"detail": "..."}`), also for a library in `options.libraries` that the workers do not have; `401`; `415` unsupported extension, or `vectorize` missing for a photo or given for a CAD file; `503` with `Retry-After: 15` when Redis is unavailable or
+(`{"detail": "..."}`), also for a library in `options.libraries` that the workers do not have and for `check_library`
+with another operation; `401`; `415` unsupported extension, or `vectorize` missing for a photo or given for a CAD file,
+or a file other than a ZIP or DXF for `check_library`; `503` with `Retry-After: 15` when Redis is unavailable or
 `MAX_QUEUED_JOBS` jobs are waiting.
 
 `GET /jobs/{id}` -> `200`, `404` unknown or expired:
@@ -49,6 +51,7 @@ Answers: `202 {"id","status":"queued"}`; `200` with the existing job for a repea
   "id": "...", "external_id": "...", "status": "queued|running|succeeded|failed|cancelled",
   "attempts": 1, "operations": ["extract", "preview"], "kind": "DRAWING_2D|MODEL_3D|SCAN_2D", "format": "step",
   "markdown": "...", "preview_content_type": "model/gltf-binary", "result_content_type": "application/zip",
+  "library": {"id": "...", "...": "..."},
   "warnings": [],
   "error": {"code": "...", "message": "...", "retryable": false}
 }
@@ -56,7 +59,8 @@ Answers: `202 {"id","status":"queued"}`; `200` with the existing job for a repea
 
 `markdown` is there when the job succeeded and `extract` was requested (it may be empty); `preview_content_type` when it
 succeeded and `preview` was requested (the preview has been uploaded by then); `result_content_type` likewise for
-`vectorize`; `error` when it failed. Results are kept
+`vectorize`; `library` when a `check_library` job succeeded (see [Checking a library](#checking-a-library)); `error`
+when it failed. `kind` is not set for `check_library`, since a library is no drawing. Results are kept
 for `RESULT_TTL_SECONDS`. `attempts` counts the runs (re-runs after infrastructure failures included).
 
 | `error.code` | Meaning | `retryable` |
@@ -69,8 +73,8 @@ for `RESULT_TTL_SECONDS`. `attempts` counts the runs (re-runs after infrastructu
 | `source_unavailable` | the download failed (after `MAX_ATTEMPTS` runs, or at once for a 4xx such as an expired URL) | yes |
 | `preview_upload_failed` | the `PUT` failed (same rule) | yes |
 | `result_upload_failed` | the `PUT` of the `vectorize` result failed (same rule) | yes |
-| `library_unavailable` | the download of a library in `library_urls` failed (same rule as `source_unavailable`) | yes |
-| `invalid_library` | a library in `library_urls` is not a usable symbol library or larger than `MAX_LIBRARY_SIZE_BYTES`, or a library in `options.libraries` is not installed on the worker; the message says why | no |
+| `library_unavailable` | the download of a library in `library_urls`, or of the library to check (`check_library`), failed (same rule as `source_unavailable`) | yes |
+| `invalid_library` | a library in `library_urls` or the library to check is not a usable symbol library or larger than `MAX_LIBRARY_SIZE_BYTES`, or a library in `options.libraries` is not installed on the worker; the message says why | no |
 | `internal` | the worker was lost on the last attempt | yes |
 
 `retryable` tells the client that submitting again (with fresh URLs) may help.
@@ -81,9 +85,9 @@ stored result is deleted. A queued or running job is kept as `cancelled` for `RE
 frees its `external_id`. No result is stored and no callback is sent for a cancelled job.
 
 `POST /jobs/status` with `{"ids": ["<job id>", ...]}` (at most 500 ids, `400` above) -> `200 {"jobs": [...], "missing":
-["<id>", ...]}`: the same objects as `GET /jobs/{id}` but without `markdown`, in one Redis round trip, so a reconciler
-can check thousands of open jobs with a few requests; `missing` are unknown or expired ids. Fetch the markdown with
-`GET /jobs/{id}` for the jobs that succeeded.
+["<id>", ...]}`: the same objects as `GET /jobs/{id}` but without `markdown` and `library`, in one Redis round trip, so
+a reconciler can check thousands of open jobs with a few requests; `missing` are unknown or expired ids. Fetch the
+markdown and the library with `GET /jobs/{id}` for the jobs that succeeded.
 
 `GET /health` -> `{"status":"ok","version":"...","redis":"ok","queued":{"interactive":n,"bulk":n},"running":n,"workers":n}`
 (`running` counts running jobs, `workers` the registered RQ workers); `503` when Redis is unreachable.
@@ -162,6 +166,74 @@ A PDF page drawn in vectors, such as a CAD export, is read as it is instead of b
 and the markdown lists the layers. `paper` and `dpi` do not apply, and no symbols are placed (`libraries` is empty).
 Its `report.json` has `sheet` `page`, the page size in `sheet_size_mm` and `paper` (`null` where the page is no
 standard size).
+
+## Checking a library
+
+A platform whose users bring their own symbol libraries can have each one checked before it uses it in
+`library_urls`. The job names the library, a ZIP or a DXF (see [Symbol libraries](symbol-libraries.md)), like a file:
+
+```bash
+curl -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' -d '{"external_id":"library-7:3",
+  "file_name":"acme-pid.zip","source_url":"https://storage/acme-pid.zip?sig=...","operations":["check_library"],
+  "options":{"self_test":false},"callback_url":"https://app/cad-callback"}'
+```
+
+The worker downloads the library (up to `MAX_LIBRARY_SIZE_BYTES`) and reads it in its work-horse, under the time and
+memory limits of a conversion, as it reads a library in `library_urls`; nothing in it is run, and the file is not
+kept. The job then
+has `library`: what `GET /libraries` lists for an installed library, the notes of `cad-ingest library check` on what
+was ignored and what may keep a symbol from being found (`warnings`), and the results of the self-test (`self_test`,
+`null` unless `options.self_test` asks for it):
+
+```json
+{"id": "...", "external_id": "library-7:3", "status": "succeeded", "attempts": 1, "operations": ["check_library"],
+ "format": "zip",
+ "library": {"id": "acme-pid", "name": "ACME P&ID symbols", "version": "2.1.0", "licence": "LicenseRef-ACME-internal",
+             "drawing": ["pid"], "size": "printed",
+             "symbols": [{"name": "MY_VALVE", "description": "Box valve"},
+                         {"name": "VALVE_AT_PORT", "description": "Gate valve, inserted at a port"}],
+             "warnings": ["VALVE_AT_PORT: the insertion point lies on a port; put it in the middle of the symbol, because a port is recognised by its direction from there"],
+             "self_test": null},
+ "warnings": []}
+```
+
+A bare DXF, or a ZIP with a `library.toml` at its top that has no `id`, is named after its file: here after
+`file_name`, in `library_urls` after the last part of the URL's path. Give it the same file name in both, so that it
+keeps its id.
+
+The self-test draws every symbol twice, as in the block and turned and mirrored, on A3 sheets, and reads a simulated
+200 dpi scan (`scan`) and a simulated 12 MP phone photo (`photo`) of each sheet with this library alone (see [Checking
+a library](symbol-libraries.md#checking-a-library)). It takes about half a minute per sheet of up to 48 symbols; a
+check without it takes a second or two. Sheets it would not finish within the time limit are left out, and the job's
+`warnings` say how many:
+
+```json
+"self_test": {"sheets": 1, "scale": null, "drawn": 4, "found": {"scan": 4, "photo": 3},
+              "extra": {"scan": 0, "photo": 0}, "seconds_per_sheet": {"scan": 9.5, "photo": 18.7},
+              "symbol_seconds_per_sheet": {"scan": 0.4, "photo": 0.5},
+              "symbols": [{"name": "MY_VALVE", "drawn": 2, "found": {"scan": 2, "photo": 2}, "mistaken_for": {}},
+                          {"name": "VALVE_AT_PORT", "drawn": 2, "found": {"scan": 2, "photo": 1},
+                           "mistaken_for": {"MY_VALVE": 1}}]}
+```
+
+| Field of `self_test` | |
+|---|---|
+| `sheets` | the A3 sheets drawn and read |
+| `scale` | the drawing scale of the sheets for a library of real-size blocks (`options.scale`, default 50), else `null` |
+| `drawn` | the symbols drawn on them |
+| `found` | how many of them were found as themselves, in the scan and in the photo |
+| `extra` | symbols found where none was drawn |
+| `seconds_per_sheet`, `symbol_seconds_per_sheet` | the seconds to read one sheet, and of those the seconds of the symbol recognition |
+| `symbols` | per symbol: how often it was `drawn` and `found`, and which symbols it was `mistaken_for` how often |
+
+A library that cannot be used fails the job with `invalid_library` and the reason as the `message`, as a library in
+`library_urls` does; one that cannot be downloaded with `library_unavailable`:
+
+```json
+{"id": "...", "external_id": "library-7:4", "status": "failed", "attempts": 1, "operations": ["check_library"],
+ "format": "zip", "warnings": [],
+ "error": {"code": "invalid_library", "message": "acme-pid.zip: library.toml: 'size' must be one of printed, real: 'paper'", "retryable": false}}
+```
 
 ## Callback
 

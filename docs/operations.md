@@ -41,7 +41,7 @@ both. All three live in the Redis database of `REDIS_URL`.
 | `OCR_LANGUAGES` | `deu` | Tesseract languages for the texts on photos and scans: `eng` for English drawings, `deu+eng` for both (the image has `deu` and `eng`; add other `tesseract-ocr-*` packages in your own image) |
 | `SYMBOL_LIBRARIES` | `/libraries` | folders (separated by `:`) with symbol libraries added to the built-in ones: library folders, ZIPs and DXF files (worker) |
 | `DEFAULT_SYMBOL_LIBRARIES` | `din-10628,floor-plan,iec-60617` | installed libraries (comma-separated ids) used when a job names none; earlier ones win on equal block names (worker) |
-| `MAX_LIBRARY_SIZE_BYTES` | `52428800` | limit for each library a job brings along in `library_urls` (50 MB) |
+| `MAX_LIBRARY_SIZE_BYTES` | `52428800` | limit for each library a job brings along in `library_urls`, and for a library to check (`check_library`) (50 MB) |
 | `MAX_SCAN_PAGES` | `20` | pages of a PDF or TIFF scan converted per job at most; each takes 10 s to a few minutes, and pages that would end after 90 % of `CONVERSION_TIMEOUT_SECONDS` are left out |
 | `PROFILES` | (empty) | folders with profiles of kinds of drawing added to the built-in ones, separated by `:` ([Profiles](profiles.md)) (worker) |
 
@@ -65,8 +65,9 @@ COPY acme-pid /libraries/acme-pid
 ```
 
 Libraries that a job brings along (`library_urls`) are downloaded and read in its work-horse, under the same time and
-memory limits as the file, and never stored. Reading a library of 540 symbols takes about 0.4 s. How to write a
-library, check it and build one from existing CAD blocks is in [Symbol libraries](symbol-libraries.md).
+memory limits as the file, and never stored; so is a library that a job has checked (`check_library`). Reading a
+library of 540 symbols takes about 0.4 s. How to write a library, check it and build one from existing CAD blocks is
+in [Symbol libraries](symbol-libraries.md).
 
 ## Execution, failures and restarts
 

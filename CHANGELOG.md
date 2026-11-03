@@ -7,6 +7,13 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 
 ### Added
 
+- Job operation `check_library`: a client has a symbol library (a ZIP or a DXF) checked before it uses it. The worker
+  downloads it (up to `MAX_LIBRARY_SIZE_BYTES`) and reads it in its work-horse, as a library in `library_urls`, and
+  the job's new field `library` holds what `GET /libraries` lists for an installed library, the notes of `cad-ingest
+  library check` as `warnings` and, with the new option `self_test`, the results of the self-test on simulated scans
+  and photos, which leaves out the sheets it would not finish in time. A library that cannot be used fails the job
+  with `invalid_library` and the reason. Such a job has no `kind`, and `POST /jobs/status` leaves out `library` as it
+  leaves out `markdown` (`docs/api.md#checking-a-library`).
 - Marks by hand in black or pencil (notes, revision clouds, freehand hatching) are kept apart from the drawing, on
   `P2C-MARKUP` and in `markups`, before lines and texts are read: told apart by their shape (neither straight nor
   an arc nor an ellipse between their corners, or turning too often for anything else; chains of arcs for clouds) and
@@ -197,6 +204,8 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 
 ### Fixed
 
+- A library named `.zip` that is no ZIP file was reported as "a library is a folder, a ZIP or a DXF file"; it is now
+  "not a readable ZIP file".
 - A P&ID with more vertical pipe labels than horizontal text was turned by 90 degrees. The rotation check now scores
   each rotation by horizontal text the right way up together with vertical text reading bottom to top.
 - The round ends of a line-number box and rounded corners between two lines were read as brackets, so they were

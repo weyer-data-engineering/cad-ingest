@@ -112,7 +112,7 @@ def read(path: Path | str) -> Library:
 def from_bytes(data: bytes, name: str) -> Library:
     """A library from the bytes of a ZIP or a DXF (a download); ``name`` is its file name, for the id and messages."""
     try:
-        if data.startswith(b"PK\x03\x04"):
+        if data.startswith(b"PK\x03\x04") or Path(name).suffix.lower() == ".zip":  # a broken .zip is told so
             return _library(*_unzip(data, name))
         if Path(name).suffix.lower() not in ("", ".dxf"):
             raise LibraryError("a library is a folder, a ZIP or a DXF file (convert others with "
