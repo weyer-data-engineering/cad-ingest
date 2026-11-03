@@ -320,11 +320,14 @@ Fixtures are left alone, as their size is that of the real object.
 ## Benchmark
 
 `bench/` generates drawings with an exact reference solution (floor plan A3, also with fixtures at 1:50 and 1:100;
-P&ID A1/A0), simulates scans and phone photos (perspective, waviness, folds, shadow, glare, defocus, hand shake, noise,
-phone sharpening, JPEG) and measures the result against the reference:
+P&ID A1/A0, also printed on A3 and A4; circuit diagram, building section and site plan A3), simulates clean plots,
+scans (good, poor and skewed) and phone photos (perspective, waviness, folds, shadow, glare, defocus, hand shake, noise,
+phone sharpening, JPEG), adds markups by hand in black, pencil and colour to some, and measures the result against the
+reference. The corpus is there so that an improvement is measured on every kind of drawing at once: one that helps a
+kind and harms another shows up.
 
 ```bash
-python bench/run.py --out bench/out [--quick] [--real photo.heic:A4]
+python bench/run.py --out bench/out [--quick] [--only WORDS] [--on STEPS] [--off STEPS] [--real photo.heic:A4]
 ```
 
 Metrics: share of reference linework found within 1 mm / 0.5 mm on paper (completeness) and share of found linework
@@ -347,6 +350,19 @@ as arcs, symbols placed as the right block within 1.5 mm, attributes read, runti
 | P&ID A0, phone photo 12 MP | 2.8 | 90.6 % / 94.9 % | 0.33 mm | 82 % | 1 % | 62 % / 61 % | 0 % | 62.1 s |
 | P&ID A0, phone photo 48 MP | 5.6 | 99.1 % / 98.3 % | 0.23 mm | 85 % | 34 % | 82 % / 85 % | 23 % | 45.4 s |
 
+By kind of drawing (`--quick`, means over the cases of each kind, with and without markups):
+
+| Kind | Cases | Lines found / correct (<= 1 mm) | Tokens exact | Symbols found / correct | Crossings / junctions kept | Markup taken for the drawing |
+|---|---|---|---|---|---|---|
+| Floor plan | 9 | 96.7 % / 96.8 % | 96 % | 100 % / 100 % | 92 % / 92 % | 0 % (red), 26 % (pencil) |
+| P&ID | 5 | 99.6 % / 97.3 % | 81 % | 78 % / 93 % | - / 98 % | 84 % (black) |
+| Circuit diagram | 4 | 100 % / 97.3 % | 59 % | 46 % / 70 % | 100 % / 100 % | 82 % (black) |
+| Section | 3 | 96.0 % / 99.7 % | 88 % | - | 19 % / 78 % | 0 % (blue) |
+| Site plan | 3 | 95.0 % / 95.0 % | 65 % | - | - / 27 % | 70 % (pencil, photo) |
+
+Circuit diagrams and site plans read fewer of their texts: wire numbers are vertical and many site plan texts are
+turned to a street or a parcel, which the text recognition does not read yet (see [Limits](#limits)).
+
 Linework and circles hold up down to 3 px per mm of paper, text does not: on the A0 P&ID, exact texts (2 mm high, many
 of them inside instrument bubbles) rise from 14 % at 3 px/mm to 58 % at 6 and about 82 % from 8 px/mm. 81-99 % of the
 objects of the reference drawing come out in one piece (1.13-1.88 DXF elements per object). Symbols that are missed
@@ -356,6 +372,11 @@ stay linework. On floor plans, all fixtures are found at 1:50; at 1:100, where O
 ## Limits
 
 - Handwriting is not read (see [Markups](#markups)); the markup images in the ZIP show what it says.
+- Text is read horizontally and vertically only: text turned to another angle (a street name, a parcel number on a
+  site plan) is not read. A vertical text may be read the wrong way round ("09'0" for "0,60").
+- Pen widths measured on a scan are about one ISO pen too thick; the right pen comes out on 10-25 % of the linework.
+- A scan whose paper is about as grey as the scanner lid around it has no visible paper edge: give its `dpi`, or the
+  sheet is taken to be the whole image and the scale is off by the lid's border.
 - Marks by hand in black are found only in part (about a third on the benchmark): those that look like CAD (straight
   strokes, a strike-out through a text, hatching of nearly straight strokes) and those drawn into the drawing's own
   linework stay in the drawing.
