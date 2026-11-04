@@ -4,6 +4,7 @@ texts are recognised (see plan2cad.pipeline), on every page of a PDF or TIFF. On
 recognised drawing."""
 import io
 import json
+import math
 import time
 import zipfile
 from collections import Counter
@@ -17,11 +18,11 @@ from . import review
 from .config import Settings
 from .drawing import _count_lines
 from .errors import ConversionError, JobError
-from .plan2cad import library, markup, pdfvector, profiles, symbols
+from .plan2cad import library, markup, pdfvector, profiles, symbols, unclassified
 from .plan2cad.export import overlay, to_dxf, to_figure
 from .plan2cad.features import Features
 from .plan2cad.imageio import load_image, page_count
-from .plan2cad.model import Drawing
+from .plan2cad.model import Drawing, TitleBlock
 from .plan2cad.pipeline import Result, convert, convert_vectors
 
 KINDS = {"building": "floor plan", "pid": "P&ID"}
@@ -40,6 +41,7 @@ def vectorize(path: str, name: str, options: dict, result: str, preview: str | N
 
     The first page with a drawing goes to the root of the ZIP, any further page n to the folder page-n/."""
     libraries = _libraries(options, own_libraries)
+    features = Features.of(options.get("on") or [], options.get("off") or [])
     with open(path, "rb") as f:
         data = f.read()
     try:
@@ -53,14 +55,14 @@ def vectorize(path: str, name: str, options: dict, result: str, preview: str | N
             if deadline and k and time.monotonic() + (time.monotonic() - started) / k > deadline:
                 warnings.append(f"Pages left out to stay within the time limit: {_listed(numbers[k:])}")
                 break
-            r = _page(data, n - 1, options, libraries)
+            r = _page(data, n - 1, options, libraries, features)
             if r is None:
                 if total == 1:
                     raise ConversionError("No drawing was recognised in the image")
                 warnings.append(f"Page {n}: no drawing was recognised")
                 continue
             folder = f"page-{n}/" if done else ""
-            reviewed, notes = review.check(r, reviewer) if reviewer else ({}, [])
+            reviewed, notes = review.check(r, reviewer, features.review_handwriting) if reviewer else ({}, [])
             pdfs.append(_write(z, folder, r))
             reports.append((folder, r.info | _report(r.drawing) | {"page": n}
                             | ({"reviewer": reviewed} if reviewed else {})))
@@ -95,7 +97,8 @@ def _listed(numbers: list[int]) -> str:
     return ", ".join(map(str, numbers[:10])) + (", ..." if len(numbers) > 10 else "")
 
 
-def _page(data: bytes, page: int, options: dict, libraries: list[library.Library]) -> Result | None:
+def _page(data: bytes, page: int, options: dict, libraries: list[library.Library],
+          features: Features) -> Result | None:
     """The drawing of a page (counted from 0), or None if it holds no drawing: read from the vectors of a PDF page
     made of them (a CAD export), else recognised on the image."""
     drawing = None if options.get("drawing", "auto") == "auto" else options["drawing"]
@@ -109,8 +112,7 @@ def _page(data: bytes, page: int, options: dict, libraries: list[library.Library
     except ValueError as e:
         raise ConversionError(str(e)) from None
     r = convert(img, paper=options.get("paper", "A3"), scale=options.get("scale"), dpi=options.get("dpi") or dpi,
-                drawing=drawing, libraries=libraries,
-                features=Features.of(options.get("on") or [], options.get("off") or []),
+                drawing=drawing, libraries=libraries, features=features,
                 kinds=profiles.installed(Settings.from_env().profiles))
     return r if any(r.info["counts"][k] for k in ("lines", "arcs", "circles", "polylines")) else None
 
@@ -139,6 +141,11 @@ def _warnings(r: Result) -> list[str]:
         out.append(f"{unsure} texts could not be read reliably; they are on the layer P2C-TEXT-CHECK")
     if unsure := sum(bool(s.doubt) for s in r.drawing.symbols):
         out.append(f"{unsure} symbols may be the wrong ones; they are on the layer P2C-SYMBOL-CHECK")
+    if unsure := sum(m.uncertain for m in r.drawing.dimensions):
+        out.append(f"{unsure} dimensions are to check; they are on the layer P2C-DIMENSION-CHECK")
+    if r.drawing.unclassified:
+        out.append(f"{len(r.drawing.unclassified)} shapes look like symbols but were recognised as none of the "
+                   f"libraries'; they stay linework on the layer {unclassified.LAYER}")
     return out
 
 
@@ -163,15 +170,39 @@ def _libraries(options: dict, own: list[library.Library] | tuple) -> list[librar
 
 
 def _report(d) -> dict:
-    """Texts, symbols with their library, attributes and ports, the lines joining two symbol ports (by index), and
-    what to check."""
+    """Texts (the values of the dimensions among them), symbols with their library, attributes and ports, the
+    dimensions, the lines joining two symbol ports (by index), what to check, the shapes not classified and, where one
+    was found, the title block as a table."""
     placed = [{"name": s.name, "library": s.template.library.id, "x": s.x, "y": s.y, "angle": s.angle,
                "mirror": s.mirror, "scale": s.scale, "attributes": {tag: t.text for tag, t in s.attributes.items()},
                "ports": s.ports, "confidence": s.confidence, "doubt": s.doubt} for s in d.symbols]
     marked = [{"kind": m.kind, "box_mm": [round(v, 1) for v in m.box], "color": list(m.color), "reading": m.reading,
-               "texts": m.texts, "image": f"markup-{k}.png"} for k, m in enumerate(d.markups, 1)]
-    return {"texts": [asdict(t) for t in d.texts], "symbols": placed, "connections": symbols.connections(d),
-            "markups": marked, "review": _review(d)}
+               "read_by": m.read_by, "texts": m.texts, "image": f"markup-{k}.png"} for k, m in enumerate(d.markups, 1)]
+    measured = [{"value": m.value, "ends_mm": [[round(m.x1, 2), round(m.y1, 2)], [round(m.x2, 2), round(m.y2, 2)]],
+                 "measured_mm": [[round(v, 2) for v in m.p1], [round(v, 2) for v in m.p2]],
+                 "length_mm": round(math.dist((m.x1, m.y1), (m.x2, m.y2)), 2), "angle": round(_angle(m), 1),
+                 "terminator": m.terminator, "uncertain": m.uncertain, "doubt": m.doubt} for m in d.dimensions]
+    texts = d.texts + [m.text for m in d.dimensions if m.text]
+    report = {"texts": [asdict(t) for t in texts], "symbols": placed, "dimensions": measured,
+              "connections": symbols.connections(d), "markups": marked, "review": _review(d),
+              "unclassified": [{"box_mm": [round(v, 1) for v in u.box], "why": u.why} for u in d.unclassified]}
+    if d.title_block:
+        report["title_block"] = _title_block(d.title_block)
+    return report
+
+
+def _angle(m) -> float:
+    """The direction of a dimension line in degrees, counter-clockwise on the sheet like a text's, 0 to 180."""
+    return math.degrees(math.atan2(m.y1 - m.y2, m.x2 - m.x1)) % 180
+
+
+def _title_block(block: TitleBlock) -> dict:
+    """The title block as a table: its box, its grid's rows and columns and its cells (sheet mm)."""
+    return {"box_mm": [round(v, 1) for v in block.box], "rows": max(c.row + c.rows for c in block.cells),
+            "cols": max(c.col + c.cols for c in block.cells),
+            "cells": [{"row": c.row, "col": c.col, "row_span": c.rows, "col_span": c.cols,
+                       "box_mm": [round(v, 1) for v in c.box], "text": c.text, "uncertain": c.uncertain}
+                      for c in block.cells]}
 
 
 def _review(d) -> list[dict]:
@@ -180,6 +211,9 @@ def _review(d) -> list[dict]:
               "confidence": t.confidence} for t in d.texts if t.uncertain]
     items += [{"kind": "symbol", "what": s.name, "why": s.doubt, "x": round(s.x, 1), "y": round(s.y, 1),
                "confidence": s.confidence} for s in d.symbols if s.doubt]
+    items += [{"kind": "dimension", "what": m.value, "why": m.doubt, "x": round((m.x1 + m.x2) / 2, 1),
+               "y": round((m.y1 + m.y2) / 2, 1), "confidence": m.text.confidence if m.text else 0.0}
+              for m in d.dimensions if m.doubt]
     return sorted(items, key=lambda c: c["confidence"])
 
 
@@ -198,9 +232,20 @@ def _page_markdown(info: dict, d: Drawing, heading: str) -> list[str]:
              f"{info['sheet_size_mm'][1]:g} mm (found by: {SHEETS[info['sheet']]})",
              f"- Scale: {'1:' + str(info['scale']) if info['scale'] else 'unknown'}",
              f"- Elements: {', '.join(f'{n} {k}' for k, n in info['counts'].items() if n)}"]
-    reading_order = sorted((t for t in d.texts if t.layer != markup.READING_LAYER), key=lambda t: (round(t.y / 5), t.x))
+    if off := info.get("steps_off_by_kind"):
+        lines.append(f"- Steps switched off for this kind of drawing: {', '.join(off)} (options.on switches them on)")
+    if d.title_block:
+        lines += ["", f"{heading} Title block", ""] + _table(d.title_block)
+    printed = d.texts + [m.text for m in d.dimensions if m.text]  # the values of the dimensions are texts too
+    reading_order = sorted((t for t in printed if t.layer != markup.READING_LAYER), key=lambda t: (round(t.y / 5), t.x))
     for title, unsure in (("Texts", False), ("Texts to check (uncertain reading)", True)):
         found = Counter(t.text for t in reading_order if t.uncertain == unsure)
+        if found:
+            lines += ["", f"{heading} {title}", ""] + _count_lines(found)
+    measured = sorted(d.dimensions, key=lambda m: (round(min(m.y1, m.y2) / 5), min(m.x1, m.x2)))
+    for title, unsure in (("Dimensions", False), ("Dimensions to check (uncertain recognition)", True)):
+        found = Counter((m.value or "no value") + (f" ({m.doubt})" if unsure else "") for m in measured
+                        if m.uncertain == unsure)
         if found:
             lines += ["", f"{heading} {title}", ""] + _count_lines(found)
     in_order = sorted(d.symbols, key=lambda s: (round(s.y / 5), s.x))
@@ -209,6 +254,10 @@ def _page_markdown(info: dict, d: Drawing, heading: str) -> list[str]:
                                  + [f"({s.doubt})"] * unsure) for s in in_order if bool(s.doubt) == unsure)
         if found:
             lines += ["", f"{heading} {title}", ""] + _count_lines(found)
+    if d.unclassified:  # where a person checks the drawing, or adds a symbol to a library
+        lines += ["", f"{heading} Symbols not classified (no library symbol recognised)", ""]
+        lines += [f"- Shape like a symbol at x {u.box[0]:.0f}-{u.box[2]:.0f} mm, y {u.box[1]:.0f}-{u.box[3]:.0f} mm: "
+                  f"{u.why}" for u in sorted(d.unclassified, key=lambda u: (round(u.box[1] / 5), u.box[0]))]
     notes = [_markup_line(m) for m in d.markups]
     if notes:
         lines += ["", f"{heading} Markups (added by hand)", ""] + notes
@@ -218,8 +267,19 @@ def _page_markdown(info: dict, d: Drawing, heading: str) -> list[str]:
     return lines
 
 
+def _table(block: TitleBlock) -> list[str]:
+    """The cells of the title block as a markdown table, a line per row of its grid: a cell that spans several rows
+    or columns stands in its first one. A text to check is marked so."""
+    table = _title_block(block)
+    grid = [[""] * table["cols"] for _ in range(table["rows"])]
+    for c in block.cells:
+        grid[c.row][c.col] = c.text.replace("|", "\\|") + (" (to check)" if c.uncertain else "")
+    return ["|" + " |" * table["cols"], "|" + "---|" * table["cols"]] + [f"| {' | '.join(row)} |" for row in grid]
+
+
 def _markup_line(m) -> str:
-    read = f": “{m.reading}” (handwriting, read automatically)" if m.reading else " (handwriting, if any, not read)"
+    by = "read by the reviewer model, to check" if m.read_by == "reviewer" else "read automatically"
+    read = f": “{m.reading}” (handwriting, {by})" if m.reading else " (handwriting, if any, not read)"
     what = f"Note in {_colour_name(m.color)}{read}" if m.kind == "note" else f"Highlighted in {_colour_name(m.color)}"
     return f"- {what}" + (f"; covers: {', '.join(m.texts[:MAX_COVERED])}" if m.texts else "")
 

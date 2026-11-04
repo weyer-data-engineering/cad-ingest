@@ -3,7 +3,7 @@ import math
 import pytest
 
 from app.plan2cad.library import load, place
-from app.plan2cad.model import Arc, Circle, Drawing, Line, Polyline
+from app.plan2cad.model import Arc, Circle, Dimension, Drawing, Line, Polygon, Polyline
 from app.plan2cad.topology import connect, join
 
 
@@ -78,3 +78,28 @@ def test_a_valve_whose_short_pipe_to_the_junction_was_lost_is_piped_to_it():
     d = Drawing(100, 100, polylines=[pipe((52, 0), (52, 40)), pipe((62.5, 20), (90, 20))], symbols=[valve])
     connect(d)
     assert [(57.5, 20), (52, 20)] in [pl.points for pl in d.polylines]
+
+
+def test_a_short_stroke_across_a_line_is_kept_but_a_loose_one_and_a_speck_on_the_line_dropped():
+    speck = [Line(29.7, 10.3, 30.2, 9.8), Line(30.2, 9.8, 30.7, 9.8)]  # a blot on the line's edge, traced
+    lines = [Line(0, 10, 40, 10), Line(9.3, 10.7, 10.7, 9.3), Line(29.3, 20.7, 30.7, 19.3)] + speck
+    pls, kept, _ = join(lines, [], across=True)
+    assert not pls and sorted((ln.x1, ln.y1) for ln in kept) == [(0, 10), (9.3, 10.7)]  # the tick only
+    pls, kept, _ = join(lines, [])  # as before: the tick is a crumb too
+    assert not pls and [(ln.x1, ln.y1) for ln in kept] == [(0, 10)]
+
+
+@pytest.mark.parametrize("past, end", [(0.5, 10.0), (1.5, 11.5)])  # cut back onto it, or too far past to be its end
+def test_a_line_ending_at_an_extension_line_of_a_dimension_meets_it_as_it_meets_the_same_line(past, end):
+    extension = Line(-2, 10, 20, 10, 0.18)  # of a dimension along x = 0, where a line of the drawing ends
+    terminators = [Line(-1, 11, 1, 9, 0.35), Polygon([(-0.5, 25.5), (0.5, 25.5), (0, 24.5)])]
+
+    def ending(d: Drawing) -> list[tuple[float, float]]:
+        d.lines.append(Line(8, 0, 8, 10 + past, 0.18))  # traced on past it
+        connect(d)
+        return [(q.x2, q.y2) for q in d.lines if q.x1 == 8]
+
+    as_line = Drawing(30, 30, lines=[extension])  # as with the step dimensions switched off
+    parts = [Line(0, 0, 0, 25, 0.18), extension] + terminators
+    as_part = Drawing(30, 30, dimensions=[Dimension(0, 10, 0, 25, "", (20, 10), (20, 25), parts=parts)])
+    assert ending(as_line) == ending(as_part) == [(8, end)]

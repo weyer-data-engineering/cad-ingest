@@ -2,8 +2,9 @@
 reliably and the symbols that may be the wrong ones (see plan2cad.symbols). The model sits behind an OpenAI-compatible
 endpoint, such as a LiteLLM proxy, that the job names (``reviewer``). It sees only a small crop around each of these
 elements, with the reading or, for a symbol, the library's drawing of it, and answers from a closed set. An answer is
-taken only where it fits what was recognised; everything else stays to check. Without a reviewer nothing leaves the
-service."""
+taken only where it fits what was recognised; everything else stays to check. With the step review_handwriting it
+also reads the handwriting of each note added by hand, from the note's image: always a reading to check, never print.
+Without a reviewer nothing leaves the service."""
 
 import logging
 import math
@@ -16,7 +17,8 @@ import httpx
 import numpy as np
 
 from .plan2cad.library import place
-from .plan2cad.model import Drawing, Symbol, Text
+from .plan2cad.markup import READING_LAYER, WORD
+from .plan2cad.model import Drawing, Markup, Symbol, Text
 from .plan2cad.pipeline import Result
 from .plan2cad.render import render
 
@@ -27,25 +29,37 @@ TIMEOUT = httpx.Timeout(10.0, read=60.0)
 MARGIN = 3.0  # mm of the drawing around a symbol in its crop
 SIDE = 256  # px: crops are enlarged to at least this on their shorter side, so the model sees the strokes
 LENGTH = (0.5, 2.0)  # a reading replaces one at least half and at most twice as long: the box it was found in
+MAX_NOTES = 20  # handwritten notes read per page
+NOTE_LENGTH = 200  # characters: a longer reading of a note is no reading of it
+NOTE_SIDE = 1600  # px: a note's image is shrunk to at most this on its longer side, as a note can cover a large area
+HANDWRITING = ("The image shows part of a printed technical drawing, faded, with a note added on it by hand, in colour "
+               "or in black or grey. Transcribe the handwriting of the note exactly as written, on one line, and "
+               "nothing else; do not transcribe the printed text. Reply with UNREADABLE if there is no handwriting "
+               "or you cannot read it.")
 
 
-def check(r: Result, reviewer: dict) -> tuple[dict, list[str]]:
+def check(r: Result, reviewer: dict, handwriting: bool = False) -> tuple[dict, list[str]]:
     """Asks the reviewer about the elements to check on the page and takes the answers that fit: a text is confirmed
-    or read anew, a symbol confirmed. Returns the counts for the report and warnings."""
+    or read anew, a symbol confirmed; with ``handwriting``, the handwriting of each note is read (_note). Returns the
+    counts for the report and warnings."""
     d = r.drawing
     items = sorted([t for t in d.texts if t.uncertain] + [s for s in d.symbols if s.doubt],
                    key=lambda e: e.confidence)[:MAX_ITEMS]
-    if not items:
+    notes = [(m, c) for m, c in zip(d.markups, r.crops) if m.kind == "note"][:MAX_NOTES] if handwriting else []
+    if not items and not notes:
         return {}, []
     with ThreadPoolExecutor(WORKERS) as pool:
         answers = list(pool.map(lambda e: _ask(e, r, reviewer), items))
-    counts = dict.fromkeys(("confirmed", "corrected", "kept", "unanswered"), 0)
+        readings = list(pool.map(lambda n: _post(HANDWRITING, [_png(n[1], NOTE_SIDE)], reviewer), notes))
+    counts = dict.fromkeys(("confirmed", "corrected", "kept", "unanswered") + (("read",) if notes else ()), 0)
     for e, answer in zip(items, answers):
         counts[_take(e, answer)] += 1
+    for (m, _), answer in zip(notes, readings):
+        counts[_note(m, answer, d)] += 1
     host = urlsplit(reviewer["base_url"]).hostname
     warnings = [f"The reviewer model at {host} did not answer about {counts['unanswered']} elements; they are left "
                 "to check"] if counts["unanswered"] else []
-    return {"model": reviewer["model"], "asked": len(items)} | counts, warnings
+    return {"model": reviewer["model"], "asked": len(items) + len(notes)} | counts, warnings
 
 
 def _ask(e: Text | Symbol, r: Result, reviewer: dict) -> str | None:
@@ -61,6 +75,11 @@ def _ask(e: Text | Symbol, r: Result, reviewer: dict) -> str | None:
         prompt = (f'The first image is a crop of a scanned technical drawing. The second image is the symbol '
                   f'"{e.template.description}" of a symbol library. Is the symbol in the middle of the first image '
                   f'this symbol? It may be drawn with other line widths. Reply with one word: YES, NO or UNSURE.')
+    return _post(prompt, images, reviewer)
+
+
+def _post(prompt: str, images: list[bytes], reviewer: dict) -> str | None:
+    """The reviewer's answer to a question about images (PNG), or None if it gave none."""
     content = [{"type": "text", "text": prompt}] + [
         {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64encode(png).decode()}}
         for png in images]
@@ -98,11 +117,32 @@ def _take(e: Text | Symbol, answer: str | None) -> str:
     return "corrected"
 
 
+def _note(m: Markup, answer: str | None, d: Drawing) -> str:
+    """Takes the reviewer's reading of the handwriting of a note where it is one line: on the note, and as a text on
+    the layer of readings in the note's colour, marked to check, as it is a reading of handwriting, never print.
+    Returns what came of it."""
+    if answer is None:
+        return "unanswered"
+    reading = answer.strip().strip('"“”').strip()
+    if not reading or "\n" in reading or reading.upper().startswith("UNREADABLE") or len(reading) > NOTE_LENGTH:
+        return "kept"
+    m.reading, m.read_by = reading, "reviewer"
+    x0, y0, x1, y1 = m.box
+    d.texts.append(Text((x0 + x1) / 2, (y0 + y1) / 2, max(1.0, min(WORD, y1 - y0) / 2), reading, uncertain=True,
+                        color=m.color, layer=READING_LAYER))
+    return "read"
+
+
 def _text_crop(t: Text, r: Result) -> bytes:
     """The text with some room around it, turned to read from left to right."""
-    turns = round(t.angle / 90) % 4
     along = (t.length or 0.8 * t.height * len(t.text)) / 2 + 2 * t.height
     across = 1.5 * t.height
+    if t.angle % 90:  # an oblique text: cut out along it, as a box cut by quarter turns would clip it
+        m = cv2.getRotationMatrix2D((t.x * r.ppm, t.y * r.ppm), -t.angle, 1.0)  # turned clockwise by its angle
+        m[:, 2] += (along - t.x) * r.ppm, (across - t.y) * r.ppm  # its centre to the middle of the crop
+        size = (max(1, round(2 * along * r.ppm)), max(1, round(2 * across * r.ppm)))
+        return _png(cv2.warpAffine(r.image, m, size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE))
+    turns = round(t.angle / 90) % 4
     w, h = (across, along) if turns % 2 else (along, across)
     return _crop(r, t.x - w, t.y - h, t.x + w, t.y + h, turns)
 
@@ -130,7 +170,11 @@ def _extent(s: Symbol) -> tuple[float, float, float, float]:
     return min(xs), min(ys), max(xs), max(ys)
 
 
-def _png(a: np.ndarray) -> bytes:
+def _png(a: np.ndarray, longest: int | None = None) -> bytes:
+    """A crop as PNG, enlarged to SIDE on its shorter side, and shrunk to ``longest`` on its longer side if given."""
     f = max(1.0, SIDE / max(1, min(a.shape[:2])))
-    a = cv2.resize(np.ascontiguousarray(a), None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
+    if longest:
+        f = min(f, longest / max(a.shape[:2]))
+    a = cv2.resize(np.ascontiguousarray(a), None, fx=f, fy=f,
+                   interpolation=cv2.INTER_AREA if f < 1 else cv2.INTER_CUBIC)
     return cv2.imencode(".png", a)[1].tobytes()

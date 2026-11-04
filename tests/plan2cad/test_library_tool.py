@@ -53,13 +53,17 @@ def test_check_notes_what_keeps_symbols_from_being_found(tmp_path, capsys):
     doc.blocks.new("TANK").add_lwpolyline([(-20, -15), (20, -15), (20, 15), (-20, 15)], close=True)  # a rectangle
     doc.blocks.new("FUNNEL").add_lwpolyline([(-4, -3), (4, -3), (0, 3)], close=True)
     doc.blocks.new("DOT").add_line((0, 0), (0.5, 0))
+    doc.layers.add("THROUGH")
+    arrow = doc.blocks.new("ARROW_ON_PIPE")  # found along the pipe under it, which needs no ports
+    arrow.add_lwpolyline([(-1.2, 1), (1.2, 0), (-1.2, -1)])
+    arrow.add_line((-1.2, 0), (1.2, 0), dxfattribs={"layer": "THROUGH"})
     doc.saveas(tmp_path / "notes.dxf")
 
     assert convert.main(["library", "check", str(tmp_path / "notes.dxf"), "--no-self-test"]) == 0
     out = capsys.readouterr().out
     assert "VALVE_AT_PORT: the insertion point lies on a port" in out
     assert "FUNNEL: no PORT points, circle or rectangle, so it is only found where its strokes stand apart" in out
-    assert "TANK:" not in out
+    assert "TANK:" not in out and "ARROW_ON_PIPE: no PORT points" not in out
     assert "DOT: 0.5 x 0.0 mm; blocks are drawn at their printed size" in out
 
 

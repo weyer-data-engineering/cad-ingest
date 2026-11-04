@@ -35,7 +35,10 @@ def test_scan_becomes_dxf_with_markdown_and_preview(api, origin, worker, plan_sc
     assert set(files.namelist()) == {"plan.dxf", "plan.pdf", "overlay.png", "underlay.png", "report.json"}
     report = json.loads(files.read("report.json"))
     assert report["scale"] == 50 and isinstance(report["review"], list)
-    assert not ezdxf.read(io.StringIO(files.read("plan.dxf").decode())).audit().has_errors
+    dxf = ezdxf.read(io.StringIO(files.read("plan.dxf").decode()))
+    assert not dxf.audit().has_errors
+    assert report["dimensions"] and len(dxf.modelspace().query("DIMENSION")) == len(report["dimensions"])
+    assert "## Dimensions" in job["markdown"]
     assert origin.previews["plan.png"][0].startswith(b"%PDF")
 
 
@@ -94,7 +97,8 @@ def test_every_page_of_a_pdf_scan_becomes_a_drawing(plan_scan, tmp_path):
     assert len(pypdfium2.PdfDocument(tmp_path / "preview.pdf")) == 2  # the preview has every drawing
     markdown = result["markdown"]
     assert "## Page 1 of 3" in markdown and "## Page 3 of 3" in markdown and "### Texts" in markdown
-    assert result["warnings"] == ["Page 2: no drawing was recognised"]
+    check = "1 dimensions are to check; they are on the layer P2C-DIMENSION-CHECK"  # an interval without a value
+    assert result["warnings"] == [f"Page 1: {check}", "Page 2: no drawing was recognised", f"Page 3: {check}"]
 
 
 def test_pages_of_a_tiff_scan_stop_before_the_time_limit(plan_scan, tmp_path):
@@ -103,7 +107,8 @@ def test_pages_of_a_tiff_scan_stop_before_the_time_limit(plan_scan, tmp_path):
     result = jobs._convert(["vectorize"], "tif", str(path), str(tmp_path), path.name, str(tmp_path / "preview.pdf"),
                            Settings(), {"paper": "A3"}, str(tmp_path / "result.zip"), deadline=1.0)  # long past
     assert "page-2/plan.dxf" not in zipfile.ZipFile(tmp_path / "result.zip").namelist()
-    assert result["warnings"] == ["Pages left out to stay within the time limit: 2"]
+    assert result["warnings"] == ["Page 1: 1 dimensions are to check; they are on the layer P2C-DIMENSION-CHECK",
+                                  "Pages left out to stay within the time limit: 2"]
 
 
 def test_pages_asked_for_beyond_the_file_or_the_limit_are_left_out():
@@ -144,9 +149,10 @@ def test_installed_libraries_are_listed_and_checked(api, origin, worker, tmp_pat
     worker(SYMBOL_LIBRARIES=tmp_path / "libs")
 
     catalogue = api.get("/libraries").json()
-    assert [lib["id"] for lib in catalogue["libraries"]] == ["din-10628", "floor-plan", "iec-60617", "acme-pid"]
-    assert catalogue["default"] == ["din-10628", "floor-plan", "iec-60617"]
-    assert catalogue["libraries"][3]["symbols"] == [{"name": "MY_VALVE", "description": "Box valve"}]
+    assert [lib["id"] for lib in catalogue["libraries"]] == ["building-symbols", "din-10628", "floor-plan",
+                                                             "iec-60617", "acme-pid"]
+    assert catalogue["default"] == ["din-10628", "floor-plan", "iec-60617", "building-symbols"]
+    assert catalogue["libraries"][4]["symbols"] == [{"name": "MY_VALVE", "description": "Box valve"}]
     vectorize = {"operations": ["vectorize"], "result_url": origin.url("/preview/result")}
     origin.source_status["plan.jpg"].append(404)  # the accepted job ends at once
     assert submit(api, origin, "plan.jpg", options={"libraries": ["acme-pid", "din-10628"]}, **vectorize).status_code == 202

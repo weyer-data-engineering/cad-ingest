@@ -3,7 +3,9 @@
 - libraries/din-10628: simplified P&ID symbols after DIN EN ISO 10628-2, at their printed size;
 - libraries/floor-plan: fixtures of floor plans (sanitary objects, kitchen), at their real size in millimetres;
 - libraries/iec-60617: simplified symbols of circuit diagrams after IEC 60617, at their printed size, drawn upright
-  (current flowing from top to bottom).
+  (current flowing from top to bottom);
+- libraries/building-symbols: the marks of building drawings and site plans (north arrow, axis, section marker), at
+  their printed size.
 
     python bench/make_library.py
 
@@ -52,14 +54,18 @@ SYMBOLS = {
     "REDUCER": ("Reducer", [[(-2, -2), (-2, 2), (2, 1.2), (2, -1.2), (-2, -2)]], [], [], [(-2, 0), (2, 0)], {}),
     "FILTER": ("Filter", [[(-3, 0), (0, 3), (3, 0), (0, -3), (-3, 0)], [(0, -3), (0, 3)]], [], [],
                [(-3, 0), (3, 0)], {}),
-    "ORIFICE": ("Orifice plate", [[(-0.6, -2.5), (-0.6, 2.5)], [(0.6, -2.5), (0.6, 2.5)]], [], [],
-                [(-0.6, 0), (0.6, 0)], {}),
+    # A plate across the pipe, wide enough that its sides stay apart on a drawing printed at half its size; the pipe
+    # may end at it or run through it
+    "ORIFICE": ("Orifice plate", [[(-0.8, -2.5), (0.8, -2.5), (0.8, 2.5), (-0.8, 2.5), (-0.8, -2.5)]], [], [],
+                [(-0.8, 0), (0.8, 0)], {}),
     "OFF_PAGE_CONNECTOR": ("Off-page connector", [[(-6.5, -3), (-6.5, 3), (3.5, 3), (6.5, 0), (3.5, -3), (-6.5, -3)]],
                            [], [], [(-6.5, 0), (6.5, 0)], {"TEXT": (-1.5, 0)}),
     "FLOW_ARROW": ("Flow direction", [[(-1.2, 1), (1.2, 0), (-1.2, -1)]], [], [], [(-1.2, 0), (1.2, 0)], {}),
 }
 HEAVY = {"PUMP", "COMPRESSOR", "HEAT_EXCHANGER"}  # drawn with the 0.5 mm pen like the pipes they sit in
-THROUGH = {"FLOW_ARROW": [(-1.2, 0), (1.2, 0)], "ORIFICE": [(-0.6, 0), (0.6, 0)]}  # symbols sitting on a pipe
+# Symbols sitting on a pipe. No flange (two short bars across a pipe that runs on): the letters of a text struck out by
+# hand fit it, so it would be placed where there is none (docs/photos-and-scans.md, Limits).
+THROUGH = {"FLOW_ARROW": [(-1.2, 0), (1.2, 0)]}
 
 
 LIBRARIES = Path(__file__).parent.parent / "libraries"
@@ -136,11 +142,19 @@ def pid(path: Path = LIBRARIES / "din-10628" / "symbols.dxf") -> None:
 
 LEADS = [[(0, 5), (0, 2.5)], [(0, -5), (0, -2.5)]]  # the wire ends above and below a two-terminal device
 UPRIGHT = [(0, 5), (0, -5)]
+# A contact has no leads: they would continue the wire in a straight line, so on the sheet the wire is seen to end
+# where the contact begins, and that is where its ports are
+GAP = [(0, 2.5), (0, -2.5)]
+# The moving contact of a make contact, open, with a vertex in the middle where the linkage of a switch attaches. As
+# two pieces, its end at the port is not taken for a free end where the wire runs on (symbols._tips).
+BLADE = [(0, -2.5), (-1.1, 0), (-2.2, 2.5)]
+CROSS = [[(-0.8, 1.7), (0.8, 3.3)], [(-0.8, 3.3), (0.8, 1.7)]]  # breaking capacity, on the fixed contact
+LINK = [(-1.1, 0), (-3.0, 0)]  # the mechanical linkage from the middle of the blade, drawn solid
 TAG = {"TAG": (-6, 0)}
 # name: description, polylines, circles (x, y, r), ports, attributes; on a 2.5 mm grid, the wire running vertically
 ELECTRICAL = {
-    "NO_CONTACT": ("Make contact", LEADS + [[(0, -2.5), (-2.2, 2.5)]], [], UPRIGHT, TAG),
-    "NC_CONTACT": ("Break contact", LEADS + [[(0, -2.5), (2.2, 2.9)], [(0, 2.5), (2.6, 2.5)]], [], UPRIGHT, TAG),
+    "NO_CONTACT": ("Make contact", [BLADE], [], GAP, TAG),
+    "NC_CONTACT": ("Break contact", [[(0, -2.5), (2.2, 2.9)], [(0, 2.5), (2.6, 2.5)]], [], GAP, TAG),
     "COIL": ("Relay coil", [[(0, 5), (0, 2.5)], [(0, -5), (0, -2.5)], [(-3.5, -2.5), (3.5, -2.5), (3.5, 2.5),
                                                                        (-3.5, 2.5), (-3.5, -2.5)]], [], UPRIGHT,
              {"TAG": (-8, 0)}),
@@ -150,6 +164,18 @@ ELECTRICAL = {
                  UPRIGHT, TAG),
     "LAMP": ("Indicator lamp", [[(0, 5), (0, 2.5)], [(0, -5), (0, -2.5)], [(-1.77, -1.77), (1.77, 1.77)],
                                 [(-1.77, 1.77), (1.77, -1.77)]], [(0, 0, 2.5)], UPRIGHT, TAG),
+    "TERMINAL": ("Terminal", [], [(0, 0, 1.25)], [(0, 1.25), (0, -1.25)], TAG),
+    "CIRCUIT_BREAKER": ("Circuit breaker", [BLADE] + CROSS, [], GAP, TAG),
+    # a circuit breaker with its thermal and magnetic release, a box joined to the blade
+    "MOTOR_PROTECTION": ("Motor protection switch", [BLADE, LINK, [(-3.0, -1.5), (-6.0, -1.5), (-6.0, 1.5),
+                                                                   (-3.0, 1.5), (-3.0, -1.5)]] + CROSS, [], GAP,
+                         {"TAG": (-10, 0)}),
+    # operated by pushing: the head at the end of the linkage
+    "PUSH_BUTTON": ("Push button", [BLADE, [(-1.1, 0), (-4.0, 0)], [(-3.4, 1.2), (-4.0, 1.2), (-4.0, -1.2),
+                                                                     (-3.4, -1.2)]], [], GAP, {"TAG": (-8, 0)}),
+    # earth in a circle, on the wire coming from above
+    "PROTECTIVE_EARTH": ("Protective earth", [[(0, 3), (0, 1)], [(-2, 1), (2, 1)], [(-1.3, 0), (1.3, 0)],
+                                              [(-0.6, -1), (0.6, -1)]], [(0, 0, 3)], [(0, 3)], TAG),
 }
 
 
@@ -172,7 +198,41 @@ def electrical(path: Path = LIBRARIES / "iec-60617" / "symbols.dxf") -> None:
     doc.saveas(path)
 
 
+# name: description, polylines, circles (x, y, r), attributes (centred); on a building drawing or a site plan,
+# printed at their size (a north arrow is as large at 1:500 as at 1:50). No level mark: a triangle on a line is tried
+# along every line, and the hatching of a cut slab holds such triangles at odd angles, so it would be placed where
+# there is none (docs/photos-and-scans.md, Limits).
+TEXT_HEIGHT = 2.5  # mm: the lettering of building drawings these marks go with (text_height in library.toml)
+BUILDING = {
+    # an arrow through a circle, pointing north, and the N above it: a text, which the text recognition may read
+    "NORTH_ARROW": ("North arrow", [[(0, 7.5), (2.5, -4.5), (0, -2), (-2.5, -4.5), (0, 7.5)], [(0, 7.5), (0, -2)]],
+                    [(0, 0, 6)], {"LETTER": (0, 11)}),
+    # the circle at the end of an axis with its letter or number, and the start of the axis line below it
+    "AXIS": ("Axis", [[(0, -5), (0, -8)]], [(0, 0, 5)], {"AXIS": (0, 0)}),
+    # the end of a section line: the letter in a circle, the arrow showing the direction of view, the start of the line
+    "SECTION_MARK": ("Section marker", [[(3.46, 2), (7, 0), (3.46, -2)], [(0, -4), (0, -8)]], [(0, 0, 4)],
+                     {"LETTER": (0, 0)}),
+}
+
+
+def building(path: Path = LIBRARIES / "building-symbols" / "symbols.dxf") -> None:
+    doc = ezdxf.new("R2018", units=ezdxf.units.MM)
+    pen = {"lineweight": 25}
+    for name, (description, polylines, circles, attributes) in BUILDING.items():
+        block = doc.blocks.new(name, dxfattribs={"description": description})
+        for points in polylines:
+            closed = points[0] == points[-1]
+            block.add_lwpolyline(points[:-1] if closed else points, close=closed, dxfattribs=pen)
+        for x, y, r in circles:
+            block.add_circle((x, y), r, dxfattribs=pen)
+        for tag, point in attributes.items():
+            block.add_attdef(tag, point, dxfattribs={"height": TEXT_HEIGHT}).set_placement(
+                point, align=TextEntityAlignment.MIDDLE_CENTER)
+    doc.saveas(path)
+
+
 if __name__ == "__main__":
     pid()
     floor_plan()
     electrical()
+    building()

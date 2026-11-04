@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from dataclasses import replace
 
 import cv2
 import numpy as np
@@ -11,9 +12,10 @@ from scipy import ndimage
 from scipy.spatial import cKDTree
 from skimage.morphology import skeletonize
 
-from .model import Arc, Circle, Line, Polygon
+from .model import Arc, Circle, Dimension, Drawing, Line, Polygon, line_type
 
 AXIS_SNAP = math.radians(2.0)
+LARGEST = 250.0  # mm: the largest radius of a traced arc
 
 
 def fills(ink: np.ndarray, ppm: float) -> tuple[list[Polygon], list[Circle], np.ndarray]:
@@ -350,10 +352,11 @@ def _ordered(sub: np.ndarray, ends: np.ndarray) -> np.ndarray | None:
 
 # --------------------------------------------------------------------------- shapes
 
-def shapes(polylines: list[tuple[np.ndarray, float]], ppm: float) -> tuple[list[Line], list[Arc], list[Circle]]:
+def shapes(polylines: list[tuple[np.ndarray, float]], ppm: float, largest: float = LARGEST
+           ) -> tuple[list[Line], list[Arc], list[Circle]]:
     """Fits a circle or an arc where a whole polyline is round; otherwise splits it into the fewest straight segments
     and arcs that stay within a tenth of a millimetre or so of it (see _pieces), so that a curve comes out as one or
-    a few arcs instead of a chain of short lines."""
+    a few arcs instead of a chain of short lines. Arcs have a radius of ``largest`` mm at most."""
     lines, arcs, circles = [], [], []
     eps = max(1.2, 0.15 * ppm)
     sag = max(2.0, 0.25 * ppm)  # an arc must bulge at least 0.25 mm from its chord
@@ -374,7 +377,7 @@ def shapes(polylines: list[tuple[np.ndarray, float]], ppm: float) -> tuple[list[
             continue
         if len(pts) >= 8:
             fit = _circle_fit(pts)
-            if fit and fit[3] < tol and 0.5 * ppm <= fit[2] <= 250 * ppm:
+            if fit and fit[3] < tol and 0.5 * ppm <= fit[2] <= largest * ppm:
                 cx, cy, r, _ = fit
                 a = np.degrees(np.arctan2(pts[:, 1] - cy, pts[:, 0] - cx))
                 sweep = _sweep(a)
@@ -385,7 +388,7 @@ def shapes(polylines: list[tuple[np.ndarray, float]], ppm: float) -> tuple[list[
                     start, end = (a[0], a[-1]) if _increasing(a) else (a[-1], a[0])
                     arcs.append(Arc(cx / ppm, cy / ppm, r / ppm, start % 360, end % 360, w))
                     continue
-        for piece in _pieces(pts, closed, ppm, width):
+        for piece in _pieces(pts, closed, ppm, width, largest):
             if isinstance(piece, Line):
                 lines.append(Line(piece.x1 / ppm, piece.y1 / ppm, piece.x2 / ppm, piece.y2 / ppm, w))
             else:
@@ -393,7 +396,8 @@ def shapes(polylines: list[tuple[np.ndarray, float]], ppm: float) -> tuple[list[
     return lines, arcs, circles
 
 
-def _pieces(pts: np.ndarray, closed: bool, ppm: float, width: float = 0.0) -> list[Line | Arc]:
+def _pieces(pts: np.ndarray, closed: bool, ppm: float, width: float = 0.0, largest: float = LARGEST
+            ) -> list[Line | Arc]:
     """Splits a traced centre line (pixels; ``width`` its stroke width) into the fewest straight segments and arcs
     that each stay close to it.
 
@@ -429,7 +433,7 @@ def _pieces(pts: np.ndarray, closed: bool, ppm: float, width: float = 0.0) -> li
     for j in range(1, n):
         misses = 0
         for i in range(j - 1, max(-1, j - 61), -1):
-            piece, cost = _fit_piece(pts[idx[i]:idx[j] + 1], line_tol, arc_rms, arc_max, smallest, ppm)
+            piece, cost = _fit_piece(pts[idx[i]:idx[j] + 1], line_tol, arc_rms, arc_max, smallest, ppm, largest)
             if piece is None:
                 misses += 1
                 if misses > 3:  # spans a corner: reaching further back only gets worse
@@ -448,9 +452,10 @@ def _pieces(pts: np.ndarray, closed: bool, ppm: float, width: float = 0.0) -> li
     return out[::-1]
 
 
-def _fit_piece(seg: np.ndarray, line_tol: float, arc_rms: float, arc_max: float, smallest: float, ppm: float):
-    """A straight segment or an arc (radius ``smallest`` or more) through the ends of ``seg`` (pixels) if it stays
-    close to all of its points;
+def _fit_piece(seg: np.ndarray, line_tol: float, arc_rms: float, arc_max: float, smallest: float, ppm: float,
+               largest: float = LARGEST):
+    """A straight segment or an arc (radius ``smallest`` pixels to ``largest`` mm) through the ends of ``seg``
+    (pixels) if it stays close to all of its points;
     returns (piece, cost) or (None, None). Arcs cost slightly more, so that a straight run stays a line, and must
     bulge at least 0.25 mm from their chord. A flat arc (under 45 degrees) costs as much as two lines: it is only
     worth it where it replaces more, not where it rounds off a corner of the traced centre line."""
@@ -474,7 +479,7 @@ def _fit_piece(seg: np.ndarray, line_tol: float, arc_rms: float, arc_max: float,
         return None, None
     t = float(np.sum(v * (a * a + v * v - h * h))) / den
     r = math.hypot(h, t)
-    if not smallest <= r <= 250 * ppm:
+    if not smallest <= r <= largest * ppm:
         return None, None
     dev = np.hypot(a, v - t) - r
     if float(np.sqrt(np.mean(dev ** 2))) > arc_rms or float(np.max(np.abs(dev))) > arc_max:
@@ -584,66 +589,99 @@ def _runs(arcs: list[Arc], gap: float) -> list[tuple[float, float, list[Arc]]]:
 
 # --------------------------------------------------------------------------- line clean-up
 
-def merge_lines(lines: list[Line], tol: float = 0.35, gap: float = 0.6, dash_gap: float = 2.6) -> list[Line]:
+def merge_lines(lines: list[Line], tol: float = 0.35, gap: float = 0.6, dash_gap: float = 2.6,
+                one_frame: bool = True) -> list[Line]:
     """Joins collinear pieces: overlapping or nearly touching ones into one line, regular short
-    pieces with gaps into one dashed line. Works on (angle, normal offset, position) per line."""
-    items = []
-    for ln in lines:
-        dx, dy = ln.x2 - ln.x1, ln.y2 - ln.y1
-        lateral = max(math.tan(AXIS_SNAP) * math.hypot(dx, dy), 0.25)  # short pieces have noisy angles
-        if abs(dy) <= lateral and abs(dx) >= abs(dy):
-            th = 0.0
-        elif abs(dx) <= lateral:
-            th = math.pi / 2
-        else:
-            th = math.atan2(dy, dx) % math.pi
-        c, s = math.cos(th), math.sin(th)
-        mx, my = (ln.x1 + ln.x2) / 2, (ln.y1 + ln.y2) / 2
-        t1, t2 = sorted((ln.x1 * c + ln.y1 * s, ln.x2 * c + ln.y2 * s))
-        items.append((th, -mx * s + my * c, t1, t2, ln))
-    items.sort(key=lambda it: (round(math.degrees(it[0])), it[1]))
+    pieces with gaps into one dashed line. Works on (angle, normal offset, position) per line; with ``one_frame``,
+    the pieces of a group are measured at one angle and merged where they are drawn (see _where_drawn)."""
+    items = sorted((_measured(ln) for ln in lines), key=lambda it: (round(math.degrees(it[0])), it[1]))
     out, i = [], 0
     while i < len(items):
         j = i + 1
         while j < len(items) and abs(items[j][0] - items[i][0]) < math.radians(1.0) \
                 and abs(items[j][1] - items[j - 1][1]) < 2 * tol:  # neighbours, so pixel steps do not split a line
             j += 1
-        out += _merge_group(items[i:j], gap, dash_gap, tol)
+        group = items[i:j]
+        out += _where_drawn(group, gap, dash_gap, tol) if one_frame else _merge_group(group, gap, dash_gap, tol)
         i = j
     return out
 
 
+def _measured(ln: Line) -> tuple:
+    """The line measured at its own angle (see _at), lines within AXIS_SNAP of horizontal or vertical at exactly
+    that."""
+    dx, dy = ln.x2 - ln.x1, ln.y2 - ln.y1
+    lateral = max(math.tan(AXIS_SNAP) * math.hypot(dx, dy), 0.25)  # short pieces have noisy angles
+    if abs(dy) <= lateral and abs(dx) >= abs(dy):
+        return _at(ln, 0.0)
+    if abs(dx) <= lateral:
+        return _at(ln, math.pi / 2)
+    return _at(ln, math.atan2(dy, dx) % math.pi)
+
+
+def _at(ln: Line, th: float) -> tuple:
+    """The line measured at the angle ``th``: (th, normal offset of its middle, start and end along th, the line)."""
+    c, s = math.cos(th), math.sin(th)
+    t1, t2 = sorted((ln.x1 * c + ln.y1 * s, ln.x2 * c + ln.y2 * s))
+    return th, -(ln.x1 + ln.x2) / 2 * s + (ln.y1 + ln.y2) / 2 * c, t1, t2, ln
+
+
+def _where_drawn(group: list, gap: float, dash_gap: float, tol: float) -> list[Line]:
+    """The pieces of a group (within a degree of one another) merged where they are drawn. They are measured at the
+    angle of the longest, which shows its angle best: each at its own angle, their offsets differed by their distance
+    from the corner of the sheet times their difference in angle, millimetres on a sheet, and dense hatching came out
+    moved across the line it ends on. Each merged line is drawn at the length-weighted angle of its own pieces: drawn at
+    the angle of another piece of the group, a long line was turned about its middle, its ends moved off the corners
+    and junctions they make."""
+    frame = max(group, key=lambda g: g[3] - g[2])[0]
+    own = {id(g[4]): g[0] for g in group}
+    out = []
+    for run in _line_runs([_at(g[4], frame) for g in group], dash_gap, tol):
+        # as a turn from the frame: pieces all at exactly 0 or 90 degrees give exactly that, which close_corners needs
+        th = frame + float(np.average([own[id(g[4])] - frame for g in run], weights=[g[3] - g[2] + 1e-6 for g in run]))
+        out += _drawn(sorted((_at(g[4], th) for g in run), key=lambda g: g[2]), th, gap)
+    return out
+
+
 def _merge_group(group, gap, dash_gap, tol: float) -> list[Line]:
+    """The former merge, without Features.merge_where_drawn: the pieces measured each at its own angle, the merged
+    lines drawn at the angle of the group's first piece."""
+    return [ln for run in _line_runs(group, dash_gap, tol) for ln in _drawn(run, group[0][0], gap)]
+
+
+def _line_runs(group, dash_gap, tol: float) -> list[list]:
     """Joins the parallel pieces of one direction into runs along their length. A piece joins a run that it continues
     (within ``dash_gap``) at the offset of the run's last piece from 1 mm (within ``tol``), or that it runs beside
     within twice ``tol`` (two strokes that close are one). So a line on a photo may drift a little along its length,
     while two lines a millimetre apart, such as a pipe and the box of its line number, stay apart and keep their
-    places, and short strokes between them, such as letters touching both, do not pull them together. Each run takes
-    the length-weighted offset of its pieces."""
-    th = group[0][0]
-    c, s = math.cos(th), math.sin(th)
-    runs: list[list] = []  # [pieces, weighted offset sum, length sum, end, offset of its last piece from 1 mm]
+    places, and short strokes between them, such as letters touching both, do not pull them together."""
+    runs: list[list] = []  # [pieces, end, offset of its last piece from 1 mm]
     for g in sorted(group, key=lambda g: g[2]):
-        length = g[3] - g[2] + 1e-6
-        fits = [r for r in runs if g[2] - r[3] <= dash_gap and abs(g[1] - r[4]) < (2 * tol if g[2] < r[3] else tol)]
+        fits = [r for r in runs if g[2] - r[1] <= dash_gap and abs(g[1] - r[2]) < (2 * tol if g[2] < r[1] else tol)]
         if fits:
-            r = min(fits, key=lambda r: abs(g[1] - r[4]))
+            r = min(fits, key=lambda r: abs(g[1] - r[2]))
             r[0].append(g)
-            r[1] += g[1] * length
-            r[2] += length
-            r[3] = max(r[3], g[3])
-            r[4] = g[1] if length >= 1.0 else r[4]
+            r[1] = max(r[1], g[3])
+            r[2] = g[1] if g[3] - g[2] + 1e-6 >= 1.0 else r[2]
         else:
-            runs.append([[g], g[1] * length, length, g[3], g[1]])
-    out = []
-    for members, weighted, total, _, _ in runs:
-        rho = weighted / total
-        pieces = _solid_pieces(members, gap)
-        if _dashed(pieces):
-            pieces = [(pieces[0][0], pieces[-1][1], max(p[2] for p in pieces), True)]
-        for t1, t2, w, dashed in pieces:
-            out.append(Line(t1 * c - rho * s, t1 * s + rho * c, t2 * c - rho * s, t2 * s + rho * c, w, dashed))
-    return out
+            runs.append([[g], g[3], g[1]])
+    return [r[0] for r in runs]
+
+
+def _drawn(run: list, th: float, gap: float) -> list[Line]:
+    """A run of pieces (measured at ``th``, in order along it) drawn at the angle ``th`` and the length-weighted offset
+    of its pieces: its solid stretches, or one dashed line."""
+    c, s = math.cos(th), math.sin(th)
+    weighted = total = 0.0
+    for g in run:  # added up in turn, not with sum(), whose compensated sums would move the former merge's lines
+        weighted += g[1] * (g[3] - g[2] + 1e-6)
+        total += g[3] - g[2] + 1e-6
+    rho = weighted / total
+    pieces = _solid_pieces(run, gap)
+    if _dashed(pieces):
+        pieces = [(pieces[0][0], pieces[-1][1], max(p[2] for p in pieces), True)]
+    return [Line(t1 * c - rho * s, t1 * s + rho * c, t2 * c - rho * s, t2 * s + rho * c, w, dashed)
+            for t1, t2, w, dashed in pieces]
 
 
 def _dashed(pieces) -> bool:
@@ -674,12 +712,13 @@ BRIDGE_ANGLE = math.radians(12)
 BRANCH = 4.0  # mm: lines from this length are extended onto a line they stop short of (pipes, not symbol strokes)
 
 
-def bridge(lines: list[Line], arcs: list[Arc], norm: np.ndarray, ppm: float) -> list[Line]:
+def bridge(lines: list[Line], arcs: list[Arc], norm: np.ndarray, ppm: float, cut: bool = False) -> list[Line]:
     """Closes gaps in lines that the scan shows as continuous: two line or arc ends that face each other up to
     BRIDGE mm apart, or a line end that points at another line, are joined where the grey image has the stroke's
     ink all along the gap (a faint or broken stretch, a crossing that cut the stroke). A gap of bare paper stays
     open, so dashes, line jumps and deliberate breaks are kept. Collinear lines become one line; otherwise the
-    line end is moved onto the other piece. Returns the lines (arcs are not changed)."""
+    line end is moved onto the other piece. ``cut``: also the two pieces of a short straight stroke that a line
+    crossing it cut in two (Features.short_strokes). Returns the lines (arcs are not changed)."""
     if not lines:
         return lines
     ends, dirs, owner, width, length = [], [], [], [], []
@@ -718,6 +757,7 @@ def bridge(lines: list[Line], arcs: list[Arc], norm: np.ndarray, ppm: float) -> 
         pairs.append((max(length[i], length[j]) < BRANCH, g, i, j))
     used, merged, dots = set(), {}, []
     out = list(lines)
+    long_ = np.array([(ln.x1, ln.y1, ln.x2, ln.y2) for ln in lines if _length(ln) >= BRANCH]).reshape(-1, 4)
     for short, g, i, j in sorted(pairs):
         if i in used or j in used:
             continue
@@ -726,11 +766,14 @@ def bridge(lines: list[Line], arcs: list[Arc], norm: np.ndarray, ppm: float) -> 
             continue
         if not _stroked(darkness, E[i], E[j], D[i], min(width[i], width[j]), ppm):
             continue
-        if short:  # two short strokes: only as part of a longer run, see _dotted
+        # two short strokes: only as part of a longer run (_dotted), or where they are one straight stroke that a
+        # line crossing between their ends, which point at each other, cut in two, as a tick on a dimension line
+        if short and not (cut and (E[j] - E[i]) @ (math.cos(D[i]), math.sin(D[i])) > 0
+                          and _across(E[i], E[j], long_) and _one_stroke(out[a[0]], out[b[0]])):
             dots.append((i, j))
             continue
-        used |= {i, j}
-        if a[0] < len(lines) and b[0] < len(lines) and _in_line(out[a[0]], out[b[0]]):
+        used |= {i, j}  # the two pieces of a short stroke cut by a line become one line again, as drawn
+        if a[0] < len(lines) and b[0] < len(lines) and (short or _in_line(out[a[0]], out[b[0]])):
             merged[a] = b
         elif a[0] < len(lines) and b[0] < len(lines):  # meet half way, the polylines join them
             _move(out[a[0]], a[1], (E[i] + E[j]) / 2)
@@ -832,6 +875,36 @@ def _ray_hit(p: np.ndarray, u: np.ndarray, ln: Line) -> float | None:
     w = a - p
     t, s = (w[0] * v[1] - w[1] * v[0]) / cross, (w[0] * u[1] - w[1] * u[0]) / cross
     return float(t) if t > 0 and -0.02 <= s <= 1.02 else None
+
+
+CUT = 0.3  # mm past either end of a gap that a line crossing it may run, the ends being cut back by its stroke
+
+
+def _across(p: np.ndarray, q: np.ndarray, segments: np.ndarray) -> bool:
+    """Whether one of the ``segments`` (x1, y1, x2, y2) runs across the gap from p to q at 30 degrees or more: the
+    gap is where that line cut a stroke crossing it, such as the tick on a dimension line."""
+    if not len(segments):
+        return False
+    g = float(np.hypot(*(q - p)))
+    u = (q - p) / max(g, 1e-9)
+    a, v = segments[:, :2], segments[:, 2:] - segments[:, :2]
+    cross = u[0] * v[:, 1] - u[1] * v[:, 0]
+    steep = np.abs(cross) >= 0.5 * np.hypot(v[:, 0], v[:, 1])
+    w = a - p
+    safe = np.where(steep, cross, 1.0)
+    t, s = (w[:, 0] * v[:, 1] - w[:, 1] * v[:, 0]) / safe, (w[:, 0] * u[1] - w[:, 1] * u[0]) / safe
+    return bool(np.any(steep & (t >= -CUT) & (t <= g + CUT) & (s >= 0) & (s <= 1)))
+
+
+def _one_stroke(a: Line, b: Line) -> bool:
+    """Whether two pieces are one straight stroke: every end of both within half the stroke's width (at least 0.1 mm)
+    of the line through them, so that joining them moves no linework off the stroke. The pieces of a curve, or of two
+    strokes meeting at an angle, bend away from that line and stay apart."""
+    j = _joined([a, b])
+    p, v = np.array([j.x1, j.y1]), np.array([j.x2 - j.x1, j.y2 - j.y1])
+    ends = np.array([(a.x1, a.y1), (a.x2, a.y2), (b.x1, b.y1), (b.x2, b.y2)]) - p
+    off = np.abs(ends[:, 0] * v[1] - ends[:, 1] * v[0]) / max(float(np.hypot(*v)), 1e-9)
+    return bool(off.max() <= max(0.1, min(a.width, b.width) / 2))
 
 
 def _stroked(darkness: np.ndarray, p: np.ndarray, q: np.ndarray, heading: float, width: float, ppm: float) -> bool:
@@ -1067,3 +1140,427 @@ def close_corners(lines: list[Line], tol: float = 1.0) -> list[Line]:
                     k = int(np.argmin(np.where(ok, d, np.inf)))
                     setattr(ln, ("x" if horizontal else "y") + end, float(pos[k]))
     return [ln for ln in lines if math.hypot(ln.x2 - ln.x1, ln.y2 - ln.y1) > 0.2]
+
+
+# --------------------------------------------------------------------------- line types
+
+DOT_LONG = 0.8  # mm: a dot of a dotted or dash-dot line is no longer than this, or than twice its pen
+CHAIN_DASH = (1.5, 25.0)  # mm: the long dashes of a dash-dot line
+CHAIN_GAP = 8.0  # mm: the longest gap between two of them, with the dot in it
+DOT_GAP = (0.5, 4.0)  # mm: the spacing of the dots of a dotted line
+DOTS = 6  # dots in a row that make a dotted line
+
+
+def _profile(darkness: np.ndarray, p: np.ndarray, q: np.ndarray, ppm: float) -> tuple[np.ndarray, float]:
+    """The darkness every half pixel from p to q (mm), the darkest within a pixel across the line, and the step in
+    mm."""
+    length = float(np.hypot(*(q - p)))
+    n = max(2, int(length * ppm * 2) + 1)
+    path = p + (q - p) * np.linspace(0, 1, n)[:, None]
+    u = (q - p) / max(length, 1e-9)
+    side = np.array([-u[1], u[0]]) / ppm
+    h, w = darkness.shape
+    best = np.zeros(n, np.float32)
+    for k in (-1, 0, 1):
+        px = (path + side * k) * ppm
+        x = np.clip(np.round(px[:, 0]).astype(int), 0, w - 1)
+        y = np.clip(np.round(px[:, 1]).astype(int), 0, h - 1)
+        best = np.maximum(best, darkness[y, x])
+    return best, length / (n - 1)
+
+
+def _ink_runs(on: np.ndarray) -> list[tuple[int, int]]:
+    """The stretches [start, end) where ``on`` holds."""
+    edges = np.flatnonzero(np.diff(np.r_[0, on.astype(np.int8), 0]))
+    return list(zip(edges[::2].tolist(), edges[1::2].tolist()))
+
+
+def _pattern(dark: np.ndarray, step: float, width: float) -> tuple[str, float | None] | None:
+    """The line type of a line that is not continuous and the length of one repeat of its pattern (mm), from the
+    darkness along it (sampled every ``step`` mm): its dashes and dots are the stretches at least half as dark as its
+    ink, a dot no longer than DOT_LONG or twice the pen ``width``. Dots alone make a dotted line, a dot between each
+    two dashes a dash-dot line, dashes alone a dashed line. None where too few are seen to tell. Where some are
+    longer, a dot is also no more than half as long as they are: the dashes of a small print are as short as dots, and
+    some of them, a little longer with the blur, would be taken for its only dashes."""
+    ref = float(np.percentile(dark, 90))
+    runs = _ink_runs(dark >= 0.5 * ref) if ref >= 40 else []
+    if len(runs) < 3:
+        return None
+    centre = np.array([(a + b) / 2 * step for a, b in runs])
+    length = np.array([(b - a) * step for a, b in runs])
+    dot = length <= max(DOT_LONG, 2 * width)
+    if dot[1:-1].all():  # the first and last may be cut short
+        return "dotted", float(np.median(np.diff(centre)))
+    dot &= length <= 0.5 * float(np.median(length[~dot]))
+    dash = np.flatnonzero(~dot)
+    period = float(np.median(np.diff(centre[dash]))) if len(dash) >= 2 else None
+    between = [int(dot[a + 1:b].sum()) for a, b in zip(dash, dash[1:])]
+    if len(between) >= 2 and np.mean([k == 1 for k in between]) >= 0.6:
+        return "dashdot", period
+    return "dashed", period
+
+
+def line_types(lines: list[Line], norm: np.ndarray, ppm: float) -> list[Line]:
+    """Gives each dashed line its line type and the length of one repeat of its pattern, measured along it on the
+    grey image (see _pattern); a line whose pattern cannot be told stays dashed."""
+    darkness = 255.0 - norm.astype(np.float32)
+    for ln in lines:
+        if ln.dashed and not ln.linetype:
+            found = _pattern(*_profile(darkness, np.array([ln.x1, ln.y1]), np.array([ln.x2, ln.y2]), ppm), ln.width)
+            ln.linetype, ln.pattern = found if found else ("dashed", None)
+            ln.pattern = ln.pattern and max(ln.pattern, 0.2)
+    return lines
+
+
+def dash_dots(lines: list[Line], norm: np.ndarray, ppm: float) -> list[Line]:
+    """Dash-dot lines, such as the axes of a building: their long dashes are too far apart for merge_lines, with a dot
+    between each two. Three or more solid pieces in line, of about one length (CHAIN_DASH), with gaps of about one
+    length up to CHAIN_GAP and no longer than the pieces, become one dash-dot line where the grey image shows a dot
+    in most of the gaps (see _dot)."""
+    chains = _chains(lines, [i for i, ln in enumerate(lines) if not ln.dashed
+                             and CHAIN_DASH[0] <= _length(ln) <= CHAIN_DASH[1]])
+    if not chains:
+        return lines
+    darkness = 255.0 - norm.astype(np.float32)
+    out, dropped = [], set()
+    for chain in chains:
+        pieces = [lines[i] for i in chain]
+        u = _direction(pieces[0])
+        spans = sorted(sorted((ln.x1 * u[0] + ln.y1 * u[1], ln.x2 * u[0] + ln.y2 * u[1])) for ln in pieces)
+        lengths = np.array([b - a for a, b in spans])
+        gaps = np.array([b[0] - a[1] for a, b in zip(spans, spans[1:])])
+        inner = lengths[1:-1] if len(lengths) > 3 else lengths
+        if np.mean(np.abs(inner - np.median(inner)) <= 0.3 * np.median(inner)) < 0.7 \
+                or np.mean(np.abs(gaps - np.median(gaps)) <= 0.35 * np.median(gaps)) < 0.7 \
+                or np.median(gaps) > np.median(lengths):
+            continue
+        joined = _joined(pieces)
+        p, v = np.array([joined.x1, joined.y1]), _direction(joined)
+        t0 = float(p @ u)
+        width = float(np.median([ln.width for ln in pieces]))
+        dots = [_dot(darkness, p + v * (a[1] - t0), p + v * (b[0] - t0), width, ppm) for a, b in zip(spans, spans[1:])]
+        if np.mean(dots) < 0.6:
+            continue
+        period = float(np.median(np.diff([(a + b) / 2 for a, b in spans])))
+        out.append(replace(joined, width=width, dashed=True, linetype="dashdot", pattern=period))
+        dropped |= set(chain)
+    return [ln for i, ln in enumerate(lines) if i not in dropped] + out
+
+
+def _direction(ln: Line) -> np.ndarray:
+    """The unit vector along a line, pointing right (or down, for a vertical one)."""
+    u = np.array([ln.x2 - ln.x1, ln.y2 - ln.y1]) / max(_length(ln), 1e-9)
+    return u if u[0] > 1e-9 or abs(u[0]) <= 1e-9 and u[1] > 0 else -u
+
+
+def _chains(lines: list[Line], cand: list[int]) -> list[list[int]]:
+    """Runs of three or more of the lines ``cand`` that follow one another in line with gaps of 0.4 mm to CHAIN_GAP,
+    each piece joined to the nearest one ahead of it."""
+    if len(cand) < 3:
+        return []
+    ends = np.array([[(lines[i].x1, lines[i].y1), (lines[i].x2, lines[i].y2)] for i in cand]).reshape(-1, 2)
+    ahead: dict[int, tuple[float, int]] = {}
+    for a, b in cKDTree(ends).query_pairs(CHAIN_GAP):
+        i, j = cand[a // 2], cand[b // 2]
+        if i == j or not _in_line(lines[i], lines[j]):
+            continue
+        u = _direction(lines[i])
+        ti, tj = (sorted((ln.x1 * u[0] + ln.y1 * u[1], ln.x2 * u[0] + ln.y2 * u[1])) for ln in (lines[i], lines[j]))
+        first, second, gap = (i, j, tj[0] - ti[1]) if ti[1] <= tj[0] else (j, i, ti[0] - tj[1])
+        if 0.4 <= gap <= CHAIN_GAP and gap < ahead.get(first, (math.inf, -1))[0]:
+            ahead[first] = (gap, second)
+    behind: dict[int, tuple[float, int]] = {}
+    for first, (gap, second) in ahead.items():
+        if gap < behind.get(second, (math.inf, -1))[0]:
+            behind[second] = (gap, first)
+    nxt = {first: second for first, (_, second) in ahead.items() if behind[second][1] == first}
+    out, inner = [], set(nxt.values())
+    for start in nxt:
+        if start in inner:
+            continue
+        chain = [start]
+        while chain[-1] in nxt and len(chain) <= len(cand):
+            chain.append(nxt[chain[-1]])
+        if len(chain) >= 3:
+            out.append(chain)
+    return out
+
+
+def _dot(darkness: np.ndarray, p: np.ndarray, q: np.ndarray, width: float, ppm: float) -> bool:
+    """Whether the gap from p to q (mm) between two dashes holds a dot: one short stretch of ink, at least a quarter as
+    dark as the dashes, in its middle part with paper between it and either dash, and paper beside it, so that a line
+    crossing the gap is no dot."""
+    dark, step = _profile(darkness, p, q, ppm)
+    ink = float(np.percentile(np.r_[_profile(darkness, p - (q - p) * 0.2, p, ppm)[0],
+                                    _profile(darkness, q, q + (q - p) * 0.2, ppm)[0]], 75))  # the dashes beside it
+    if ink < 40 or len(dark) < 5:
+        return False
+    longest = max(DOT_LONG, 2 * width) + 2 / ppm  # with its blur
+    runs = [(a, b) for a, b in _ink_runs(dark >= ink / 4) if a > 0 and b < len(dark)]  # not the ends of the dashes
+    if len(runs) != 1 or not 0.2 * len(dark) <= sum(runs[0]) / 2 <= 0.8 * len(dark) \
+            or (runs[0][1] - runs[0][0]) * step > longest:
+        return False
+    at = p + (q - p) * (sum(runs[0]) / 2) / (len(dark) - 1)
+    u = (q - p) / max(float(np.hypot(*(q - p))), 1e-9)
+    side = np.array([-u[1], u[0]]) * (width / 2 + 0.5)
+    return max(_dark_at(darkness, at + side, ppm), _dark_at(darkness, at - side, ppm)) < ink / 4
+
+
+def dotted(ink: np.ndarray, norm: np.ndarray, ppm: float) -> tuple[list[Line], np.ndarray]:
+    """Dotted lines: rows of DOTS or more small round spots of ink (no larger than DOT_LONG across) at one spacing
+    (DOT_GAP), each in line with the next; a dot or two may be missing, where the row crosses a line. Too small to be
+    traced, the dots would be lost. Returns the lines (dotted, their spacing as pattern) and the mask of their dots.
+    No lines are fields of dots, such as a hatch or a screened area, whose dots have three others about as near as
+    the nearest one (in a row, two), grids, whose rows have dots beside them (_grid), and rows of specks that are not
+    even or have ink between them on the grey image ``norm`` (_even)."""
+    n, lab, stats, cent = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    big, small = stats[1:, 2:4].max(axis=1), stats[1:, 2:4].min(axis=1)
+    idx = np.flatnonzero((big <= max(3, DOT_LONG * ppm)) & (small >= 0.5 * big)) + 1
+    lo, hi = DOT_GAP
+    if len(idx) >= DOTS:
+        near = cKDTree(cent[idx] / ppm).query(cent[idx] / ppm, k=4, distance_upper_bound=hi)[0]
+        idx = idx[~(near[:, 3] <= 1.3 * near[:, 1])]  # not in a field of dots
+    if len(idx) < DOTS:
+        return [], np.zeros_like(ink)
+    pts = cent[idx] / ppm
+    tree = cKDTree(pts)
+    dist, nb = tree.query(pts, k=4, distance_upper_bound=hi)  # the next dots of a row are among the nearest
+    i, j, gap = np.repeat(np.arange(len(pts)), 3), nb[:, 1:].ravel(), dist[:, 1:].ravel()
+    ok = (j < len(pts)) & (gap >= lo)
+    pairs = dict(zip(zip(np.minimum(i, j)[ok].tolist(), np.maximum(i, j)[ok].tolist()), gap[ok].tolist()))
+    rows: list[list[int]] = []
+    taken: set[int] = set()
+    for a, b in sorted(pairs, key=pairs.get):  # the closest dots first
+        if a not in taken and b not in taken:
+            row = _row(pts, tree, a, b, taken)
+            if len(row) >= 3:
+                rows.append(row)
+                taken |= set(row)
+    out, mark = [], np.zeros(n, bool)
+    for row in sorted(_joined_rows(pts, rows), key=len, reverse=True):
+        p, q = pts[row[0]], pts[row[-1]]
+        spacing = float(np.median(np.hypot(*np.diff(pts[row], axis=0).T)))
+        if len(row) < DOTS or _grid(pts, tree, row, spacing) \
+                or not _even(norm, stats[idx[row]], pts[row], spacing, ppm) \
+                or any(max(_off(p, ln), _off(q, ln)) <= max(0.2 * spacing, 0.1) for ln in out):  # found already
+            continue
+        area = float(np.median(stats[idx[row], cv2.CC_STAT_AREA]))
+        out.append(Line(float(p[0]), float(p[1]), float(q[0]), float(q[1]), 2 * math.sqrt(area / math.pi) / ppm, True,
+                        linetype="dotted", pattern=spacing))
+        mark[idx[row]] = True
+    return out, (mark[lab].astype(np.uint8) if out else np.zeros_like(ink))
+
+
+def _even(norm: np.ndarray, stats: np.ndarray, pts: np.ndarray, spacing: float, ppm: float) -> bool:
+    """Whether the dots of a row (their component stats, and centres in mm) are dots of a pen: of one size and
+    darkness, with paper between them on the grey image. Specks of noise vary; a solid line whose ink broke up into
+    specks leaves a faint stroke between them."""
+    area = stats[:, cv2.CC_STAT_AREA]
+    dark = np.array([255.0 - float(norm[y:y + h, x:x + w].min()) for x, y, w, h in stats[:, :4].tolist()])
+    if np.percentile(area, 75) > 2.5 * np.percentile(area, 25) \
+            or np.percentile(dark, 25) < 0.5 * np.percentile(dark, 75):
+        return False
+    step = np.diff(pts, axis=0)
+    near = np.hypot(*step.T) <= 1.5 * spacing  # next to each other, no dot missing between them
+    if not near.any():
+        return False
+    u = step[near] / np.hypot(*step[near].T)[:, None]
+    mid = pts[:-1][near, None, :] + np.array([1 / 3, 1 / 2, 2 / 3])[None, :, None] * step[near, None, :]
+    h, w = norm.shape
+    across = []
+    for k in (-1, 0, 1):  # the darkest within a pixel across the row
+        xy = (mid + np.stack([-u[:, 1], u[:, 0]], axis=1)[:, None, :] * k / ppm) * ppm
+        x = np.clip(np.round(xy[..., 0]).astype(int), 0, w - 1)
+        y = np.clip(np.round(xy[..., 1]).astype(int), 0, h - 1)
+        across.append(255.0 - norm[y, x].astype(np.float32))
+    between = np.max(across, axis=0).min(axis=1)  # the lightest in the middle of each gap
+    return float(np.median(between)) <= 0.35 * float(np.median(dark))
+
+
+def _row(pts: np.ndarray, tree: cKDTree, a: int, b: int, taken: set[int]) -> list[int]:
+    """The row of dots through dots a and b (indices into pts, mm) that are in no other row, grown both ways at their
+    spacing along the direction of its last dots as long as the next dot is in line (or one of the two after it, where
+    some are missing); in order along the row."""
+    s = math.dist(pts[a], pts[b])
+    tol = max(0.2 * s, 0.1)
+    row = [a, b]
+    for forward in (True, False):
+        while True:
+            end, before = (row[-1], row[max(0, len(row) - 4)]) if forward else (row[0], row[min(len(row) - 1, 3)])
+            u = (pts[end] - pts[before]) / max(math.dist(pts[end], pts[before]), 1e-9)
+            nrm = np.array([-u[1], u[0]])
+            ahead = tree.query_ball_point(pts[end] + np.outer((1, 2, 3), s * u), tol)  # the next dot, or one missing
+            hit = next((k for ks in ahead for k in ks
+                        if k not in row and k not in taken and abs((pts[k] - pts[end]) @ nrm) <= tol), None)
+            if hit is None:
+                break
+            if forward:
+                row.append(hit)
+            else:
+                row.insert(0, hit)
+    return row
+
+
+def _off(p: np.ndarray, ln: Line) -> float:
+    """The distance from p to the line segment (mm)."""
+    a, v = np.array([ln.x1, ln.y1]), np.array([ln.x2 - ln.x1, ln.y2 - ln.y1])
+    t = float(np.clip((p - a) @ v / max(float(v @ v), 1e-12), 0, 1))
+    return float(np.hypot(*(a + t * v - p)))
+
+
+def _grid(pts: np.ndarray, tree: cKDTree, row: list[int], spacing: float) -> bool:
+    """Whether most dots of a row have another dot beside the row about as near as the next one: a grid of dots."""
+    u = (pts[row[-1]] - pts[row[0]]) / max(math.dist(pts[row[-1]], pts[row[0]]), 1e-9)
+    nrm, off = np.array([-u[1], u[0]]), max(0.2 * spacing, 0.1)
+    beside = [any(abs((pts[k] - pts[i]) @ nrm) > off for k in tree.query_ball_point(pts[i], 1.25 * spacing))
+              for i in row]
+    return float(np.mean(beside)) >= 0.5
+
+
+def _joined_rows(pts: np.ndarray, rows: list[list[int]]) -> list[list[int]]:
+    """Rows of dots that run on one from the other, in line and at one spacing within four spacings of each other,
+    joined into one. The ends of the rows are linked in one pass, the nearest first: each end once, and no loops."""
+    m = len(rows)
+    if m < 2:
+        return rows
+    first, last = pts[[r[0] for r in rows]], pts[[r[-1] for r in rows]]
+    s = np.array([float(np.median(np.hypot(*np.diff(pts[r], axis=0).T))) for r in rows] * 2)
+    u = (last - first) / np.maximum(np.hypot(*(last - first).T), 1e-9)[:, None]
+    ends, outward = np.vstack([first, last]), np.vstack([-u, u])  # end e is of row e % m, at its first dot if e < m
+    k = min(9, 2 * m)  # an end runs on to one of its nearest ends: in a field of specks, all within reach are many
+    nb = cKDTree(ends).query(ends, k=k, distance_upper_bound=4 * float(s.max()))[1][:, 1:]
+    e, f = np.repeat(np.arange(2 * m), k - 1), nb.ravel()
+    e, f = e[f < 2 * m], f[f < 2 * m]
+    g = ends[f] - ends[e]
+    along = np.einsum("ij,ij->i", g, outward[e])
+    across = np.abs(g[:, 0] * outward[e][:, 1] - g[:, 1] * outward[e][:, 0])
+    ok = (e % m != f % m) & (along > 0) & (along <= 4 * s[e]) & (across <= np.maximum(0.2 * s[e], 0.1)) \
+        & (-np.einsum("ij,ij->i", outward[f], outward[e]) >= math.cos(math.radians(5))) \
+        & (np.abs(s[e] - s[f]) <= 0.25 * np.maximum(s[e], s[f]))
+    order = np.argsort(np.hypot(*g[ok].T), kind="stable")
+    partner: dict[int, int] = {}
+    root = list(range(m))
+
+    def find(k: int) -> int:
+        while root[k] != k:
+            root[k] = root[root[k]]
+            k = root[k]
+        return k
+
+    for a, b in zip(e[ok][order].tolist(), f[ok][order].tolist()):
+        if a not in partner and b not in partner and find(a % m) != find(b % m):
+            partner[a], partner[b] = b, a
+            root[find(a % m)] = find(b % m)
+    out, seen = [], set()
+    for i in range(m):
+        if i in seen or i in partner and i + m in partner:  # joined on at both ends: reached from a free end
+            continue
+        enter, chain = (i + m if i in partner else i), []  # from its free end
+        while True:
+            seen.add(enter % m)
+            chain += rows[enter % m] if enter < m else rows[enter % m][::-1]
+            leave = enter + m if enter < m else enter - m
+            if leave not in partner:
+                break
+            enter = partner[leave]
+        out.append(chain)
+    return out
+
+
+# --------------------------------------------------------------------------- pen widths
+
+INK_REACH = 40.0  # mm: the darkest ink this near a stroke shows how dark its ink is
+ALONG = math.sin(math.radians(1))  # a stroke of a dimension turned less than this off its line runs along it
+ACROSS = math.sin(math.radians(80))  # one turned more runs across it: an extension line, square to it within 5 degrees
+
+
+def calibrate_widths(d: Drawing, norm: np.ndarray, ppm: float) -> None:
+    """Measures the pen of every line, arc, circle and polyline again on the grey image ``norm`` (``ppm`` pixels per mm
+    of the drawing): blur keeps the ink of a stroke but spreads it, and the threshold of the binary image takes in much
+    of the spread, so a stroke measured there comes out about a pen too thick. Here the ink across the stroke (the
+    darkness above the paper beside it, summed over a profile at right angles to it) is divided by the darkness of the
+    ink itself (the darkest ink nearby, as a solid stroke or a fill shows it), which gives the width as drawn at any
+    blur. The median over stations about a millimetre apart leaves out those at crossings. The dimension lines and
+    extension lines of the dimensions are measured so too, and the pen of each dimension (Dimension.width, its pen in
+    the DXF) on its stretch of the dimension line. Its terminators take that pen, as dimensions.py drew them with it:
+    a tick is too short to measure off the crossing it stands on, and the sides of an open arrowhead run too close to
+    the dimension line inside it. Symbols keep their pens, and fills, such as filled arrowheads and dots, theirs."""
+    darkness = 255.0 - norm.astype(np.float32)
+    f = min(1.0, 4.0 / ppm)
+    small = cv2.resize(darkness, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    k = max(3, round(INK_REACH * ppm * f) | 1)
+    level = cv2.GaussianBlur(cv2.dilate(small, np.ones((k, k), np.uint8)), (0, 0), k / 4)
+    level = np.maximum(level, max(60.0, 0.85 * float(np.percentile(small[small > 0.5 * small.max()], 95))
+                                  if small.max() > 0 else 60.0))
+    ratios, dotted = [], []
+    strokes = [q for m in d.dimensions for q in m.parts if not isinstance(q, Polygon) and not _terminator(q, m)]
+    spans = [Line(m.x1, m.y1, m.x2, m.y2, m.width) for m in d.dimensions]
+    for q in d.lines + d.arcs + d.circles + d.polylines + strokes + spans:
+        if line_type(q) == "dotted":  # its dots are too short to measure across
+            dotted.append(q)
+            continue
+        width = _drawn_width(darkness, level, f, _stations(q), q.width, ppm, 75 if getattr(q, "dashed", False) else 50)
+        if width:  # most stations of a dashed line lie on its dashes
+            ratios.append(width / q.width)
+            q.width = width
+    for q in dotted:  # widened as much as the other strokes were
+        q.width *= float(np.median(ratios)) if ratios else 1.0
+    for m, span in zip(d.dimensions, spans):
+        m.width = span.width
+        for q in m.parts:
+            if _terminator(q, m):
+                q.width = m.width
+
+
+def _terminator(q, m: Dimension) -> bool:
+    """Whether a stroke of a dimension is one of its terminators, a tick or a side of an open arrowhead: a line that
+    runs neither along its dimension line nor across it."""
+    if not isinstance(q, Line):
+        return False
+    u, v = (m.x2 - m.x1, m.y2 - m.y1), (q.x2 - q.x1, q.y2 - q.y1)
+    sine = abs(u[0] * v[1] - u[1] * v[0]) / max(math.hypot(*u) * math.hypot(*v), 1e-9)
+    return ALONG < sine < ACROSS
+
+
+def _stations(q) -> np.ndarray:
+    """Points about a millimetre apart along a line, arc, circle or polyline with the unit normal there: rows x, y, nx,
+    ny (mm)."""
+    rows = []
+    for part in q.parts() if hasattr(q, "parts") else [q]:
+        if isinstance(part, Line):
+            length = _length(part)
+            if length <= 0:
+                continue
+            t = (np.arange(max(1, min(30, round(length)))) + 0.5) / max(1, min(30, round(length)))
+            u = np.array([part.x2 - part.x1, part.y2 - part.y1]) / length
+            xy = np.array([part.x1, part.y1]) + t[:, None] * (u * length)
+            rows.append(np.column_stack([xy, np.tile([-u[1], u[0]], (len(t), 1))]))
+        else:
+            sweep = 360.0 if isinstance(part, Circle) else (part.end - part.start) % 360 or 360.0
+            start = 0.0 if isinstance(part, Circle) else part.start
+            n = max(1, min(30, round(math.radians(sweep) * part.r)))
+            a = np.radians(start + sweep * (np.arange(n) + 0.5) / n)
+            normal = np.column_stack([np.cos(a), np.sin(a)])
+            rows.append(np.column_stack([np.array([part.cx, part.cy]) + part.r * normal, normal]))
+    return np.vstack(rows) if rows else np.zeros((0, 4))
+
+
+def _drawn_width(darkness: np.ndarray, level: np.ndarray, f: float, stations: np.ndarray, width: float, ppm: float,
+                 percentile: float = 50) -> float | None:
+    """The width (mm) of a stroke from the ink across it at its ``stations`` (see calibrate_widths): their median, or
+    the given ``percentile``; None where there is none."""
+    if not len(stations):
+        return None
+    reach = width / 2 + max(0.4, 5 / ppm)
+    step = 0.5 / ppm
+    offsets = np.arange(-reach, reach + step / 2, step)
+    xy = stations[:, None, :2] + offsets[None, :, None] * stations[:, None, 2:]
+    dark = ndimage.map_coordinates(darkness, [xy[..., 1].ravel() * ppm, xy[..., 0].ravel() * ppm], order=1,
+                                   mode="nearest").reshape(xy.shape[:2])
+    edge = max(1, round(1 / (step * ppm)))  # a pixel's worth of samples at either end
+    paper = np.minimum(dark[:, :edge].mean(axis=1), dark[:, -edge:].mean(axis=1))
+    ink = np.clip(dark - paper[:, None], 0, None).sum(axis=1) * step
+    sx = np.clip(np.round(stations[:, 0] * ppm * f).astype(int), 0, level.shape[1] - 1)
+    sy = np.clip(np.round(stations[:, 1] * ppm * f).astype(int), 0, level.shape[0] - 1)
+    drawn = float(np.percentile(ink / level[sy, sx], percentile))
+    return drawn if drawn > 0.02 else None

@@ -11,12 +11,15 @@ import matplotlib
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from .model import Drawing, Line, Text
+from .model import Drawing, Line, Text, line_type
 
 FONT = Path(matplotlib.get_data_path()) / "fonts" / "ttf" / "DejaVuSans.ttf"
 CAP = 0.729  # cap height of DejaVu Sans relative to the font size
 SHIFT = 4  # fixed point bits for sub-pixel drawing in OpenCV
 DASH, GAP = 3.0, 1.5  # dash pattern on paper in mm
+# one repeat of each line type on paper in mm, as in a DXF linetype: dashes > 0, gaps < 0, dots 0
+PATTERNS = {"dashed": (DASH, -GAP), "dashdot": (7.5, -1.5, 0.0, -1.5), "dotted": (0.0, -1.5)}
+DOT = 0.05  # mm: a dot is drawn as a dash this short, as not every renderer draws one of no length
 
 
 @lru_cache(maxsize=128)
@@ -25,17 +28,23 @@ def _font(px: int) -> ImageFont.FreeTypeFont:
 
 
 def dashes(line: Line, size: float = 1.0) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-    """Splits a dashed line into its visible dash segments, the pattern ``size`` times as long as DASH and GAP (a
-    drawing printed smaller has shorter dashes)."""
+    """Splits a dashed line into its visible dashes and dots by its line type (PATTERNS): at its measured
+    ``pattern`` where it has one, otherwise ``size`` times as long as PATTERNS (a drawing printed smaller has shorter
+    dashes)."""
     length = math.hypot(line.x2 - line.x1, line.y2 - line.y1)
+    elements = PATTERNS[line_type(line)]
     if length == 0:
         return []
+    f = max(line.pattern, 0.2) / sum(map(abs, elements)) if line.pattern else size
     ux, uy = (line.x2 - line.x1) / length, (line.y2 - line.y1) / length
-    out, s = [], 0.0
+    out, s, k = [], 0.0, 0
     while s < length:
-        e = min(s + DASH * size, length)
-        out.append(((line.x1 + ux * s, line.y1 + uy * s), (line.x1 + ux * e, line.y1 + uy * e)))
-        s += (DASH + GAP) * size
+        e = elements[k % len(elements)]
+        if e >= 0:
+            end = min(s + max(e * f, DOT), length)
+            out.append(((line.x1 + ux * s, line.y1 + uy * s), (line.x1 + ux * end, line.y1 + uy * end)))
+        s += abs(e) * f
+        k += 1
     return out
 
 

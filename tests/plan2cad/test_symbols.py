@@ -1,4 +1,5 @@
 import io
+from dataclasses import replace
 
 import cv2
 import ezdxf
@@ -9,6 +10,7 @@ from synth import Pen
 from app import scan
 from app.plan2cad import symbols
 from app.plan2cad.export import to_dxf
+from app.plan2cad.features import Features
 from app.plan2cad.library import FLOOR_PLAN, combine, load, place, read
 from app.plan2cad.model import Arc, Circle, Drawing, Line, Polyline, Text
 from app.plan2cad.pipeline import convert
@@ -311,3 +313,128 @@ def test_symbols_are_found_on_a_scan():
     assert sorted(s.name for s in r.drawing.symbols) == ["FLOW_ARROW", "GATE_VALVE", "INSTRUMENT", "PUMP"]
     pump = next(s for s in r.drawing.symbols if s.name == "PUMP")
     assert pump.attributes["TAG"].text == "P-101"
+
+
+def test_symbols_found_first_leave_out_their_area_but_not_where_their_attributes_stand():
+    bubble, valve = place(LIBRARY["INSTRUMENT_DCS"], 100, 50), place(LIBRARY["GATE_VALVE"], 150, 50)
+    d = drawn(bubble, valve, lines=[Line(120, 50, 147.5, 50, 0.5), Line(152.5, 50, 180, 50, 0.5)])
+    mask = symbols.areas(d, LIBRARY, None, 10, (1000, 2000))
+    assert mask[500, 1500] and mask[484, 1475]  # inside the valve and on its corner
+    assert mask[500, 1050] and mask[500, 1000]  # on the ring and the bar of the bubble
+    assert not mask[477, 1000] and not mask[524, 1000]  # where FUNCTION and NUMBER stand
+    assert not mask[500, 1300] and not symbols.areas(d, {}, None, 10, (1000, 2000)).any()
+
+
+OFF = Features.of(off=["symbol_context", "sheet_sizes"])
+
+
+def sampled_ink(lines, thick=()) -> symbols._Ink:
+    """The ink of plain strokes (none on text, none traced as a long straight line), each ``thick`` (half the width,
+    mm) as given per line, else 0 (not measured)."""
+    points, headings = zip(*[symbols._sample(q) for q in lines])
+    widths = np.concatenate([np.full(len(p), w) for p, w in zip(points, list(thick) + [0.0] * len(lines))])
+    n = len(widths)
+    return symbols._Ink(np.vstack(points), np.vstack(headings), np.zeros(n), np.zeros(n, bool), thick=widths)
+
+
+def test_a_plate_with_a_line_running_through_it_is_no_plate():
+    plate = place(LIBRARY["ORIFICE"], 100, 50)
+    ends = [Line(60, 50, 99.2, 50, 0.5), Line(100.8, 50, 140, 50, 0.5)]  # the pipe ends at its sides
+    through = [Line(60, 50, 140, 50, 0.5)]  # it runs on between them, as through a flange's two bars
+    one_side = [Line(60, 50, 99.2, 50, 0.5)]  # it ends at the plate
+
+    def fits(lines, features=Features()) -> bool:
+        shape = symbols._shape(LIBRARY["ORIFICE"])
+        return symbols._fit(shape, (100.0, 50.0, 0.0, False, 1.0), 0.5, sampled_ink(plate.parts + lines),
+                            features) is not None
+
+    assert fits(ends) and not fits(through) and not fits(one_side)
+    assert fits(through, OFF) and fits(one_side, OFF)  # as before without the step
+    assert not len(symbols._shape(LIBRARY["GATE_VALVE"]).gap)  # the ball and the crossing are drawn in a valve's gap
+
+
+def test_a_flow_arrow_needs_strokes_of_its_own_as_thick_as_the_sheets():
+    pipe, arrow = Line(40, 50, 160, 50, 0.5), place(LIBRARY["FLOW_ARROW"], 100, 50)
+    words = [Line(20 + 2 * k, 20, 21 + 2 * k, 20) for k in range(20)]  # strokes of the sheet's usual pen elsewhere
+    # from each barb end out to a frame that the arrow's barbs would be a corner of
+    frame = [Line(98.8, 51, 98.8, 52.9), Line(98.8, 52.9, 101.5, 52.9), Line(98.8, 49, 98.8, 47.1),
+             Line(98.8, 47.1, 101.5, 47.1)]
+
+    def fits(lines, thick, features=Features()) -> bool:
+        ink = sampled_ink([pipe] + words + arrow.parts + lines, [0.0] + [0.15] * len(words) + thick)
+        shape = symbols._shape(LIBRARY["FLOW_ARROW"])
+        return symbols._fit(shape, (100.0, 50.0, 0.0, False, 1.0), 1.0, ink, features) is not None
+
+    assert fits([], [0.15, 0.15]) and not fits([], [0.05, 0.05])  # a hairline: the marks of a signal line
+    assert not fits(frame, [0.15] * 6) and fits(frame, [0.15] * 6, OFF)
+    assert fits([], [0.05, 0.05], OFF)
+
+
+def test_valves_are_held_against_the_size_of_their_own_kind():
+    def hit(name, x, scale):
+        return symbols._Hit(symbols._shape(LIBRARY[name]), (x, 50.0, 0.0, False, scale), 10.0,
+                            np.arange(10) + 10 * round(x))
+
+    bubbles = [hit("INSTRUMENT", 20 * k, 1.0) for k in range(1, 13)]
+    valves = [hit("GATE_VALVE", 300 + 20 * k, 0.68) for k in range(4)]  # drawn smaller than the bubbles
+    n = 10 * 400
+    assert symbols._one_size(bubbles + valves, n) == bubbles  # one size for all
+    assert symbols._one_size(bubbles + valves, n, by_kind=True) == bubbles + valves
+    # placed at a size found elsewhere, they do not confirm that size: false ones would confirm each other
+    placed = [replace(h, placed=True) for h in valves]
+    assert symbols._one_size(bubbles + placed, n, by_kind=True) == bubbles
+
+
+def test_a_valve_between_two_flanges_is_tried_at_the_size_of_the_valves_found():
+    standing = place(LIBRARY["GATE_VALVE"], 120, 50, 90, scale=0.7)
+    bars = [Line(118.3, y, 121.7, y, 0.25) for y in (46.45, 47.45, 52.55, 53.55)]  # a flange at each end
+    shape = symbols._shape(LIBRARY["GATE_VALVE"])
+    found = [symbols._Hit(shape, (40.0 + 10 * k, 50.0, 0.0, False, 0.7), 10.0, np.arange(10)) for k in range(3)]
+    ink = sampled_ink(standing.parts + bars)  # one group of strokes, larger than the valve
+
+    def tried(strokes=ink, at=found) -> list:
+        return [(round(x), round(y), scale) for _, (x, y, _, _, scale), _, _ in
+                symbols._at_sizes([shape], at, symbols._groups(strokes, [shape], at))]
+
+    assert (120, 50, 0.7) in tried()
+    assert not any(pose[4] == 0.7 for _, pose, _, _ in symbols._leftover(Drawing(200, 100), [shape], ink, found))
+    assert not tried(at=found[:2])  # found twice only: the size may be that of a false hit
+    # a group that is the symbol at its own size is not tried at another size: it is the symbol there
+    larger = [replace(h, pose=(h.pose[0], 50.0, 0.0, False, 1.0)) for h in found]
+    assert not any(scale == 1.0 for _, _, scale in tried(sampled_ink(standing.parts), larger))
+
+
+def test_a_bubble_takes_its_tag_only_from_a_text_inside_its_ring():
+    # the bars of a flange beside the bubble read as "T" with its number: the text runs out of the ring
+    joined = [Text(100, 47.7, 2, "FT"), Text(102, 52.4, 2, "40201T", length=12.0)]
+    d = drawn(place(LIBRARY["INSTRUMENT"], 100, 50), texts=joined)
+    symbols.recognise(d, LIBRARY)
+    assert {k: t.text for k, t in d.symbols[0].attributes.items()} == {"FUNCTION": "FT"}
+    assert [t.text for t in d.texts] == ["40201T"]
+    inside = drawn(place(LIBRARY["INSTRUMENT"], 100, 50), texts=[Text(100, 52.4, 2, "40201", length=8.0)])
+    symbols.recognise(inside, LIBRARY)  # a long tag that fills the ring is its tag
+    assert {k: t.text for k, t in inside.symbols[0].attributes.items()} == {"NUMBER": "40201"}
+
+
+def test_without_attributes_inside_a_text_running_out_of_the_ring_is_still_taken():
+    d = drawn(place(LIBRARY["INSTRUMENT"], 100, 50), texts=[Text(102, 52.4, 2, "40201T", length=12.0)])
+    symbols.recognise(d, LIBRARY, features=Features.of(off=["attributes_inside"]))
+    assert {k: t.text for k, t in d.symbols[0].attributes.items()} == {"NUMBER": "40201T"}
+
+
+def test_a_symbol_placed_at_a_size_found_elsewhere_explains_its_group_but_for_flanges():
+    valve = place(LIBRARY["GATE_VALVE"], 100, 50, scale=0.6)  # ports 1.5 mm from its middle
+    bars = [Line(x, 48.3, x, 51.7, 0.25) for x in (96.7, 97.7, 102.3, 103.3)]  # a flange on each side
+    ink = sampled_ink(valve.parts + bars)
+    strokes = np.abs(ink.points[:, 0] - 100) <= 1.51  # the valve's, not the bars'
+    half = strokes & (ink.points[:, 0] <= 100)  # one triangle of the valve
+
+    def whole(name, x, scale, claim, taken=None) -> bool:
+        shape = symbols._shape(LIBRARY[name])
+        return symbols._whole(symbols._Hit(shape, (x, 50.0, 0.0, False, scale), 10.0, np.flatnonzero(claim)), ink,
+                              taken)
+
+    assert whole("GATE_VALVE", 100, 0.6, strokes)
+    assert not whole("REDUCER", 99.2, 0.4, half)
+    # strokes joined to it that a symbol found at its own size explains do not count against it
+    assert whole("REDUCER", 99.2, 0.4, half, strokes & ~half)

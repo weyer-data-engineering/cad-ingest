@@ -12,6 +12,7 @@ from synth import pid
 
 from app.plan2cad import pdfvector
 from app.plan2cad.export import to_dxf, to_figure
+from app.plan2cad.pipeline import convert_vectors
 
 K = 0.5523  # handle length of a Bézier quarter circle, per radius
 
@@ -67,6 +68,11 @@ def read(data: bytes):
     pdf = pdfium.PdfDocument(data)
     page = pdf[0]
     return pdfvector.read(pdf, page), page
+
+
+def test_a_vector_page_switches_no_step_off():
+    pdf = pdfium.PdfDocument(cad_page())
+    assert convert_vectors(pdf, pdf[0], drawing="pid").info["steps_off_by_kind"] == []  # no recognition runs
 
 
 def test_cad_export_keeps_layers_colours_and_curves():
