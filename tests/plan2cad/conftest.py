@@ -18,7 +18,8 @@ from app.plan2cad.render import render  # noqa: E402
 
 @pytest.fixture(scope="session")
 def plan():
-    return building_plan(7)
+    """A plain floor plan: no fixtures, no north arrow or section markers, so no symbols."""
+    return building_plan(7, marks=False)
 
 
 @pytest.fixture(scope="session")

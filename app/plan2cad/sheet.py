@@ -7,9 +7,16 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
-from scipy.ndimage import map_coordinates
+from scipy.ndimage import map_coordinates, median_filter
 
 FRAME_MARGIN = 10.0  # assumed paper margin around the drawing frame in mm
+LID_DEPTH = 0.3  # share of the image across each side in which the edge of paper on a scanner lid is looked for
+STEP = 2.0  # mm: the grey on either side of a paper edge is the median over this width
+STRIP = 5.0  # mm along a side that one profile across it is averaged over
+PROFILES = 24  # profiles across each side
+FIT = 0.01  # paper found on a lid has the aspect ratio of its size within this share, and the scale of a known dpi
+FILLS = 0.9  # share of the image that paper found on a lid with a side of the image's own fills at most
+SKEW = 8.0  # degrees a paper edge on a lid may lean against the side of the image
 
 
 @dataclass
@@ -20,15 +27,18 @@ class Sheet:
     inset: float = 0.0  # distance of the corners from the sheet edge in mm (frame mode)
 
 
-def locate(img: np.ndarray, paper_mm: tuple[float, float]) -> Sheet | None:
+def locate(img: np.ndarray, paper_mm: tuple[float, float], lid: bool = False, dpi: float | None = None
+           ) -> Sheet | None:
     """Finds the sheet in a photo. Returns None if no paper edge is visible (e.g. a scan that is
-    cropped to the sheet); falls back to the drawing frame if the paper runs out of the image."""
+    cropped to the sheet); falls back to the drawing frame if the paper runs out of the image. Where the border of the
+    image looks like paper, the paper may lie on a scanner lid as grey as it: with ``lid``, it is looked for by its
+    straight edges there (on_lid), which must agree with the scan's ``dpi`` where that is known."""
     h, w = img.shape[:2]
     f = 800 / max(h, w)
     small = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
     b = 3  # thin border band, also the background band for GrabCut
     if _paper_fills_image(small, b):
-        return None
+        return on_lid(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), paper_mm, dpi=dpi) if lid else None
     # GrabCut separates paper from desk by colour and edges, which also works under a shadow
     # that darkens part of the sheet below the brightness of the desk.
     mask = np.full(small.shape[:2], cv2.GC_PR_FGD, np.uint8)
@@ -53,6 +63,10 @@ def locate(img: np.ndarray, paper_mm: tuple[float, float]) -> Sheet | None:
     if quad is not None and cut < 0.25:
         corners = _refine(gray, quad / f, max(16.0, 12 / f))
         return Sheet(corners, oriented(corners, paper_mm), "paper")
+    # A border that looks like paper: the paper lies on a lid as light as it, with a straight edge on every side, or
+    # it runs out of the picture.
+    if lid and (on := on_lid(gray, paper_mm, every_side=True, dpi=dpi)) is not None:
+        return on
     # The paper runs out of the picture: use the printed frame inside the visible paper instead.
     # GrabCut is unreliable here (its background band contains paper), so the frame is searched in
     # everything that is bright like paper.
@@ -80,6 +94,155 @@ def _paper_fills_image(small: np.ndarray, m: int) -> bool:
     centre = small[h // 4:3 * h // 4, w // 4:3 * w // 4].reshape(-1, 3).astype(np.float32)
     paper = np.median(centre[centre.sum(1) >= np.percentile(centre.sum(1), 50)], axis=0)
     return float(np.linalg.norm(np.median(border, axis=0) - paper)) < 25
+
+
+def on_lid(gray: np.ndarray, paper_mm: tuple[float, float], every_side: bool = False, dpi: float | None = None
+           ) -> Sheet | None:
+    """The paper of a scan on a scanner lid about as grey as the paper, which colour does not tell apart: the long
+    straight step of grey near each side of the image (_lid_side). A side without one is the image's own edge, where
+    the paper lies against it or runs out of it, unless ``every_side`` must have one; there the image must be paper,
+    not lid, out to its border (_paper_out_to). The paper found must have the aspect ratio of its size and, where the
+    scan's ``dpi`` is known, its scale (FIT); with a side of the image's own and most of the image filled (FILLS), it
+    must fit that aspect ratio better than the image itself, which is otherwise the likelier sheet (a copy cropped to
+    it with a dark band along an edge). None otherwise, so a scan cropped to its sheet, whose sides have no such step,
+    stays as it is. Its corners may lie a little outside the image: a skewed sheet's corners are often not scanned."""
+    h, w = gray.shape
+    ppm = max(h, w) / max(paper_mm)  # a little high where a lid shows: enough to size the windows by
+    found = [_lid_side(gray, side, ppm) for side in range(4)]
+    edges = [f for f in found if f is not None]
+    if not edges or every_side and len(edges) < 4:
+        return None
+    lid, paper = (float(np.median([f[k] for f in edges])) for k in (1, 2))
+    if any(f is None and not _paper_out_to(gray, side, ppm, lid, paper) for side, f in enumerate(found)):
+        return None
+    sides = [((0.0, 0.0), (0.0, 1.0)), ((0.0, 0.0), (1.0, 0.0)), ((w - 1.0, 0.0), (0.0, 1.0)),
+             ((0.0, h - 1.0), (1.0, 0.0))]  # the image's own: left, top, right, bottom
+    left, top, right, bottom = [tuple(map(np.array, s)) if f is None else f[0] for f, s in zip(found, sides)]
+    corners = np.array([_intersect(top, left), _intersect(top, right), _intersect(bottom, right),
+                        _intersect(bottom, left)])
+    ratio = max(paper_mm) / min(paper_mm)
+    misfit = abs(_aspect(corners) / ratio - 1)
+    near = np.all((corners >= -0.1 * np.array([w, h])) & (corners <= 1.1 * np.array([w, h])))
+    if not near or misfit > FIT:
+        return None
+    if len(edges) < 4 and cv2.contourArea(corners.astype(np.float32)) > FILLS * w * h \
+            and abs(max(w, h) / min(w, h) / ratio - 1) <= misfit:
+        return None
+    on = Sheet(corners, oriented(corners, paper_mm), "paper")
+    return None if dpi and abs(source_ppm(on) * 25.4 / dpi - 1) > FIT else on
+
+
+def _aspect(corners: np.ndarray) -> float:
+    """The long sides of a quadrilateral against its short ones."""
+    e = [np.linalg.norm(corners[(i + 1) % 4] - corners[i]) for i in range(4)]
+    return max(e[0] + e[2], e[1] + e[3]) / min(e[0] + e[2], e[1] + e[3])
+
+
+def _turned(gray: np.ndarray, side: int) -> np.ndarray:
+    """The image with its rows along one side (0 left, 1 top, 2 right, 3 bottom) and its columns inwards from it."""
+    return (gray, gray.T, gray[:, ::-1], gray[::-1].T)[side]
+
+
+def _profiles(g: np.ndarray, depth: int, ppm: float) -> list[tuple[int, np.ndarray]]:
+    """PROFILES profiles ``depth`` pixels inwards across a side (``g`` turned to it), with their place along it: each
+    the mean of the middle half of a strip STRIP mm wide, so no specks or lines, and not in whole steps of grey."""
+    half, out = max(1, round(STRIP / 2 * ppm)), []
+    for at in np.linspace(0.12, 0.88, PROFILES) * g.shape[0]:
+        strip = np.sort(g[max(0, int(at) - half):int(at) + half, :depth], axis=0)
+        q = len(strip) // 4
+        out.append((int(at), strip[q:len(strip) - q].mean(axis=0)))
+    return out
+
+
+def _paper_out_to(gray: np.ndarray, side: int, ppm: float, lid: float, paper: float) -> bool:
+    """Whether the image is paper, not lid, out to a side without a paper edge: the grey of its outermost STEP mm is
+    nearer that of the paper than that of the lid (at the paper edges found on the other sides) at three in four places
+    along it at least. A small sheet near the corner of a large scanner bed shows lid there."""
+    n = max(1, round(STEP * ppm))
+    greys = np.array([np.median(prof) for _, prof in _profiles(_turned(gray, side), n, ppm)])
+    return float(np.mean(np.abs(greys - paper) < np.abs(greys - lid))) >= 0.75
+
+
+def _lid_side(gray: np.ndarray, side: int, ppm: float) -> tuple[tuple[np.ndarray, np.ndarray], float, float] | None:
+    """The paper edge along one side of the image (0 left, 1 top, 2 right, 3 bottom) as a line (point, direction), with
+    the grey of the lid and of the paper there: the steps of PROFILES profiles across the side (_lid_step), all of one
+    sign (the lid is darker or lighter than the paper all along) and most on one straight line, nearly parallel to the
+    side; or None."""
+    g = _turned(gray, side)  # rows along the side, columns inwards from it
+    length, depth = g.shape[0], round(LID_DEPTH * g.shape[1])
+    width = max(3, round(STEP * ppm)) | 1
+    k = width // 2 + max(1, round(0.4 * ppm))  # half a window and the blur of the edge
+    if depth <= 4 * k + round(ppm):
+        return None
+    profiles = []
+    for at, prof in _profiles(g, depth, ppm):
+        med = median_filter(prof, size=width, mode="nearest")
+        step = np.zeros_like(med)
+        step[k:-k] = med[2 * k:] - med[:-2 * k]  # the median further in less the one further out
+        profiles.append((at, prof, med, step))
+    # the noise of the scan, from all profiles: the print that some of them cross (a title block) does not raise it
+    noise = float(np.median([1.4826 * np.median(np.abs(s[k:-k] - np.median(s[k:-k]))) for *_, s in profiles]))
+    found = [(at, *edge) for at, prof, med, s in profiles
+             if (edge := _lid_step(prof, med, s, k, ppm, max(4.0, 6 * noise))) is not None]
+    if len(found) < PROFILES // 2:
+        return None
+    pts = np.array(found)
+    pts = pts[np.sign(pts[:, 2]) == np.sign(np.median(pts[:, 2]))]
+    fit = _straight(pts[:, 0], pts[:, 1], max(1.5, 0.3 * ppm))
+    if fit is None or fit[2] < PROFILES // 2 or abs(fit[1]) > math.tan(math.radians(SKEW)):
+        return None
+    a, b, _ = fit
+    h, w = gray.shape
+
+    def image(along: float, inwards: float) -> np.ndarray:
+        return np.array([(inwards, along), (along, inwards), (w - 1 - inwards, along), (along, h - 1 - inwards)][side])
+
+    p, q = image(0, a), image(length, a + b * length)
+    return (p, (q - p) / np.linalg.norm(q - p)), float(np.median(pts[:, 3])), float(np.median(pts[:, 4]))
+
+
+def _lid_step(prof: np.ndarray, med: np.ndarray, s: np.ndarray, k: int, ppm: float, need: float
+              ) -> tuple[float, float, float, float] | None:
+    """Where a profile coming in from a side of the image steps from the even grey of a lid to the paper: the
+    position in pixels, the step in grey and the grey of the lid and of the paper on either side, or None. ``med`` is
+    the profile's median over STEP mm and ``s`` the difference of the medians ``k`` pixels further in and further out,
+    so a thin printed line, such as the drawing frame, is no step. A step needs ``need`` grey; the lid's side must be
+    even out to the side of the image and the paper's side as bright as the paper further in, so neither edge of a
+    broad band of print is one either. Only the first step from outside counts: further in is the drawing."""
+    strong = np.flatnonzero(np.abs(s) >= need)
+    strong = strong[strong >= k + round(ppm)]  # a millimetre of lid at least
+    if not len(strong):
+        return None
+    c = int(strong[0] + np.argmax(np.abs(s[strong[0]:strong[0] + 2 * k + 1])))  # within k of the edge
+    lid, inner = float(med[c - k]), float(med[c + k])
+    paper = float(np.percentile(prof[c + k:c + k + round(15 * ppm)], 75))
+    outside = float(np.median(prof[:c - k]))  # c is within k of the edge: up to there, all lid
+    tol = max(3.0, 0.35 * abs(float(s[c])))
+    if abs(outside - lid) > tol or abs(inner - paper) > tol or abs(paper - lid) < need:
+        return None
+    # A median filter keeps an edge where it is: the edge is where the filtered profile crosses the middle grey
+    seg = med[c - k:c + k + 1] - (lid + inner) / 2
+    cross = np.flatnonzero(np.sign(seg[:-1]) != np.sign(seg[1:]))
+    if not len(cross):
+        return None
+    return float(np.mean(c - k + cross + seg[cross] / (seg[cross] - seg[cross + 1]))), float(s[c]), lid, inner
+
+
+def _straight(t: np.ndarray, v: np.ndarray, tol: float) -> tuple[float, float, int] | None:
+    """The straight line v = a + b t through the most points (within ``tol``), fitted to them: a, b and their number.
+    Every pair of points proposes a line."""
+    best = None
+    for i in range(len(t)):
+        for j in range(i + 1, len(t)):
+            if t[j] != t[i]:
+                b = (v[j] - v[i]) / (t[j] - t[i])
+                near = np.abs(v - (v[i] + b * (t - t[i]))) <= tol
+                if best is None or near.sum() > best.sum():
+                    best = near
+    if best is None:
+        return None
+    b, a = np.polyfit(t[best], v[best], 1)
+    return float(a), float(b), int(best.sum())
 
 
 def _quad(contour: np.ndarray) -> np.ndarray | None:

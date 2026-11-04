@@ -12,7 +12,8 @@ from itertools import combinations
 import numpy as np
 from scipy.spatial import cKDTree
 
-from .model import Arc, Circle, Drawing, Line, Polyline, Symbol
+from . import dimensions
+from .model import Arc, Circle, Drawing, Line, Polyline, Symbol, line_type
 
 TOL = 0.9  # mm: ends closer than this meet (parallel lines of a window are 1.4 mm apart)
 DASH_TOL = 2.0  # dashed lines may stop up to a gap short of their corner
@@ -34,9 +35,11 @@ BRIDGE = 8.0  # mm: a line broken where it crosses another, to show they do not 
 FIXED = ("frame", "door")  # kinds of polylines whose ends stay as they are
 
 
-def join(lines: list[Line], arcs: list[Arc], crumb: float = CRUMB) -> tuple[list[Polyline], list[Line], list[Arc]]:
+def join(lines: list[Line], arcs: list[Arc], crumb: float = CRUMB, across: bool = False
+         ) -> tuple[list[Polyline], list[Line], list[Arc]]:
     """Returns the polylines of pieces joined end to end and the pieces that stay on their own.
-    Connected groups with less linework than ``crumb`` mm are dropped as noise."""
+    Connected groups with less linework than ``crumb`` mm are dropped as noise; with ``across``
+    (Features.short_strokes) not a straight stroke across other linework, such as a tick."""
     _tangents(lines, arcs)
     ends, bulge, width, dashed = [], [], [], []
     for ln in lines:
@@ -53,7 +56,7 @@ def join(lines: list[Line], arcs: list[Arc], crumb: float = CRUMB) -> tuple[list
     if not ends:
         return [], [], []
     g = _Graph(np.array(ends, np.float64), np.array(bulge), np.array(width), np.array(dashed), lines + arcs)
-    g.dissolve(crumb)
+    g.dissolve(crumb, across)
     return g.chains()
 
 
@@ -122,7 +125,7 @@ class _Graph:
         sweep = 4 * math.atan(b)
         return chord * sweep / (2 * math.sin(sweep / 2))
 
-    def dissolve(self, crumb: float) -> None:
+    def dissolve(self, crumb: float, across: bool = False) -> None:
         """Drops loose specks and spurs (short stubs off a longer piece) and contracts slivers, short
         connectors between longer pieces (skeleton artefacts at corners and junctions). Chains of
         short pieces, such as small symbols at low resolution, stay as they are."""
@@ -161,9 +164,37 @@ class _Graph:
         total: dict[int, float] = {}
         for e in alive:
             total[top(self.node(e, 0))] = total.get(top(self.node(e, 0)), 0.0) + self.length(e)
-        for e in alive:
-            if total[top(self.node(e, 0))] < crumb and not self.dashed[e]:  # a short dashed link is drawn on purpose
+        crumbs = [e for e in alive if total[top(self.node(e, 0))] < crumb and not self.dashed[e]]  # a short dashed
+        # link is drawn on purpose, and with ``across`` a short stroke across other linework too: a tick, a flange mark
+        kept = {top(self.node(e, 0)) for e in self._crossing(crumbs, [top(self.node(e, 0)) for e in alive])} \
+            if across else set()
+        for e in crumbs:
+            if top(self.node(e, 0)) not in kept:
                 self.alive[e] = False
+
+    def _crossing(self, pieces: list[int], groups: list[int]) -> list[int]:
+        """The straight ones among ``pieces`` that cross a straight piece of another group (``groups``: the group of
+        each alive piece), clear of its ends: a short stroke across a line, not one that only touches it. A speck
+        stays noise where it lies on a line too: a blot on its edge comes out of tracing as one."""
+        alive = np.flatnonzero(self.alive)
+        straight = [e for e in pieces if not self.bulge[e] and self.length(e) >= SPECK]
+        if not straight:
+            return []
+        group = dict(zip(alive.tolist(), groups))
+        others = alive[self.bulge[alive] == 0]
+        of = np.array([group[f] for f in others.tolist()])
+        a, v = self.ends[others, 0], self.ends[others, 1] - self.ends[others, 0]
+        out = []
+        for e in straight:
+            p, u = self.ends[e, 0], self.ends[e, 1] - self.ends[e, 0]
+            cross = u[0] * v[:, 1] - u[1] * v[:, 0]
+            ok = (np.abs(cross) > 1e-9) & (of != group[e])
+            safe = np.where(ok, cross, 1.0)
+            w = a - p
+            t, s = (w[:, 0] * v[:, 1] - w[:, 1] * v[:, 0]) / safe, (w[:, 0] * u[1] - w[:, 1] * u[0]) / safe
+            if np.any(ok & (t > 0.1) & (t < 0.9) & (s > 0) & (s < 1)):
+                out.append(e)
+        return out
 
     def _positions(self) -> dict[int, tuple[float, float]]:
         """Node position: the mean of its end points, but on the exact level of any horizontal or
@@ -219,9 +250,9 @@ class _Graph:
         return pair
 
     def _fits(self, e: int, f: int) -> bool:
-        """Two different pieces of the same pen: both dashed or both solid, similar width."""
+        """Two different pieces of the same pen: of one line type, similar width."""
         w = sorted((self.width[e], self.width[f]))
-        return e != f and self.dashed[e] == self.dashed[f] and w[0] >= SAME_PEN * w[1]
+        return e != f and w[0] >= SAME_PEN * w[1] and line_type(self.source[e]) == line_type(self.source[f])
 
     def chains(self) -> tuple[list[Polyline], list[Line], list[Arc]]:
         polylines, lines, arcs = [], [], []
@@ -244,7 +275,10 @@ class _Graph:
             bulges = [float(self.bulge[e] if fwd else -self.bulge[e]) for e, fwd in path]
             weights = [self.length(e) for e, _ in path]
             w = float(np.average([self.width[e] for e, _ in path], weights=np.add(weights, 1e-6)))
-            pl = _straighten(Polyline(pts, bulges, closed, w, bool(self.dashed[path[0][0]])))
+            first = self.source[path[0][0]]  # of the line type of its pieces
+            pl = _straighten(Polyline(pts, bulges, closed, w, bool(self.dashed[path[0][0]]),
+                                      linetype=getattr(first, "linetype", None),
+                                      pattern=getattr(first, "pattern", None)))
             if len(pl.bulges) == 1 and not closed:
                 part = pl.parts()[0]
                 (lines if isinstance(part, Line) else arcs).append(part)
@@ -330,12 +364,14 @@ def connect(d: Drawing) -> None:
     past, or moved onto one just beside it). Pieces that then meet end to end become one polyline (through a crossing,
     the pieces that go straight on), and pieces that touch nothing and are shorter than LOOSE are dropped."""
     singles = [Polyline([(ln.x1, ln.y1), (ln.x2, ln.y2)], [0.0], False, ln.width, ln.dashed, color=ln.color,
-                        layer=ln.layer) for ln in d.lines]
+                        layer=ln.layer, linetype=ln.linetype, pattern=ln.pattern) for ln in d.lines]
     fixed = [pl for pl in d.polylines if pl.closed or pl.kind in FIXED]
     items = [pl for pl in d.polylines if not pl.closed and pl.kind not in FIXED] + singles
     if not items:
         return
     rest = [q for pl in fixed for q in pl.parts()] + d.arcs + d.circles + [q for s in d.symbols for q in s.parts]
+    # dimension and extension lines were taken out of the lines before: what ends at them meets them as CAD draws them
+    rest += [q for m in d.dimensions for q in dimensions.linework(m)]
     ports = [p for s in d.symbols for p in s.ports]
     g = _Linework(items, rest, ports)
     loose = [(i, k) for i in range(len(items)) for k in (0, 1) if g.distance(_end(items[i], k), (i, k))[0] > TOUCH]
@@ -364,7 +400,8 @@ def connect(d: Drawing) -> None:
     g = _Linework(items, rest, ports)
     items = [pl for i, pl in enumerate(items) if _length(pl) >= LOOSE or g.touched(i)]
     single = [pl for pl in items if pl.kind == "line" and len(pl.bulges) == 1 and not pl.bulges[0]]
-    d.lines = [Line(*pl.points[0], *pl.points[1], pl.width, pl.dashed, pl.color, pl.layer) for pl in single]
+    d.lines = [Line(*pl.points[0], *pl.points[1], pl.width, pl.dashed, pl.color, pl.layer, pl.linetype, pl.pattern)
+               for pl in single]
     d.polylines = fixed + [pl for pl in items if not any(pl is q for q in single)]
 
 
@@ -626,7 +663,7 @@ def _merged(items: list[Polyline]) -> list[Polyline]:
 
     def fits(a: int, b: int) -> bool:
         p, q = items[a], items[b]
-        return a != b and p.dashed == q.dashed and (p.kind == q.kind or "line" in (p.kind, q.kind))
+        return a != b and line_type(p) == line_type(q) and (p.kind == q.kind or "line" in (p.kind, q.kind))
 
     def leaving(i: int, k: int) -> float:
         pl = items[i]
@@ -659,7 +696,8 @@ def _merged(items: list[Polyline]) -> list[Polyline]:
             pts = pts[:-1]
         longest = max((items[j] for j, _ in chain), key=_length)
         kind = next((items[j].kind for j, _ in chain if items[j].kind != "line"), "line")
-        out.append(Polyline(pts, bulges, closed, longest.width, longest.dashed, kind, longest.color, longest.layer))
+        out.append(Polyline(pts, bulges, closed, longest.width, longest.dashed, kind, longest.color, longest.layer,
+                            longest.linetype, longest.pattern))
     return out
 
 

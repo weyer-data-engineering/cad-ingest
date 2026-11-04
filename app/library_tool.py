@@ -101,7 +101,9 @@ def advice(t: Template) -> list[str]:
     if any(math.hypot(*p) < 0.5 for p in t.ports):
         out.append(f"{t.name}: the insertion point lies on a port; put it in the middle of the symbol, because a "
                    "port is recognised by its direction from there")
-    if not t.ports and not any(isinstance(q, Circle) for q in t.parts) and not len(symbols.rectangles(t)):
+    # a symbol on a line that runs through it (THROUGH) is found along that line, with or without ports
+    if not t.ports and not t.through and not any(isinstance(q, Circle) for q in t.parts) \
+            and not len(symbols.rectangles(t)):
         out.append(f"{t.name}: no PORT points, circle or rectangle, so it is only found where its strokes stand "
                    "apart from other linework; add PORT points where pipes connect")
     return out

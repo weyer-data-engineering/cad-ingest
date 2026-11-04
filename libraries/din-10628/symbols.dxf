@@ -493,7 +493,7 @@ $SKPOLY
   9
 $TDCREATE
  40
-2461331.611296296
+2461348.9274305557
   9
 $TDUCREATE
  40
@@ -501,7 +501,7 @@ $TDUCREATE
   9
 $TDUPDATE
  40
-2461331.611296296
+2461348.9274305557
   9
 $TDUUPDATE
  40
@@ -553,7 +553,7 @@ $SPLINESEGS
   9
 $HANDSEED
   5
-BA
+B8
   9
 $SURFTAB1
  70
@@ -933,11 +933,11 @@ $PSTYLEMODE
   9
 $FINGERPRINTGUID
   2
-{1347827A-8814-42C5-AA13-7B0B71E4312B}
+{1EFE403E-BFFF-42BE-9F17-00E3276029E1}
   9
 $VERSIONGUID
   2
-{08C5B234-556D-426B-AEBF-06957AF182DD}
+{78C19880-2902-498D-8FAA-524FC50F0984}
   9
 $EXTNAMES
 290
@@ -1327,9 +1327,9 @@ ISM
   0
 CLASS
   1
-LAYOUT
+ACDBPLACEHOLDER
   2
-AcDbLayout
+AcDbPlaceHolder
   3
 ObjectDBX Classes
  90
@@ -1343,9 +1343,9 @@ ObjectDBX Classes
   0
 CLASS
   1
-ACDBPLACEHOLDER
+LAYOUT
   2
-AcDbPlaceHolder
+AcDbLayout
   3
 ObjectDBX Classes
  90
@@ -1757,7 +1757,7 @@ ACAD
   0
 APPID
   5
-B7
+B5
 330
 3
 100
@@ -1771,7 +1771,7 @@ HATCHBACKGROUNDCOLOR
   0
 APPID
   5
-B8
+B6
 330
 3
 100
@@ -2311,7 +2311,7 @@ ORIFICE
   0
 BLOCK_RECORD
   5
-A9
+A7
 330
 9
 100
@@ -2331,7 +2331,7 @@ OFF_PAGE_CONNECTOR
   0
 BLOCK_RECORD
   5
-B0
+AE
 330
 9
 100
@@ -4847,19 +4847,27 @@ AcDbEntity
 100
 AcDbPolyline
  90
-2
+4
  70
-0
+1
  10
--0.6
+-0.8
  20
 -2.5
  10
--0.6
+0.8
+ 20
+-2.5
+ 10
+0.8
+ 20
+2.5
+ 10
+-0.8
  20
 2.5
   0
-LWPOLYLINE
+POINT
   5
 A5
 330
@@ -4867,23 +4875,15 @@ A1
 100
 AcDbEntity
   8
-0
-370
-35
+PORT
 100
-AcDbPolyline
- 90
-2
- 70
-0
+AcDbPoint
  10
-0.6
+-0.8
  20
--2.5
- 10
-0.6
- 20
-2.5
+0.0
+ 30
+0.0
   0
 POINT
   5
@@ -4897,52 +4897,10 @@ PORT
 100
 AcDbPoint
  10
--0.6
+0.8
  20
 0.0
  30
-0.0
-  0
-POINT
-  5
-A7
-330
-A1
-100
-AcDbEntity
-  8
-PORT
-100
-AcDbPoint
- 10
-0.6
- 20
-0.0
- 30
-0.0
-  0
-LINE
-  5
-A8
-330
-A1
-100
-AcDbEntity
-  8
-THROUGH
-100
-AcDbLine
- 10
--0.6
- 20
-0.0
- 30
-0.0
- 11
-0.6
- 21
-0.0
- 31
 0.0
   0
 ENDBLK
@@ -4959,9 +4917,9 @@ AcDbBlockEnd
   0
 BLOCK
   5
-AA
+A8
 330
-A9
+A7
 100
 AcDbEntity
   8
@@ -4987,9 +4945,9 @@ Off-page connector
   0
 LWPOLYLINE
   5
-AC
+AA
 330
-A9
+A7
 100
 AcDbEntity
   8
@@ -5025,9 +4983,9 @@ AcDbPolyline
   0
 POINT
   5
-AD
+AB
 330
-A9
+A7
 100
 AcDbEntity
   8
@@ -5043,9 +5001,9 @@ AcDbPoint
   0
 POINT
   5
-AE
+AC
 330
-A9
+A7
 100
 AcDbEntity
   8
@@ -5061,9 +5019,9 @@ AcDbPoint
   0
 ATTDEF
   5
-AF
+AD
 330
-A9
+A7
 100
 AcDbEntity
   8
@@ -5111,9 +5069,9 @@ TEXT
   0
 ENDBLK
   5
-AB
-330
 A9
+330
+A7
 100
 AcDbEntity
   8
@@ -5123,9 +5081,9 @@ AcDbBlockEnd
   0
 BLOCK
   5
-B1
+AF
 330
-B0
+AE
 100
 AcDbEntity
   8
@@ -5151,9 +5109,9 @@ Flow direction
   0
 LWPOLYLINE
   5
-B3
+B1
 330
-B0
+AE
 100
 AcDbEntity
   8
@@ -5181,9 +5139,9 @@ AcDbPolyline
   0
 POINT
   5
-B4
+B2
 330
-B0
+AE
 100
 AcDbEntity
   8
@@ -5199,9 +5157,9 @@ AcDbPoint
   0
 POINT
   5
-B5
+B3
 330
-B0
+AE
 100
 AcDbEntity
   8
@@ -5217,9 +5175,9 @@ AcDbPoint
   0
 LINE
   5
-B6
+B4
 330
-B0
+AE
 100
 AcDbEntity
   8
@@ -5241,9 +5199,9 @@ AcDbLine
   0
 ENDBLK
   5
-B2
-330
 B0
+330
+AE
 100
 AcDbEntity
   8
@@ -6247,7 +6205,7 @@ CREATED_BY_EZDXF
   3
 WRITTEN_BY_EZDXF
 350
-B9
+B7
   0
 DICTIONARYVAR
   5
@@ -6259,11 +6217,11 @@ DictionaryVariables
 280
 0
   1
-1.4.4 @ 2026-10-17T14:40:16.757546+00:00
+1.4.4 @ 2026-11-03T22:15:30.798643+00:00
   0
 DICTIONARYVAR
   5
-B9
+B7
 330
 2D
 100
@@ -6271,7 +6229,7 @@ DictionaryVariables
 280
 0
   1
-1.4.4 @ 2026-10-17T14:40:16.763025+00:00
+1.4.4 @ 2026-11-03T22:15:30.811832+00:00
   0
 ENDSEC
   0
