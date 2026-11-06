@@ -216,7 +216,9 @@ job handler in `app/scan.py`.
 8. **Markups**: pen strokes and highlighter in colour on a black and white print become their own layers, see
    [Markups](#markups).
 9. **Dimensions**: a dimension line with its terminators, extension lines and value becomes a CAD dimension, see
-   [Dimensions](#dimensions). This happens after the texts are read and before the linework is joined.
+   [Dimensions](#dimensions). This happens after the texts are read and before the linework is joined. Last, once the
+   linework is connected and its pens are measured on the image, the measured points of the dimensions are put on the
+   objects they dimension, and the objects where the values say (step `dimension_fit`).
 
 ## Output
 
@@ -407,11 +409,37 @@ would be taken for a dimension; `options.on` with `dimensions` switches it on fo
   than with a comma. Dimensions to check are on the layer `P2C-DIMENSION-CHECK`, in magenta in `overlay.png` and in
   `review`.
 
+- **On the objects it dimensions.** A dimension measures from where its extension lines start, which leave a gap to
+  the object (ISO 129: about 1 to 2 mm). So each measured point is put on the object its extension line points at
+  (step `dimension_fit`): the first linework ahead of the extension line within 4 mm, a wall face, an axis, a corner
+  or the jamb of an opening, exactly on it; a corner or the end of a line up to 0.4 mm beside the extension line, as
+  tracing draws one, is taken before an edge crossed at about the same place. Where the extension line meets only a
+  wall face along the dimension, the line that continues the extension line up to 10 mm behind that face is what it
+  measures: the face of an inner wall that a chain dimensions through the outer wall. A dimension line that ends on
+  the extension line of another dimension, such as that of an overall dimension, measures what that one does. The gap
+  becomes the offset of the dimension's extension lines (DIMEXO, the smaller of its two), so that the DXF draws them
+  as printed. Where nothing is in reach, as with the levels beside a section, the point stays where the extension line
+  starts.
+- **True to its value.** The length of a dimension as traced differs from its value by what reading and tracing are
+  off: a median of 0.07 to 0.2 mm on paper on a scan (3.5 to 10 mm in reality at 1:50), up to about 1 mm on a phone
+  photo. So the objects are moved, direction by direction (on an orthogonal plan along x and along y, a turned chain
+  along its own direction), so that every dimension measures its value at the drawing's scale exactly: the positions
+  the values say, as near as they can be to the positions drawn, a small least-squares problem with the values as
+  constraints. The objects are the lines at right angles to the dimension at its measured points, with the lines that
+  continue them; the lines that end on them follow, so the drawing stays connected, and the dimensions, with their
+  strokes and values, move with them. A value that does not fit its length (as above: 0.6 mm and 0.5 % of the length,
+  plus half the step it is written to) moves nothing. Nor does one that does not add up with the other values along
+  its direction, such as an overall dimension that is not the sum of the chain it spans: of the values that do not
+  add up, the one that fits its drawn length worst is marked to check ("its value does not add up with the other
+  dimensions along it"), until the others do. A dimension without a value, or with one read unreliably, moves with
+  the objects but moves none.
+
 `report.json` lists them under `dimensions`: `value` (as read; "" where none is written), `ends_mm` (the ends of the
-dimension line on the sheet), `measured_mm` (where the extension lines start), `length_mm`, `angle`, `terminator`
-(`tick`, `arrow` or `dot`), `uncertain` and `doubt`. The values stay in `texts` (and `counts.texts`) as well; a value
-read unreliably is to check with its dimension, under the kind `dimension` in `review`. The markdown has the sections
-`Dimensions` and `Dimensions to check (uncertain recognition)`.
+dimension line on the sheet), `measured_mm` (the measured points: on the objects where `dimension_fit` found them,
+else where the extension lines start), `offset_mm` (how far from them the extension lines start), `length_mm`,
+`angle`, `terminator` (`tick`, `arrow` or `dot`), `uncertain` and `doubt`. The values stay in `texts` (and
+`counts.texts`) as well; a value read unreliably is to check with its dimension, under the kind `dimension` in
+`review`. The markdown has the sections `Dimensions` and `Dimensions to check (uncertain recognition)`.
 
 ## Steps that can be switched
 
@@ -443,6 +471,7 @@ and says why a step that is off by default is off.
 | `text_on_pipes` | on | bars across a pipe are no letters: the end of a spotted line that a pipe runs along is cut off ("HH" before a line label), a single character with a pipe through it and on past it is linework, and a text a pipe runs into at both ends, such as a valve read as letters ("Hoeat"), is no word when the symbols are matched |
 | `vocabulary` | on | a token read with letters for digits or digits for letters ("-KI") is read in the vocabulary of the kind of drawing's [profile](profiles.md) where that alone makes it a word of it ("-K1") |
 | `dimensions` | on | a dimension line with its terminators, extension lines and value becomes a linear DXF dimension; one whose value is unsure, missing, does not fit its length or has another decimal separator than the sheet's other numbers is marked to check ([Dimensions](#dimensions)) |
+| `dimension_fit` | on | the measured points of a dimension lie on the objects it dimensions, the gap kept as the offset of its extension lines, and the objects are moved along each direction so that the dimensions measure their values exactly; a value that does not fit its length or does not add up with the others along it moves nothing, and the second is marked to check ([Dimensions](#dimensions)). Switched off, a dimension measures from where its extension lines start, at the length traced |
 | `short_strokes` | off | a short stroke across a line, such as a dimension tick, is kept rather than dropped as a crumb, and its two pieces where taking out the line cut it are one line again. Off by default: on the benchmark it cost a few junctions, curves drawn as arcs and lines within 0.5 mm on floor plans and sections |
 | `symbol_context` | on | a plate across its line (an orifice plate) needs the line to end at both of its ports and none to run on through it, and a symbol drawn on a line (a flow arrow) strokes of its own, not a hairline and not part of a larger figure ([Symbol library](#symbol-library)) |
 | `sheet_sizes` | off | a symbol found three times or more is held against the size of its own kind, and a group of strokes is also tried at a size a symbol was found at elsewhere, such as a valve between two flanges ([Symbol library](#symbol-library)). Off by default: on a dense sheet with many small marks, false arrows at their own small size confirm that size; switch it on for sheets that draw their valves much smaller than their bubbles |
@@ -700,7 +729,9 @@ stops although the line runs on; not where a wire ends at the port of a symbol),
 lines join, the output has an end, a corner or a dot within 1 mm; the bends of a curve drawn as short straight lines
 are no junctions), openings kept (where both faces of a wall are broken off for a door or a window, with a jamb at
 each side and nothing in the gap, the wall of the output stops at both sides and no output line runs across the gap),
-dimensions found as dimension objects (both ends within 1 mm and the value exact) and correct, phantom texts on
+dimensions found as dimension objects (both ends within 1 mm and the value exact) and correct, dimensions true to
+their value (their measured points as far apart as the value says, within 1 mm in reality) and measured points on the
+object (within 0.1 mm of the reference linework the reference's extension line meets first), phantom texts on
 symbols (texts where a symbol is and the reference has none), boxes marked as not classified on a missed symbol or on
 one of no library that the reference lists (the level marks of sections), and elsewhere, short strokes kept (solid
 strokes of 0.5 to 3 mm, such as ticks, arrowheads and the bars of symbols, as linework or in a placed symbol), the cells

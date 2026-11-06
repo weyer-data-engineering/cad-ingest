@@ -141,7 +141,9 @@ class Dimension:
     """A linear dimension: the distance between the ends of its dimension line, (x1, y1) and (x2, y2), where its
     terminators sit. Its extension lines run from the measured points ``p1`` and ``p2`` to the dimension line and
     ``extension`` mm past it; a measured point at the end of the dimension line has none of its own (the line ends on
-    the drawing's linework). ``value`` is its text as read, "" where none is written. A dimension recognised on a sheet
+    the drawing's linework). Where the measured points lie on the object they dimension (see fit), the extension lines
+    start ``offset`` mm from them, towards the dimension line, as printed with a gap. ``value`` is its text as read, ""
+    where none is written. A dimension recognised on a sheet
     keeps the strokes it was found from (``parts``) and its text (``text``), as printed, so that a preview draws it as
     printed; a reference dimension of the benchmark has neither, as its strokes and text are the drawing's own."""
 
@@ -159,6 +161,7 @@ class Dimension:
     text: Text | None = None
     parts: list[Line | Arc | Circle | Polygon] = field(default_factory=list)
     doubt: str | None = None  # why to check it: its value is unsure, missing or does not fit its length
+    offset: float = 0.0  # mm from the measured points to the starts of the extension lines (DIMEXO)
 
     @property
     def uncertain(self) -> bool:
@@ -255,7 +258,8 @@ class Drawing:
                            attributes={k: at(t) for k, t in s.attributes.items()}) for s in self.symbols]
         dimensions = [replace(m, x1=m.x1 * f, y1=m.y1 * f, x2=m.x2 * f, y2=m.y2 * f, p1=(m.p1[0] * f, m.p1[1] * f),
                               p2=(m.p2[0] * f, m.p2[1] * f), size=m.size * f, extension=m.extension * f,
-                              width=m.width * f, text=m.text and at(m.text), parts=[at(q) for q in m.parts])
+                              offset=m.offset * f, width=m.width * f, text=m.text and at(m.text),
+                              parts=[at(q) for q in m.parts])
                       for m in self.dimensions]
         return replace(self, width=self.width * f, height=self.height * f, lines=[at(q) for q in self.lines],
                        arcs=[at(q) for q in self.arcs], circles=[at(q) for q in self.circles],

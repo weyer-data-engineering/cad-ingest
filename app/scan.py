@@ -180,6 +180,7 @@ def _report(d) -> dict:
                "read_by": m.read_by, "texts": m.texts, "image": f"markup-{k}.png"} for k, m in enumerate(d.markups, 1)]
     measured = [{"value": m.value, "ends_mm": [[round(m.x1, 2), round(m.y1, 2)], [round(m.x2, 2), round(m.y2, 2)]],
                  "measured_mm": [[round(v, 2) for v in m.p1], [round(v, 2) for v in m.p2]],
+                 "offset_mm": round(m.offset, 2),
                  "length_mm": round(math.dist((m.x1, m.y1), (m.x2, m.y2)), 2), "angle": round(_angle(m), 1),
                  "terminator": m.terminator, "uncertain": m.uncertain, "doubt": m.doubt} for m in d.dimensions]
     texts = d.texts + [m.text for m in d.dimensions if m.text]

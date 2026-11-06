@@ -51,6 +51,10 @@ class Features:
     # framed); off, as the benchmark has no such characters to measure it on
     framed_letters: bool = False
     dimensions: bool = True  # dimension lines with their terminators, extension lines and value as dimension objects
+    # the measured points of the dimensions put on the objects they dimension (the gap kept as the offset), and the
+    # objects moved along each direction so that the dimensions measure their values exactly; a value that does not
+    # fit its length or does not add up with the others along it moves nothing and is marked: fit.py
+    dimension_fit: bool = True
     # the tag of a symbol inside its ring (an instrument bubble) only from a text inside it, never from one that runs
     # out of it, such as its number read with the bars of the flanges beside it ("T40201T"): symbols._attributes; and a
     # spotted line inside a drawn ring that runs a little out of it, onto the bars of a flange against it, is cut at the

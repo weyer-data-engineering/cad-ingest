@@ -12,7 +12,7 @@ import numpy as np
 import pypdfium2 as pdfium
 from scipy.spatial import cKDTree
 
-from . import (dimensions, freehand, hatching, library, markup, objects, ocr, pdfvector, profiles, sheet, spotting,
+from . import (dimensions, fit, freehand, hatching, library, markup, objects, ocr, pdfvector, profiles, sheet, spotting,
                symbols, titleblock, topology, unclassified, vectorize)
 from .features import Features
 from .model import PAPER, Circle, Drawing, Line, Text
@@ -164,6 +164,8 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
         unclassified.find(d, unclassified.sizes(templates))
     if features.width_calibration:  # measured on the sheet as rotated: at the drawn size, its pixels are smaller
         vectorize.calibrate_widths(d, norm, out * printed)
+    if features.dimension_fit:  # on the connected linework, once all of it is measured where the image shows it
+        fit.to_values(d)
     if features.pens:
         objects.pens(d)
     timer.lap("connect")

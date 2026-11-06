@@ -128,7 +128,8 @@ KEYS = ["recall_1mm", "precision_1mm", "recall_05mm", "precision_05mm", "deviati
         "markup_false_mm", "markup_found_note", "markup_found_cloud", "markup_found_hatching", "markup_found_leader",
         "markup_found_strike",
         "crossings_kept", "junctions_kept", "openings_kept", "pens_correct", "linetype_correct", "linetype_precision",
-        "dimension_recall", "dimension_precision", "dimension_review", "dimension_false",
+        "dimension_recall", "dimension_precision", "dimension_review", "dimension_false", "dimension_true",
+        "dimension_on_object",
         "symbol_phantom_texts", "unclassified_on_symbols", "unclassified_elsewhere", "unclassified_found",
         "short_strokes_kept", "title_cells_found", "title_cells_exact", "printed_ok",
         "scale_ok", "seconds", "source_ppm"]
@@ -446,11 +447,12 @@ def report(results: dict) -> str:
               "least 2 mm² where the recognised linework and the reference differ by more than 1 mm. Crossings kept: "
               "lines that cross without joining still do; junctions kept: lines that join still do; openings kept: a "
               "wall broken off for a door or a window still is, and is there on both sides. Pens: the share "
-              "of the linework drawn with the pen (ISO line width) of the reference.", "",
+              "of the linework drawn with the pen (ISO line width) of the reference. Dimensions: see "
+              "[Dimensions](#dimensions).", "",
               "| Kind | Cases | Lines found / correct ≤ 1 mm | Texts exact | Tokens exact | Symbols found / correct "
               "| Marked uncertain | Deviation areas | Ends stopping short | Crossings / junctions / openings kept "
-              "| Pens right |",
-              "|---|---|---|---|---|---|---|---|---|---|---|"]
+              "| Pens right | Dimensions true to their value / on the object |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     kinds: dict[str, list[dict]] = {}
     for c in results["cases"]:
         kinds.setdefault(c.get("kind", "?"), []).append(c)
@@ -461,7 +463,7 @@ def report(results: dict) -> str:
                      f"| {pct(m['symbol_recall'])} / {pct(m['symbol_precision'])} | {pct(m['uncertain_share'])} "
                      f"| {num(m['deviation_areas'], 0)} | {num(m['gap_ends'], 0)} "
                      f"| {pct(m['crossings_kept'])} / {pct(m['junctions_kept'])} / {pct(m['openings_kept'])} "
-                     f"| {pct(m['pens_correct'])} |")
+                     f"| {pct(m['pens_correct'])} | {pct(m['dimension_true'])} / {pct(m['dimension_on_object'])} |")
     lines += ["", "## New measures per case", "",
               "Symbols on a drawing without symbols: blocks placed where the reference has none. Markups (the cases "
               "with markups added by hand): the share of the markup strokes put on a markup layer (found), the share of "
@@ -486,12 +488,17 @@ def report(results: dict) -> str:
               "Reference dimensions that came out as CAD dimension objects with both ends of the dimension line within "
               "1 mm and the value read exactly (none where none is written): found, and the share of the dimension "
               "objects that are right (correct). To check: dimensions marked as uncertain. Where there are none: "
-              "dimension objects on a drawing without dimensions.", "",
-              "| Case | Dimensions found | Dimensions correct | To check | Where there are none |",
-              "|---|---|---|---|---|"]
+              "dimension objects on a drawing without dimensions. True to their value: dimensions with a value whose "
+              "measured points lie as far apart as the value says, within 1 mm in reality (what measuring the DXF "
+              "gives). On the object: measured points of dimensions found that lie within 0.1 mm of the linework the "
+              "reference dimension measures (where its extension line meets any).", "",
+              "| Case | Dimensions found | Dimensions correct | To check | Where there are none | True to their value "
+              "| On the object |",
+              "|---|---|---|---|---|---|---|"]
     for c in results["cases"]:
         lines.append(f"| {c['name']} | {pct(c.get('dimension_recall'))} | {pct(c.get('dimension_precision'))} "
-                     f"| {num(c.get('dimension_review'), 0)} | {num(c.get('dimension_false'), 0)} |")
+                     f"| {num(c.get('dimension_review'), 0)} | {num(c.get('dimension_false'), 0)} "
+                     f"| {pct(c.get('dimension_true'))} | {pct(c.get('dimension_on_object'))} |")
     lines += ["", "## Around the symbols and small strokes", "",
               "Phantom texts: texts on a symbol of the reference where it has none, its strokes read as letters. Not "
               "classified: clusters of linework marked as a symbol no library has, on a reference symbol not placed "

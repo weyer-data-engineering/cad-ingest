@@ -11,6 +11,8 @@ import cv2
 import numpy as np
 from scipy.spatial import cKDTree
 
+from app.plan2cad.dimensions import INCH, UNITS, value
+from app.plan2cad.fit import ASIDE, Linework
 from app.plan2cad.model import Arc, Circle, Drawing, Line, Polygon, Text, line_type
 from app.plan2cad.simulate import MARKUP
 from app.plan2cad.render import text_length
@@ -836,17 +838,73 @@ def dimensions(gt: Drawing, pred: Drawing) -> dict:
     if not gt.dimensions:
         return {"dimension_false": len(pred.dimensions)} if pred.dimensions else {}
 
-    def match(a, b) -> bool:
-        ends = ((a.x1, a.y1), (a.x2, a.y2))
-        return a.value == b.value and any(
-            math.dist(ends[0], p) <= 1.0 and math.dist(ends[1], q) <= 1.0 for p, q in
-            (((b.x1, b.y1), (b.x2, b.y2)), ((b.x2, b.y2), (b.x1, b.y1))))
-
-    hit = sum(any(match(r, q) for q in pred.dimensions) for r in gt.dimensions)
-    ok = sum(any(match(r, q) for r in gt.dimensions) for q in pred.dimensions)
+    hit = sum(any(_dimension_match(r, q) for q in pred.dimensions) for r in gt.dimensions)
+    ok = sum(any(_dimension_match(r, q) for r in gt.dimensions) for q in pred.dimensions)
     return {"dimension_recall": hit / len(gt.dimensions),
             "dimension_precision": ok / len(pred.dimensions) if pred.dimensions else None,
             "dimension_review": sum(q.uncertain for q in pred.dimensions)}
+
+
+def _dimension_match(a, b) -> bool:
+    """Whether output dimension ``b`` is reference dimension ``a``: both ends of its dimension line within 1 mm and its
+    value exactly (none where none is written)."""
+    ends = ((a.x1, a.y1), (a.x2, a.y2))
+    return a.value == b.value and any(
+        math.dist(ends[0], p) <= 1.0 and math.dist(ends[1], q) <= 1.0 for p, q in
+        (((b.x1, b.y1), (b.x2, b.y2)), ((b.x2, b.y2), (b.x1, b.y1))))
+
+
+def _unit(gt: Drawing) -> float:
+    """The unit (in mm) the reference's dimensions are written in, where they do not name it: the one most of them
+    fit at its scale."""
+    rows = [(v, math.dist((m.x1, m.y1), (m.x2, m.y2)) / gt.printed) for m in gt.dimensions if (v := value(m.value))]
+    return max((*UNITS.values(), INCH), key=lambda unit: (sum(
+        abs(number * (own or unit) / gt.scale - length) <= 0.05 for (number, _, own), length in rows), -unit))
+
+
+def dimensions_true(gt: Drawing, pred: Drawing) -> dict:
+    """Dimensions that dimension the drawing. True to their value: the share of the output dimensions with a value
+    whose measured points lie as far apart along the dimension line as the value says, within 1 mm in reality at the
+    reference's scale (what measuring the DXF gives). On the object: the share of the measured points of the output
+    dimensions that are reference ones that lie within 0.1 mm of the object the reference dimension measures, the
+    reference linework its extension line meets first (fit.Linework.ahead; the reference's extension lines start
+    about 2 mm off the wall), or that its dimension line ends on where it has no extension line, up to ASIDE beyond
+    the end of such a line: the reference draws a wall face up to a pixel of its grid (1 cm) off where its dimensions
+    say, so a wall corner moved to its value lies beside the reference's. Ends whose extension line meets nothing
+    within reach (a chain of levels beside a section) do not count."""
+    if not gt.dimensions or not gt.scale:
+        return {}
+    unit = _unit(gt)
+    true = []
+    for m in pred.dimensions:
+        if v := value(m.value):
+            u = np.array((m.x2 - m.x1, m.y2 - m.y1)) / max(math.dist((m.x1, m.y1), (m.x2, m.y2)), 1e-9)
+            measured = abs(float((np.array(m.p2) - np.array(m.p1)) @ u)) / gt.printed * gt.scale
+            true.append(abs(measured - v[0] * (v[2] or unit)) <= 1.0)
+    work = Linework(gt)
+    on = []
+    for r in gt.dimensions:
+        objects = [_object(work, r, k) for k in (0, 1)]
+        for q in (q for q in pred.dimensions if _dimension_match(r, q)):
+            flip = math.dist((r.x1, r.y1), (q.x1, q.y1)) > math.dist((r.x1, r.y1), (q.x2, q.y2))
+            for k, segs in enumerate(objects):
+                p = np.array((q.p2, q.p1)[k] if flip else (q.p1, q.p2)[k], float)
+                if len(segs):
+                    on.append(bool(work.on(p, segs, 0.1, beyond=ASIDE).any()))
+    return {"dimension_true": float(np.mean(true)) if true else None,
+            "dimension_on_object": float(np.mean(on)) if on else None}
+
+
+def _object(work: Linework, r, k: int) -> np.ndarray:
+    """The reference segments that end ``k`` of reference dimension ``r`` measures (see dimensions_true)."""
+    e, p = np.array(((r.x1, r.y1), (r.x2, r.y2))[k], float), np.array((r.p1, r.p2)[k], float)
+    far = float(np.hypot(*(p - e)))
+    u = np.array((r.x2 - r.x1, r.y2 - r.y1)) / max(math.dist((r.x1, r.y1), (r.x2, r.y2)), 1e-9)
+    at = work.ahead(p, (p - e) / far) if far > 1e-6 else work.across(p, u)
+    if at is None or not len(work.seg):
+        return np.zeros(0, int)
+    every = np.arange(len(work.seg))
+    return every[work.on(at, every, 0.01)]
 
 
 def uncertain(pred: Drawing) -> dict:
@@ -896,7 +954,7 @@ def evaluate(gt: Drawing, pred: Drawing) -> dict:
     """The measures of the output against the reference. Those of linework and texts see the strokes and texts of
     the dimensions where they are; those of the entities of the DXF (objects in one piece, breaks, ends stopping short)
     take a chain of dimensions as one entity with nothing to join, as a symbol is."""
-    dims = dimensions(gt, pred)
+    dims = dimensions(gt, pred) | dimensions_true(gt, pred)
     whole = content(pred)
     gt, pred = dissolved(gt), dissolved(pred)
     marks = markups(gt, pred)
