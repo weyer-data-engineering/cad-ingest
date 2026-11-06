@@ -5,12 +5,13 @@ about a millimetre on a photo. So in CAD, measuring the drawing did not give the
 points of the dimensions lay in the air.
 
 Here each measured point is first put on the object its extension line points at: the first linework ahead of the
-extension line within REACH, a wall face, a corner, an axis or the jamb of an opening, exactly on it; the gap is kept
-as the dimension's offset, so that the DXF draws it as printed. Then the objects are moved, direction by direction, so
-that the dimensions along each measure their values exactly: the positions along it that the values say, as near as
-they can be to the positions drawn, a small least-squares problem with the values as constraints. The objects are the
-lines a dimension measures the position of (those at right angles to it at its measured point, with the lines that
-continue them); the lines that end on them follow, so the drawing stays connected, and the dimensions move with them.
+extension line within REACH, a wall face, a corner, an axis or the jamb of an opening, exactly on it; the gap is kept as
+the dimension's offset, so that the DXF draws it as printed. Then the objects are moved, direction by direction, so that
+the dimensions along each measure their values exactly: the positions along it that the values say, as near as they can
+be to the positions drawn, a small least-squares problem with the values as constraints. The objects are the lines a
+dimension measures the position of (those at right angles to it at its measured point, with the lines that continue
+them); the lines that end on them follow, so the drawing stays connected (one that meets them at an angle, such as a
+hatching, slides along itself and keeps its direction), and the dimensions move with them.
 
 A value that does not fit its length within what reading and tracing explain (dimensions.tolerance, the tolerance the
 dimensions are checked with) moves nothing and is marked to check. So is a value that does not add up with the others
@@ -34,6 +35,8 @@ CORNER = 0.15  # mm: a corner this little further than an edge crossed is where 
 WALL = 10.0  # mm: a line that continues an extension line beyond the face it meets starts this far behind it at most
 SQUARE = math.sin(math.radians(5))  # a line measured along a dimension stands at right angles to it within this
 ON = 0.05  # mm: points this close are one, and a point this close to a line lies on it
+# A line that ends on a moved one at least this steeply slides along itself; a flatter one moves with it.
+ACROSS = math.radians(20)
 DIRECTION = math.radians(1.0)  # dimensions within this of one another run along one direction
 SAME_PLACE = 0.3  # mm: ends of dimensions without an object this close along their direction measure one place
 SAME_LINE = 0.3  # mm: dimensions whose dimension lines lie this close to one line are one chain
@@ -194,9 +197,27 @@ class Linework:
                 d = b - a
                 t = np.clip((self.xy[others] - a) @ d / max(float(d @ d), 1e-12), 0, 1)
                 follow.update(others[np.hypot(*(a + t[:, None] * d - self.xy[others]).T) <= ON].tolist())
-        for v in (vertices | follow) - set(np.flatnonzero(done).tolist()):
-            self.xy[v] += by
+        todo = sorted((vertices | follow) - set(np.flatnonzero(done).tolist()))
+        to = [self.xy[v] + by if v in vertices else self._slid(v, segs, by) for v in todo]  # all from where they were
+        for v, x in zip(todo, to):
+            self.xy[v] = x
             self.moved[v] = done[v] = True
+
+    def _slid(self, v: int, segs: list[int], by: np.ndarray) -> np.ndarray:
+        """Where the end ``v`` of a line that ends on the moved ``segs`` goes: along its own line to where the moved
+        line now runs, so that a line meeting it at an angle (a hatching, a sloping wall) keeps its direction. Moved by
+        ``by`` where its line runs along the moved one or it has more than one line of its own at an angle."""
+        p = self.xy[v]
+        mine = [int(w) for a, w in self.seg[(self.seg == v).any(axis=1)] for w in (a, w) if w != v]
+        j = min(segs, key=lambda j: _distance(p, self.xy[self.seg[j, 0]], self.xy[self.seg[j, 1]]))
+        a, b = self.xy[self.seg[j, 0]], self.xy[self.seg[j, 1]]
+        d = (b - a) / max(float(np.hypot(*(b - a))), 1e-12)
+        across = [w for w in mine if abs(_cross(d, _unit(p - self.xy[w]))) > math.sin(ACROSS)]
+        if len(across) != 1:
+            return p + by
+        e = _unit(p - self.xy[across[0]])
+        t = _cross(a + by - p, d) / _cross(e, d)  # p + t e lies on the moved line a + by + s d
+        return p + t * e
 
 
 def to_values(d: Drawing) -> None:
@@ -464,3 +485,17 @@ def _moved(q, moved):
     elif isinstance(q, (Arc, Circle)):
         q.cx, q.cy = moved(q.cx, q.cy)
     return q
+
+
+def _unit(v: np.ndarray) -> np.ndarray:
+    return v / max(float(np.hypot(*v)), 1e-12)
+
+
+def _cross(u: np.ndarray, v: np.ndarray) -> float:
+    return float(u[0] * v[1] - u[1] * v[0])
+
+
+def _distance(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+    d = b - a
+    t = float(np.clip((p - a) @ d / max(float(d @ d), 1e-12), 0, 1))
+    return float(np.hypot(*(a + t * d - p)))

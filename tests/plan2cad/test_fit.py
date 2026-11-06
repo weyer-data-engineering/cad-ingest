@@ -45,6 +45,15 @@ def test_a_chain_drawn_off_its_values_comes_out_exact_and_connected():
     assert d.dimensions[0].x2 == d.dimensions[1].x1 == wall[1][0]  # the chain moved with the drawing
 
 
+def test_a_hatch_line_ending_on_a_moved_wall_slides_along_itself_and_keeps_its_direction():
+    d = plan()
+    d.lines.append(Line(78.2, 45, 98.2, 65))  # at 45 degrees to the face on from the jamb, which moves left
+    fit.to_values(d)
+    hatch, face = d.lines[2], d.lines[0]
+    assert face.x1 < 98.2 and hatch.x2 == pytest.approx(face.x1)  # still on the face
+    assert (hatch.x1, hatch.y1) == (78.2, 45) and hatch.y2 == pytest.approx(65 - (98.2 - face.x1))  # at 45 degrees
+
+
 def test_measured_points_land_on_the_wall_with_the_gap_as_offset():
     d = plan()
     fit.to_values(d)

@@ -438,19 +438,19 @@ would be taken for a dimension; `options.on` with `dimensions` switches it on fo
   becomes the offset of the dimension's extension lines (DIMEXO, the smaller of its two), so that the DXF draws them
   as printed. Where nothing is in reach, as with the levels beside a section, the point stays where the extension line
   starts.
-- **True to its value.** The length of a dimension as traced differs from its value by what reading and tracing are
-  off: a median of 0.07 to 0.2 mm on paper on a scan (3.5 to 10 mm in reality at 1:50), up to about 1 mm on a phone
-  photo. So the objects are moved, direction by direction (on an orthogonal plan along x and along y, a turned chain
-  along its own direction), so that every dimension measures its value at the drawing's scale exactly: the positions
-  the values say, as near as they can be to the positions drawn, a small least-squares problem with the values as
-  constraints. The objects are the lines at right angles to the dimension at its measured points, with the lines that
-  continue them; the lines that end on them follow, so the drawing stays connected, and the dimensions, with their
-  strokes and values, move with them. A value that does not fit its length (as above: 0.6 mm and 0.5 % of the length,
-  plus half the step it is written to) moves nothing. Nor does one that does not add up with the other values along
-  its direction, such as an overall dimension that is not the sum of the chain it spans: of the values that do not
-  add up, the one that fits its drawn length worst is marked to check ("its value does not add up with the other
-  dimensions along it"), until the others do. A dimension without a value, or with one read unreliably, moves with
-  the objects but moves none.
+- **True to its value.** The length of a dimension as traced differs from its value by what reading and tracing are off:
+  a median of 0.07 to 0.2 mm on paper on a scan (3.5 to 10 mm in reality at 1:50), up to about 1 mm on a phone photo. So
+  the objects are moved, direction by direction (on an orthogonal plan along x and along y, a turned chain along its own
+  direction), so that every dimension measures its value at the drawing's scale exactly: the positions the values say,
+  as near as they can be to the positions drawn, a small least-squares problem with the values as constraints. The
+  objects are the lines at right angles to the dimension at its measured points, with the lines that continue them; the
+  lines that end on them follow, so the drawing stays connected (one that meets them at an angle, such as a hatching,
+  slides along itself and keeps its direction), and the dimensions, with their strokes and values, move with them. A
+  value that does not fit its length (as above: 0.6 mm and 0.5 % of the length, plus half the step it is written to)
+  moves nothing. Nor does one that does not add up with the other values along its direction, such as an overall
+  dimension that is not the sum of the chain it spans: of the values that do not add up, the one that fits its drawn
+  length worst is marked to check ("its value does not add up with the other dimensions along it"), until the others do.
+  A dimension without a value, or with one read unreliably, moves with the objects but moves none.
 
 `report.json` lists them under `dimensions`: `value` (as read; "" where none is written), `ends_mm` (the ends of the
 dimension line on the sheet), `measured_mm` (the measured points: on the objects where `dimension_fit` found them,

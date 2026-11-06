@@ -43,9 +43,10 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   inner wall a chain dimensions through the outer wall), and the gap to the start of the extension line is the
   dimension's offset (DIMEXO), so the DXF looks as printed. The objects are moved along each direction so that every
   dimension measures its value exactly at the drawing's scale; lines that end on them follow, so the drawing stays
-  connected. A value that does not fit its length moves nothing, and one that does not add up with the others along it,
-  such as an overall dimension that is not the sum of its chain, is marked to check. `report.json` has `offset_mm` for
-  each dimension. The benchmark measures the dimensions true to their value and on the object.
+  connected, and one that meets them at an angle, such as a hatching, keeps its direction. A value that does not fit its
+  length moves nothing, and one that does not add up with the others along it, such as an overall dimension that is not
+  the sum of its chain, is marked to check. `report.json` has `offset_mm` for each dimension. The benchmark measures the
+  dimensions true to their value and on the object.
 - A profile can switch steps of the recognition off for its kind of drawing (`[steps] off`, `docs/profiles.md`). The
   P&ID and circuit diagram profiles switch `dimensions` off: they carry no dimension chains, and a line number between
   two flanges was taken for a dimension. A job that names the step in `options.on` keeps it on. `report.json` lists the
