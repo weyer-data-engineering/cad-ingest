@@ -29,7 +29,7 @@ FRAMED = {"any": None, "letter": str.isalpha, "digit": str.isdigit}  # what a si
 # the steps (features.py) that run only once the kind of drawing is known, which its profile can switch off; the others
 # run, at least in part, before the texts that tell the kind are read
 BY_KIND = ("dimensions", "vocabulary", "framed_letters", "dedupe", "square_lines", "title_block", "unclassified",
-           "width_calibration", "pens", "read_handwriting")
+           "width_calibration", "dimension_fit", "pens", "read_handwriting")
 
 
 class ProfileError(ValueError):

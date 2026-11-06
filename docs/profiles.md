@@ -48,10 +48,10 @@ cad-ingest has four built-in profiles in `profiles/`:
   kind, recognised or named in `options.drawing`, unless the job names them in `options.on`; `report.json` lists those
   switched off in `steps_off_by_kind`, and the markdown says so. Only the steps that run once the kind is known can be
   switched off so: `dimensions`, `vocabulary`, `framed_letters`, `dedupe`, `square_lines`, `title_block`,
-  `unclassified`, `width_calibration`, `pens` and `read_handwriting`; the others run, at least in part, before the
-  texts are read, and a profile that names one cannot be read. The
-  built-in `pid.toml` and `electrical.toml` switch `dimensions` off: P&IDs and circuit diagrams carry no dimension
-  chains, and a line number between two flanges, or a value between two terminals, would be taken for a dimension.
+  `unclassified`, `width_calibration`, `dimension_fit`, `pens` and `read_handwriting`; the others run, at least in part,
+  before the texts are read, and a profile that names one cannot be read. The built-in `pid.toml` and `electrical.toml`
+  switch `dimensions` off: P&IDs and circuit diagrams carry no dimension chains, and a line number between two flanges,
+  or a value between two terminals, would be taken for a dimension.
 
 ## Format
 
