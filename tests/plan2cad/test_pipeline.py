@@ -290,20 +290,25 @@ def test_line_types_are_told_apart_and_the_new_steps_are_skipped_when_switched_o
 
 
 def test_curves_are_drawn_before_the_title_block_is_read_and_the_pens_measured_last(monkeypatch):
-    from app.plan2cad import objects, titleblock, unclassified, vectorize
+    from app.plan2cad import objects, square, titleblock, unclassified, vectorize
     from app.plan2cad.features import Features
     from app.plan2cad.model import Drawing, Line, Text
     from app.plan2cad.simulate import plot
 
     calls = []
-    steps = ((objects, "curves"), (titleblock, "find"), (unclassified, "find"), (vectorize, "calibrate_widths"),
-             (objects, "pens"))
+    steps = ((objects, "curves"), (square, "square"), (titleblock, "find"), (unclassified, "find"),
+             (vectorize, "calibrate_widths"), (objects, "pens"))
     for module, name in steps:  # the chords of a curve in the title block would be rulings of it
         monkeypatch.setattr(module, name, lambda *a, _f=getattr(module, name), _n=name: calls.append(_n) or _f(*a))
     d = Drawing(297, 210, lines=[Line(20, 10, 287, 10, 0.7), Line(20, 200, 287, 200, 0.7), Line(20, 10, 20, 200, 0.7),
                                  Line(287, 10, 287, 200, 0.7)], texts=[Text(150, 100, 3.5, "Order of the steps")])
-    convert(plot(d, 150), paper="A4", dpi=150, features=Features.of(on=["pens"]))
-    assert calls == ["curves", "find", "find", "calibrate_widths", "pens"]  # the title block's, then the shapes'
+    img = plot(d, 150)
+    convert(img, paper="A4", dpi=150, features=Features.of(on=["pens"]))
+    # the lines squared after the curves, which it would bend, and before the rulings of the title block are read
+    assert calls == ["curves", "square", "find", "find", "calibrate_widths", "pens"]
+    calls.clear()
+    convert(img, paper="A4", dpi=150, features=Features.of(off=["square_lines"]))
+    assert "square" not in calls
 
 
 def test_a_single_letter_on_bars_across_a_pipe_is_linework_but_a_digit_above_a_line_is_not():

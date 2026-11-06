@@ -892,6 +892,86 @@ def title_cells(gt: Drawing, pred: Drawing) -> dict:
     return {"title_cells_found": found / n, "title_cells_exact": exact / n}
 
 
+SQUARE_LONG = 5.0  # mm: the straight segments whose direction counts for the measures of squareness
+SQUARE_EXACT = 0.01  # degrees: a segment this close to a direction is exactly in it
+
+
+def _straight(d: Drawing) -> np.ndarray:
+    """The straight segments of at least SQUARE_LONG mm of the lines and polylines of a drawing (not of the chords
+    of a spline, nor of symbols) as rows x1, y1, x2, y2."""
+    rows = [(q.x1, q.y1, q.x2, q.y2) for q in d.lines]
+    for pl in d.polylines:
+        if not pl.smooth:
+            rows += [(q.x1, q.y1, q.x2, q.y2) for q in pl.parts() if isinstance(q, Line)]
+    s = np.array(rows, float).reshape(-1, 4)
+    return s[np.hypot(s[:, 2] - s[:, 0], s[:, 3] - s[:, 1]) >= SQUARE_LONG]
+
+
+def _matches(g: np.ndarray, p: np.ndarray) -> np.ndarray:
+    """For each output segment, the reference segment it lies on (its ends and middle within 1 mm, its direction
+    within 5 degrees; the nearest), or -1."""
+    out = np.full(len(p), -1)
+    if not len(g) or not len(p):
+        return out
+    pts = [_line(*row) for row in g]
+    tree = cKDTree(np.vstack(pts))
+    owner = np.repeat(np.arange(len(g)), [len(q) for q in pts])
+    ga, gv = g[:, :2], g[:, 2:] - g[:, :2]
+    gang = np.arctan2(gv[:, 1], gv[:, 0])
+    for i, (x1, y1, x2, y2) in enumerate(p):
+        probe = np.array([(x1, y1), ((x1 + x2) / 2, (y1 + y2) / 2), (x2, y2)])
+        near = sorted({int(owner[j]) for j in tree.query_ball_point(probe[1], 1.0 + STEP)})
+        if not near:
+            continue
+        a, v = ga[near], gv[near]
+        w = probe[:, None, :] - a[None]  # (probe, candidate, xy)
+        t = np.clip((w * v[None]).sum(-1) / np.maximum((v * v).sum(-1), 1e-12)[None], 0, 1)
+        dist = np.linalg.norm(t[..., None] * v[None] - w, axis=-1).max(axis=0)  # the farthest of the three
+        turn = np.abs(np.remainder(math.atan2(y2 - y1, x2 - x1) - gang[near] + np.pi / 2, np.pi) - np.pi / 2)
+        ok = (dist <= 1.0) & (turn <= math.radians(5))
+        if ok.any():
+            out[i] = near[int(np.argmin(np.where(ok, dist, np.inf)))]
+    return out
+
+
+def squareness(gt: Drawing, pred: Drawing) -> dict:
+    """Lines drawn parallel or at right angles that come out exactly so (within SQUARE_EXACT), on the straight segments
+    of at least SQUARE_LONG mm (_straight) that lie on a reference segment (_matches). ``axis_exact``: of those on a
+    reference segment along an axis, the share exactly along it. ``square_pairs``: of the pairs of reference segments
+    that are parallel or at right angles to each other and have output on them, the share whose output (the longest
+    segment on each) is exactly so too; ``oblique_pairs``: the same of the pairs off the axes, such as the sides of a
+    building turned on a site plan or a hatching."""
+    g, p = _straight(gt), _straight(pred)
+    match = _matches(g, p)
+    if not (match >= 0).any():
+        return {}
+
+    def angle(s: np.ndarray) -> np.ndarray:  # degrees mod 90
+        return np.degrees(np.arctan2(s[:, 3] - s[:, 1], s[:, 2] - s[:, 0])) % 90
+
+    def apart(a: np.ndarray, b: np.ndarray) -> np.ndarray:  # degrees, mod 90
+        return np.abs((a - b + 45) % 90 - 45)
+
+    on = match >= 0
+    ga, pa = angle(g), angle(p)
+    axis = on & (apart(ga[np.maximum(match, 0)], 0) < 1e-6)
+    out = {"axis_exact": float(np.mean(apart(pa[axis], 0) < SQUARE_EXACT)) if axis.any() else None}
+    length = np.hypot(p[:, 2] - p[:, 0], p[:, 3] - p[:, 1])
+    best: dict[int, int] = {}
+    for i in np.flatnonzero(on):  # the longest output segment on each reference segment
+        if match[i] not in best or length[i] > length[best[match[i]]]:
+            best[match[i]] = i
+    refs = np.array(sorted(best))
+    ref_dir, out_dir = ga[refs], pa[[best[r] for r in refs]]
+    same = apart(ref_dir[:, None], ref_dir[None, :]) < 1e-6  # parallel or at right angles in the reference
+    exact = apart(out_dir[:, None], out_dir[None, :]) < SQUARE_EXACT
+    pairs = np.triu(same, 1)
+    oblique = pairs & (apart(ref_dir, 0) >= 1e-6)[:, None]
+    out["square_pairs"] = float(exact[pairs].mean()) if pairs.any() else None
+    out["oblique_pairs"] = float(exact[oblique].mean()) if oblique.any() else None
+    return out
+
+
 def evaluate(gt: Drawing, pred: Drawing) -> dict:
     """The measures of the output against the reference. Those of linework and texts see the strokes and texts of
     the dimensions where they are; those of the entities of the DXF (objects in one piece, breaks, ends stopping short)
@@ -907,7 +987,7 @@ def evaluate(gt: Drawing, pred: Drawing) -> dict:
     out |= loose(replace(whole, dimensions=[])) | marks | openings(gt, pred)
     out |= uncertain(pred) | deviations(flat_gt, flat_pred) | pens(flat_gt, flat_pred) | dims
     out |= symbols_apart(gt, pred) | short_strokes(flat_gt, flat_pred) | title_cells(gt, pred)
-    out |= line_types(flat_gt, flat_pred)
+    out |= line_types(flat_gt, flat_pred) | squareness(gt, pred)
     out["scale_ok"] = pred.scale == gt.scale if gt.scale else None
     # the print size measured on the sheet (pipeline.printed_size) within 15 % of the share it is printed at
     out["printed_ok"] = abs(pred.printed / gt.printed - 1) <= 0.15

@@ -13,7 +13,7 @@ import pypdfium2 as pdfium
 from scipy.spatial import cKDTree
 
 from . import (dimensions, freehand, hatching, library, markup, objects, ocr, pdfvector, profiles, sheet, spotting,
-               symbols, titleblock, topology, unclassified, vectorize)
+               square, symbols, titleblock, topology, unclassified, vectorize)
 from .features import Features
 from .model import PAPER, Circle, Drawing, Line, Text
 
@@ -156,6 +156,8 @@ def convert(img: np.ndarray, paper: str = "A3", scale: int | None = None, dpi: f
     _lettering(d)
     if features.splines:  # before the title block is read: the straight chords of a curve in it would be its rulings
         objects.curves(d)
+    if features.square_lines:  # after the curves, whose chords it would bend, and before the rulings of the title block
+        square.square(d)
     if features.title_block:  # at the drawn size, which its measures are made for, like those of symbols
         d.title_block = titleblock.find(d)
         if d.title_block:

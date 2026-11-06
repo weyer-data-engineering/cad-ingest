@@ -28,8 +28,8 @@ SWAPS = 4  # at most this many confused characters in a token are tried
 FRAMED = {"any": None, "letter": str.isalpha, "digit": str.isdigit}  # what a single character in a frame is read as
 # the steps (features.py) that run only once the kind of drawing is known, which its profile can switch off; the others
 # run, at least in part, before the texts that tell the kind are read
-BY_KIND = ("dimensions", "vocabulary", "framed_letters", "dedupe", "title_block", "unclassified", "width_calibration",
-           "pens", "read_handwriting")
+BY_KIND = ("dimensions", "vocabulary", "framed_letters", "dedupe", "square_lines", "title_block", "unclassified",
+           "width_calibration", "pens", "read_handwriting")
 
 
 class ProfileError(ValueError):

@@ -202,7 +202,25 @@ job handler in `app/scan.py`.
    along each bend and bend away from the straight line through its ends by more than 0.3 mm, it becomes a spline
    that stays within 0.3 mm of it (a contour line; step `splines`). True arcs and long straight pieces, such as a
    straight road running into a bend, stay as they are, and so does a straight line traced with a small jog, such as
-   where another line crosses it: it turns to and fro, hardly at all in all. Then the title block is read as a table
+   where another line crosses it: it turns to and fro, hardly at all in all. Then lines drawn parallel or at right
+   angles are made exactly so (step `square_lines`): a traced line leans by the noise of its ends, a long wall by a
+   few hundredths of a degree, a short pipe between a valve and a junction by a few tenths. The directions of the
+   sheet are the axes and each direction that at least three straight segments of 30 mm in all share (mod 90
+   degrees, so with its right angle), such as the sides of a building turned on a site plan or a hatching; the chords
+   of a curve, which bend into each other by more than their noise allows and less than 25 degrees, back none, and a
+   single oblique line, such as a roof pitch, a stair line or a leader, makes none and stays as drawn. A straight
+   segment of a line, a polyline or a dimension whose direction lies within what the noise of its ends allows of such
+   a direction (atan(0.6 mm / length), from 0.5 degrees for a long segment to 5 for a short one) is turned to exactly
+   it; one along an axis gets two equal coordinates. Pieces of one direction whose offsets differ by less than 0.15 mm
+   are put on one line. Where segments meet (a corner, a T, a line ending on another, on a ring, an arc or a filled
+   area, or at the port of a symbol), the meeting point is placed where the turned lines meet, so corners stay closed
+   and Ts stay on their line. A symbol whose ports the turned pipes no longer reach is moved onto them, without
+   turning, by as much as they need; one that would have to turn stays where it is, and the pipes at its ports turn
+   about them. No point of the linework moves more than 0.5 mm: where one would, the shortest segment that ends there
+   stays as drawn. A dimension line turns like the others, and its ends move to where its extension lines meet it at
+   right angles. Texts, arcs, circles and symbols are not turned. The step runs after the curves, whose chords it
+   would bend, and before the title block, whose rulings it squares; no later step moves the linework (marks by hand
+   are added after it, as drawn). Then the title block is read as a table
    (step `title_block`, see [Output](#output)): after the curves, as the flattest chords of a curve in it, such as a
    logo, would cut its cells, and the chords of a spline cut none. Then linework that looks like a symbol but was
    recognised as none of the libraries' is kept as it was traced, on a layer of its own (step `unclassified`, see
@@ -449,6 +467,7 @@ and says why a step that is off by default is off.
 | `attributes_inside` | on | an attribute inside a symbol's ring, such as an instrument's number, comes only from a text inside the ring, and a spotted line inside a drawn ring is cut where it runs a little out of it, onto the bars of a flange against it ([Symbol library](#symbol-library)) |
 | `dedupe` | on | a text read twice at one place, in the same direction, is kept once, the surer reading |
 | `splines` | on | arcs of up to 1.5 m radius are traced as arcs, a smooth polyline on one circle becomes one arc, and a free curve traced as short straight pieces (a contour line) becomes a spline on `P2C-CURVE`. Switched off, large arcs and such curves stay polylines, for clients that cannot read DXF splines |
+| `square_lines` | on | lines drawn parallel or at right angles come out exactly so: a straight segment within what the noise of its ends allows (0.5 to 5 degrees) of the axes or of a direction several segments share (a building turned on a site plan, a hatching) is turned to exactly it, its meeting points are placed where the turned lines meet, and a symbol moves onto the pipes at its ports; no point moves more than 0.5 mm ([How it works](#how-it-works)) |
 | `title_block` | on | the title block becomes a table of its ruled cells (`title_block` in `report.json`, a table in the markdown), and its lines go on `P2C-TITLEBLOCK` ([Output](#output)) |
 | `unclassified` | on | linework that looks like a symbol but was recognised as none of the libraries' stays linework on `P2C-SYMBOL-UNCLASSIFIED` and is listed ([Symbols not classified](#symbols-not-classified)) |
 | `width_calibration` | on | the pen of each element is measured on the grey image, as the ink across the stroke over the darkness of the ink nearby, not as its width on the binary image, which blur and the threshold widen |
@@ -704,7 +723,10 @@ dimensions found as dimension objects (both ends within 1 mm and the value exact
 symbols (texts where a symbol is and the reference has none), boxes marked as not classified on a missed symbol or on
 one of no library that the reference lists (the level marks of sections), and elsewhere, short strokes kept (solid
 strokes of 0.5 to 3 mm, such as ticks, arrowheads and the bars of symbols, as linework or in a placed symbol), the cells
-of the title block found and read exactly, the print size measured within 15 %, pens right, runtime. The strokes and
+of the title block found and read exactly, the print size measured within 15 %, pens right, lines along the axes
+exactly so (of the straight segments of at least 5 mm on a reference segment along an axis, within 0.01 degrees) and
+pairs of lines parallel or at right angles exactly so (of the pairs of reference segments that are, all and those off
+the axes), runtime. The strokes and
 texts of a dimension count as linework and texts where they are; for objects in one piece, breaks and ends stopping
 short, a chain of dimensions is one entity, as its dimensions share the
 dimension line, extension lines and terminators. The case with a library lacking two symbols (the check valve and the
@@ -750,6 +772,11 @@ stay linework. On floor plans, all fixtures are found at 1:50; at 1:100, where O
 
 ## Limits
 
+- Lines are squared to the directions measured on the sheet (`square_lines`), not to round angles: a hatching that the
+  tracing leans a degree or two off its 45 degrees comes out exactly parallel at the angle traced. Two directions
+  less than a degree apart, or one less than a degree off the axes, are one direction, so a building turned by less
+  than a degree against the sheet comes out along the axes where its segments are short, and as drawn where they are
+  long. A line between two ports of symbols that are placed a little turned stays as drawn.
 - Handwriting is not read (see [Markups](#markups)), unless a job's reviewer model reads it (`review_handwriting`), as
   a reading to check; the markup images in the ZIP show what it says.
 - Text at another angle than horizontal or vertical needs at least three characters on a straight line: a text along

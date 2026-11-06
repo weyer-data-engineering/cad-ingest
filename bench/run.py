@@ -130,7 +130,8 @@ KEYS = ["recall_1mm", "precision_1mm", "recall_05mm", "precision_05mm", "deviati
         "crossings_kept", "junctions_kept", "openings_kept", "pens_correct", "linetype_correct", "linetype_precision",
         "dimension_recall", "dimension_precision", "dimension_review", "dimension_false",
         "symbol_phantom_texts", "unclassified_on_symbols", "unclassified_elsewhere", "unclassified_found",
-        "short_strokes_kept", "title_cells_found", "title_cells_exact", "printed_ok",
+        "short_strokes_kept", "title_cells_found", "title_cells_exact", "printed_ok", "axis_exact", "square_pairs",
+        "oblique_pairs",
         "scale_ok", "seconds", "source_ppm"]
 
 
@@ -446,11 +447,13 @@ def report(results: dict) -> str:
               "least 2 mm² where the recognised linework and the reference differ by more than 1 mm. Crossings kept: "
               "lines that cross without joining still do; junctions kept: lines that join still do; openings kept: a "
               "wall broken off for a door or a window still is, and is there on both sides. Pens: the share "
-              "of the linework drawn with the pen (ISO line width) of the reference.", "",
+              "of the linework drawn with the pen (ISO line width) of the reference. Square: lines along the axes "
+              "exactly so, and pairs parallel or at right angles exactly so, of all and of those off the axes (see "
+              "[Parallel and at right angles](#parallel-and-at-right-angles)).", "",
               "| Kind | Cases | Lines found / correct ≤ 1 mm | Texts exact | Tokens exact | Symbols found / correct "
               "| Marked uncertain | Deviation areas | Ends stopping short | Crossings / junctions / openings kept "
-              "| Pens right |",
-              "|---|---|---|---|---|---|---|---|---|---|---|"]
+              "| Pens right | Square: axes / pairs / oblique pairs |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     kinds: dict[str, list[dict]] = {}
     for c in results["cases"]:
         kinds.setdefault(c.get("kind", "?"), []).append(c)
@@ -461,7 +464,18 @@ def report(results: dict) -> str:
                      f"| {pct(m['symbol_recall'])} / {pct(m['symbol_precision'])} | {pct(m['uncertain_share'])} "
                      f"| {num(m['deviation_areas'], 0)} | {num(m['gap_ends'], 0)} "
                      f"| {pct(m['crossings_kept'])} / {pct(m['junctions_kept'])} / {pct(m['openings_kept'])} "
-                     f"| {pct(m['pens_correct'])} |")
+                     f"| {pct(m['pens_correct'])} "
+                     f"| {pct(m['axis_exact'])} / {pct(m['square_pairs'])} / {pct(m['oblique_pairs'])} |")
+    lines += ["", "## Parallel and at right angles", "",
+              "Straight segments of at least 5 mm of the output that lie on a reference segment (within 1 mm, within 5 "
+              "degrees of its direction). Axes exact: of those on a reference segment along an axis, the share exactly "
+              "along it (within 0.01 degrees). Pairs exact: of the pairs of reference segments parallel or at right "
+              "angles to each other, the share whose output (the longest segment on each) is exactly so too; oblique: "
+              "of such pairs off the axes, such as the sides of a building turned on a site plan or a hatching.", "",
+              "| Case | Axes exact | Pairs exact | Oblique pairs exact |", "|---|---|---|---|"]
+    for c in results["cases"]:
+        lines.append(f"| {c['name']} | {pct(c.get('axis_exact'), 1)} | {pct(c.get('square_pairs'), 1)} "
+                     f"| {pct(c.get('oblique_pairs'), 1)} |")
     lines += ["", "## New measures per case", "",
               "Symbols on a drawing without symbols: blocks placed where the reference has none. Markups (the cases "
               "with markups added by hand): the share of the markup strokes put on a markup layer (found), the share of "
