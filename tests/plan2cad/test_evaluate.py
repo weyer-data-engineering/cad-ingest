@@ -1,9 +1,9 @@
 import math
 
 import pytest
-from evaluate import _openings, crossings, openings, squareness
+from evaluate import _openings, crossings, dimensions_true, openings, squareness
 
-from app.plan2cad.model import Drawing, Line, Polyline
+from app.plan2cad.model import Dimension, Drawing, Line, Polyline
 
 
 def curve(n: int = 10, step: float = 6.0) -> list[Line]:
@@ -117,3 +117,14 @@ def test_pairs_of_a_turned_building_count_where_they_come_out_parallel_or_square
     bent = Polyline([corners[0], corners[1], (corners[2][0] + 0.1, corners[2][1]), corners[3]], [0.0] * 4, closed=True)
     out = squareness(gt, Drawing(200, 100, polylines=[bent]))  # two sides off: of the six pairs, one stays exact
     assert out["oblique_pairs"] == pytest.approx(1 / 6) and out["square_pairs"] == out["oblique_pairs"]
+
+
+def test_dimensions_true_to_their_value_and_on_the_object():
+    wall = [Line(50, 40, 98, 40), Line(98, 40, 98, 80), Line(98, 40, 122, 40)]  # a face with a wall at right angles
+    ref = Drawing(200, 100, lines=wall + [Line(50, 38, 50, 28), Line(98, 38, 98, 28)], scale=50)  # its extension lines
+    ref.dimensions = [Dimension(50, 30, 98, 30, "2,40", (50, 38), (98, 38))]  # 2 mm off the wall, as the bench draws
+    as_found = Drawing(200, 100, lines=wall, dimensions=[Dimension(50, 30, 98.3, 30, "2,40", (50, 38), (98.3, 38))])
+    on_it = Drawing(200, 100, lines=wall, dimensions=[Dimension(50, 30, 98, 30, "2,40", (50, 40), (98, 40))])
+    assert dimensions_true(ref, as_found) == {"dimension_true": 0.0, "dimension_on_object": 0.0}  # 15 mm too long
+    assert dimensions_true(ref, on_it) == {"dimension_true": 1.0, "dimension_on_object": 1.0}
+    assert dimensions_true(Drawing(200, 100, lines=wall), on_it) == {}  # nothing to measure against

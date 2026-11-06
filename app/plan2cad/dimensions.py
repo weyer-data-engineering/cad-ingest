@@ -587,42 +587,53 @@ def _back(out: np.ndarray, r: np.ndarray, mm: float) -> float | None:
 
 def linework(m: Dimension) -> list[Line]:
     """The lines a dimension is drawn with in CAD, where other lines of the drawing end: its dimension line from end to
-    end, and each extension line from its measured point to ``extension`` past the dimension line (none where the
-    dimension line ends on the drawing's linework); not its terminators, nor what of its strokes CAD does not draw."""
+    end, and each extension line from ``offset`` off its measured point to ``extension`` past the dimension line (none
+    where the dimension line ends on the drawing's linework); not its terminators, nor what of its strokes CAD does not
+    draw."""
     out = [Line(m.x1, m.y1, m.x2, m.y2, m.width)]
     for p, end in ((m.p1, (m.x1, m.y1)), (m.p2, (m.x2, m.y2))):
-        if (length := math.dist(p, end)) > 1e-6:
-            k = 1 + m.extension / length
-            out.append(Line(p[0], p[1], p[0] + k * (end[0] - p[0]), p[1] + k * (end[1] - p[1]), m.width))
+        if (length := math.dist(p, end)) > max(m.offset, 1e-6):
+            k, s = 1 + m.extension / length, min(m.offset, length) / length
+            out.append(Line(p[0] + s * (end[0] - p[0]), p[1] + s * (end[1] - p[1]), p[0] + k * (end[0] - p[0]),
+                            p[1] + k * (end[1] - p[1]), m.width))
     return out
 
 
 def check(dims: list[Dimension], scale: int | None, mm: float = 1.0) -> None:
     """Marks the dimensions whose value does not fit their length (on the drawing, in ``mm`` units per millimetre):
     at the drawing ``scale``, in the unit most of the sheet's dimensions are written in; without a scale, against the
-    ratio of value to length most of them share (from three on)."""
-    rows = [(m, v, math.dist((m.x1, m.y1), (m.x2, m.y2)) / mm) for m in dims
-            if not m.doubt and m.value and (v := value(m.value))]
-    if not rows:
-        return
-    if scale:
-        def fit(unit: float) -> list[bool]:
-            return [abs(number * (own or unit) / scale - length) <= _tolerance(length, step * (own or unit) / scale)
-                    for _, (number, step, own), length in rows]
-
-        best = max((*UNITS.values(), INCH), key=lambda unit: (sum(fit(unit)), -unit))
-        why = f"its value does not fit its length at 1:{scale}"
-        fits = fit(best)
-    elif len(rows) >= 3:
-        ratio = float(np.median([length / (number * (own or 1.0)) for _, (number, _, own), length in rows]))
-        why = "its value does not fit its length as the other dimensions of the sheet do"
-        fits = [abs(number * (own or 1.0) * ratio - length) <= _tolerance(length, step * (own or 1.0) * ratio)
-                for _, (number, step, own), length in rows]
-    else:
-        return
-    for (m, _, _), ok in zip(rows, fits):
-        if not ok:
+    ratio of value to length most of them share (from three on). See written."""
+    says, why = written(dims, scale, mm)
+    for i, (length, step) in says.items():
+        m = dims[i]
+        drawn = math.dist((m.x1, m.y1), (m.x2, m.y2)) / mm
+        if abs(length - drawn) > tolerance(drawn, step):
             m.doubt = why
+
+
+def written(dims: list[Dimension], scale: int | None, mm: float = 1.0) -> tuple[dict[int, tuple[float, float]], str]:
+    """The length on the drawing (in millimetres) that the value of each dimension says, with the step it is written
+    to there, by its index in ``dims``, for those with a value and not marked to check: at the drawing ``scale``, in
+    the unit (mm, cm, m or inch) most of them fit; without a scale, at the ratio of value to length most of them share
+    (from three on; none with fewer). And what to say of one that does not fit its length."""
+    rows = [(i, v, math.dist((m.x1, m.y1), (m.x2, m.y2)) / mm) for i, m in enumerate(dims)
+            if not m.doubt and m.value and (v := value(m.value))]
+    if scale and rows:
+        def says(unit: float) -> list[tuple[float, float]]:
+            return [(number * (own or unit) / scale, step * (own or unit) / scale)
+                    for _, (number, step, own), _ in rows]
+
+        def fits(unit: float) -> int:
+            return sum(abs(w - length) <= tolerance(length, step)
+                       for (w, step), (_, _, length) in zip(says(unit), rows))
+
+        best = max((*UNITS.values(), INCH), key=lambda unit: (fits(unit), -unit))
+        return {i: w for (i, _, _), w in zip(rows, says(best))}, f"its value does not fit its length at 1:{scale}"
+    if len(rows) < 3:
+        return {}, ""
+    ratio = float(np.median([length / (number * (own or 1.0)) for _, (number, _, own), length in rows]))
+    return ({i: (number * (own or 1.0) * ratio, step * (own or 1.0) * ratio) for i, (number, step, own), _ in rows},
+            "its value does not fit its length as the other dimensions of the sheet do")
 
 
 def separators(dims: list[Dimension], texts: list[Text]) -> None:
@@ -643,7 +654,7 @@ def separators(dims: list[Dimension], texts: list[Text]) -> None:
             m.doubt = "its decimal separator is not the one the other numbers of the sheet are written with"
 
 
-def _tolerance(length: float, step: float) -> float:
+def tolerance(length: float, step: float) -> float:
     """How far a value may be off its length on the drawing: what a scan and the drawing's own accuracy allow, plus
     half the step the value is written to."""
     return FIT[0] + FIT[1] * length + step / 2

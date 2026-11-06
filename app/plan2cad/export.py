@@ -158,7 +158,8 @@ def _dimensions(doc: ezdxf.document.Drawing, d: Drawing, pt, s: float) -> None:
     """Dimensions as linear DXF dimensions, turned to their dimension line, in a dimension style whose sizes are those
     on the sheet (DIMSCALE is the drawing scale). Their text is the value as read: the length CAD measures depends on
     the scale. An extension line that a dimension shares with one before it in its chain, or that it has none of
-    (where it ends on the drawing's linework), is left out (DIMSE1, DIMSE2), so each is drawn once."""
+    (where it ends on the drawing's linework), is left out (DIMSE1, DIMSE2), so each is drawn once. Where its measured
+    points lie on the objects it dimensions, its extension lines start its offset from them (DIMEXO), as printed."""
     if not d.dimensions:
         return
     doc.dimstyles.add("P2C", dxfattribs={"dimscale": s, "dimexo": 0.0, "dimgap": 0.0, "dimtad": 0, "dimtmove": 2,
@@ -171,7 +172,7 @@ def _dimensions(doc: ezdxf.document.Drawing, d: Drawing, pt, s: float) -> None:
         alone = [math.dist(line[:2], line[2:]) < 0.01 or line in drawn for line in lines]
         drawn.update(lines)
         override = {"dimtxt": m.text.height if m.text else float(np.median(heights)) if heights else 2.5,
-                    "dimexe": m.extension, "dimse1": int(alone[0]), "dimse2": int(alone[1])}
+                    "dimexe": m.extension, "dimexo": m.offset, "dimse1": int(alone[0]), "dimse2": int(alone[1])}
         if m.terminator == "tick":  # CAD draws a tick twice DIMTSZ along the line
             override |= {"dimtsz": m.size / 2}
         else:

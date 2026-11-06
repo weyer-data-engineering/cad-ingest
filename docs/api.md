@@ -222,13 +222,21 @@ Dimensions of floor plans and sections (a dimension line with its terminators, e
 read as their text; those to check (a value read unreliably, missing, not fitting the length at the drawing's scale or
 read with another decimal separator than the other numbers of the sheet) are on `P2C-DIMENSION-CHECK`, and a warning of
 the job says how many there are. `report.json` lists them under `dimensions` (`value`, `ends_mm`, `measured_mm`,
-`length_mm`, `angle`, `terminator`, `uncertain`, `doubt`), `counts` has `dimensions`, and those to check are in `review`
-with the `kind` `dimension`. Their values are still listed in `texts`, counted in `counts.texts` and in the markdown's
-texts; the markdown has the sections `Dimensions` and `Dimensions to check (uncertain recognition)` as well. A value
-read unreliably is to check with its dimension: it is in `review` with the `kind` `dimension`, not `text`, and counted
-in the job's warning about dimensions, not in the one about texts. The fields, layers and sections are new; a client
-that does not know them can ignore them. With the step `dimensions` in `options.off`, they stay lines and texts as
-before.
+`offset_mm`, `length_mm`, `angle`, `terminator`, `uncertain`, `doubt`), `counts` has `dimensions`, and those to check
+are in `review` with the `kind` `dimension`. Their values are still listed in `texts`, counted in `counts.texts` and in
+the markdown's texts; the markdown has the sections `Dimensions` and `Dimensions to check (uncertain recognition)` as
+well. A value read unreliably is to check with its dimension: it is in `review` with the `kind` `dimension`, not
+`text`, and counted in the job's warning about dimensions, not in the one about texts. The fields, layers and sections
+are new; a client that does not know them can ignore them. With the step `dimensions` in `options.off`, they stay
+lines and texts as before.
+
+With the step `dimension_fit` (on by default), `measured_mm` are the points on the objects the dimension measures (a
+wall face, a corner, the jamb of an opening) where its extension lines point at one within reach, and `offset_mm` is
+how far from them its extension lines start (0 where they start at them; DIMEXO in the DXF). The objects are moved so
+that each dimension measures its value exactly at the drawing's scale (`length_mm` is then the value at the scale);
+one whose value does not fit, or does not add up with the others along it, moves nothing and is to check, the second
+with the `doubt` "its value does not add up with the other dimensions along it". `offset_mm` is new; with the step in
+`options.off`, `measured_mm` are where the extension lines start and `offset_mm` is 0, as before.
 
 A profile can switch steps off for its kind of drawing (see [Profiles](profiles.md)): on P&IDs and circuit diagrams the
 step `dimensions` is off, so their line numbers and values stay texts and lines. A job that names a step in
