@@ -82,6 +82,18 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   free curve traced as short straight pieces, such as a contour line, becomes a spline (DXF `SPLINE` through fit points
   on `P2C-CURVE`). True arcs, long straight pieces and a straight line traced with a jog where another line crosses it
   stay as they are.
+- Lines drawn parallel or at right angles come out exactly so in the DXF of a photo or scan (step `square_lines`). A
+  straight segment of a line, a polyline or a dimension whose direction lies within what the noise of its ends allows
+  (0.5 degrees for a long segment to 5 for a short one) of the axes or of a direction that several segments of the
+  sheet share, with its right angle (the sides of a building turned on a site plan, a hatching), is turned to exactly
+  it. Where segments meet, the meeting point is placed where the turned lines meet, so corners stay closed and Ts stay
+  on their line; a symbol moves onto the pipes at its ports, without turning. Pieces of one line a fraction of a
+  millimetre apart get one offset. No point moves more than 0.5 mm. A single oblique line, the chords of a curve,
+  texts, arcs and symbols are not turned. A profile can switch the step off for its kind (`[steps] off`), a job with
+  `options.off`. On the benchmark (two or three cases of each kind), the straight segments along the axes come out
+  exactly so in 97-100 % instead of 70-96 %, and pairs of lines parallel or at right angles in 90-100 % instead of
+  8-93 % (off the axes, on sections and site plans, 90-100 % instead of 2-8 %); the lines found and their deviation,
+  junctions, connections and symbols stay as they were.
 - Marks by hand drawn into the drawing's own linework (a cloud across a wall, a note on a pipe) can be found stroke by
   stroke (step `freehand_strokes`, off by default: on phone photos it still takes printed hatching and fixtures for
   marks). The network is traced into strokes between its junctions, each stroke is judged by the rules of a mark, more
@@ -124,8 +136,9 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
   right (`linetype_correct`, `linetype_precision`); curves drawn as splines (`curves_as_splines`); dimensions found,
   correct, marked and false (`dimension_recall`, `dimension_precision`, `dimension_review`, `dimension_false`); phantom
   texts on symbols; marks of symbols not classified on missed symbols and elsewhere, and the share of missed symbols
-  marked; short strokes kept; the cells of the title block found and read exactly; the print size (`printed_ok`); and
-  openings in walls kept (`openings_kept`).
+  marked; short strokes kept; the cells of the title block found and read exactly; the print size (`printed_ok`);
+  openings in walls kept (`openings_kept`); and lines along the axes exactly so (`axis_exact`) and pairs of lines
+  parallel or at right angles exactly so, of all and of those off the axes (`square_pairs`, `oblique_pairs`).
 - Marks by hand in black or pencil (notes, revision clouds, freehand hatching) are kept apart from the drawing, on
   `P2C-MARKUP` and in `markups`, before lines and texts are read: told apart by their shape (neither straight nor an arc
   nor an ellipse between their corners, or turning too often for anything else; chains of arcs for clouds) and their

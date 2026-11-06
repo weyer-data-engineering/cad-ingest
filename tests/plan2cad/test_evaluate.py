@@ -1,7 +1,7 @@
 import math
 
 import pytest
-from evaluate import _openings, crossings, openings
+from evaluate import _openings, crossings, openings, squareness
 
 from app.plan2cad.model import Drawing, Line, Polyline
 
@@ -96,3 +96,24 @@ def test_the_references_keep_all_of_their_own(drawing):
     d = getattr(synth, drawing)(1)
     assert set(crossings(d, d).values()) <= {1.0, None}
     assert openings(d, d) == ({"openings_kept": 1.0} if drawing == "building_plan" else {})  # only plans have walls
+
+
+def test_lines_along_the_axes_count_as_exact_only_when_they_are():
+    gt = Drawing(200, 100, lines=[Line(10, 50, 110, 50), Line(10, 20, 10, 90), Line(150, 10, 150, 12)])  # one short
+    exact = squareness(gt, gt)
+    assert exact["axis_exact"] == 1.0 and exact["square_pairs"] == 1.0 and exact["oblique_pairs"] is None
+    leaning = Drawing(200, 100, lines=[Line(10, 50, 110, 50.05), Line(10, 20, 10, 90)])  # 0.03 degrees off
+    assert squareness(gt, leaning) == {"axis_exact": 0.5, "square_pairs": 0.0, "oblique_pairs": None}
+    elsewhere = Drawing(200, 100, lines=[Line(10, 60, 110, 60)])  # on no reference line: not counted
+    assert squareness(gt, elsewhere) == {}
+
+
+def test_pairs_of_a_turned_building_count_where_they_come_out_parallel_or_square():
+    c, s_ = math.cos(math.radians(20)), math.sin(math.radians(20))
+    corners = [(100 + x * c - y * s_, 50 + x * s_ + y * c) for x, y in ((0, 0), (40, 0), (40, 25), (0, 25))]
+    house = Polyline(corners, [0.0] * 4, closed=True)
+    gt = Drawing(200, 100, polylines=[house])
+    assert squareness(gt, gt) == {"axis_exact": None, "square_pairs": 1.0, "oblique_pairs": 1.0}
+    bent = Polyline([corners[0], corners[1], (corners[2][0] + 0.1, corners[2][1]), corners[3]], [0.0] * 4, closed=True)
+    out = squareness(gt, Drawing(200, 100, polylines=[bent]))  # two sides off: of the six pairs, one stays exact
+    assert out["oblique_pairs"] == pytest.approx(1 / 6) and out["square_pairs"] == out["oblique_pairs"]

@@ -93,6 +93,10 @@ class Features:
     width_calibration: bool = True
     # arcs of large radius traced as arcs, and smooth runs of short pieces drawn as one arc or a spline (objects.curves)
     splines: bool = True
+    # straight segments that run nearly along a direction of the sheet (the axes, a turned building, a hatching) turned
+    # to exactly it, their meeting points placed where the turned lines meet, so that lines drawn parallel or at right
+    # angles are exactly so and stay connected (square.py)
+    square_lines: bool = True
     asked: frozenset[str] = field(default=frozenset(), compare=False)  # the steps the job switched on by name
 
     @classmethod

@@ -45,8 +45,8 @@ switched](photos-and-scans.md#steps-that-can-be-switched) for what each does and
 
 - on by default: `paper_edge`, `colour_guard`, `letter_rows`, `freehand`, `pencil_guard`, `merge_where_drawn`,
   `linetypes`, `oblique_text`, `text_direction`, `lookalike_tokens`, `hatching`, `text_on_pipes`, `vocabulary`,
-  `dimensions`, `symbol_context`, `attributes_inside`, `dedupe`, `splines`, `title_block`, `unclassified` and
-  `width_calibration`;
+  `dimensions`, `symbol_context`, `attributes_inside`, `dedupe`, `splines`, `square_lines`, `title_block`,
+  `unclassified` and `width_calibration`;
 - off by default: `freehand_strokes`, `leaders`, `symbols_first`, `framed_letters`, `short_strokes`, `sheet_sizes`,
   `pens`, `read_handwriting` and `review_handwriting`.
 
