@@ -7,6 +7,16 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 
 ### Added
 
+- Job operation `check_library`: a client has a symbol library (a ZIP or a DXF) checked before it uses it. The worker
+  downloads it (up to `MAX_LIBRARY_SIZE_BYTES`) and reads it in its work-horse, as a library in `library_urls`, and
+  the job's new field `library` holds what `GET /libraries` lists for an installed library, the notes of `cad-ingest
+  library check` as `warnings` and, with the new option `self_test`, the results of the self-test on simulated scans
+  and photos. The self-test leaves out the sheets it would not finish in time, and when the job's time limit comes
+  within a sheet, that sheet and the rest, so the job still succeeds. The library is hostile input, so its texts are
+  cut to 300 characters, at most 1000 symbols and 100 notes are listed (the job's `warnings` say how many there
+  were), and a check still larger than 1 MB as JSON fails. A library that cannot be used fails the job with
+  `invalid_library` and the reason. Such a job has no `kind`, and `POST /jobs/status` leaves out `library` as it
+  leaves out `markdown` (`docs/api.md#checking-a-library`).
 - Texts on photos and scans are read at any angle, not only horizontally and vertically (step `oblique_text`). A line of
   at least three characters on a straight line, such as a street name, a parcel number or a height along a contour, is
   read along its line, both ways round. It counts as turned only where it runs further off the axes than its letters can
@@ -262,6 +272,8 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 
 ### Changed
 
+- A `library.toml` may be at most 64 KB, since its texts end up in job results; a few hundred bytes are usual. A
+  drawing type it names twice counts once.
 - Pen widths are measured on the grey image, as the ink across a stroke divided by the darkness of the ink nearby,
   instead of on the binary image, which blur and the threshold widen (step `width_calibration`). It changes widths only,
   never geometry.
@@ -362,6 +374,8 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 
 ### Fixed
 
+- A library named `.zip` that is no ZIP file was reported as "a library is a folder, a ZIP or a DXF file"; it is now
+  "not a readable ZIP file".
 - The two bars of a flange across a pipe were read as a sure letter "H", alone or joined to a line label beside them
   ("HH2"-P-30207"), and a valve between two pipes read as letters ("Hoeat") kept its strokes from the symbols. The end
   of a spotted line that a pipe runs along is now cut off (a line along it throughout, such as the crosses of a

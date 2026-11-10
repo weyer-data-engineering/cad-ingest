@@ -20,7 +20,7 @@ ACTIVE = ("queued", "running")
 # A job that waits in the queue for longer than this loses its document (and is dropped by the worker).
 ACTIVE_TTL_SECONDS = 7 * 86_400
 PUBLIC = ("id", "external_id", "status", "attempts", "operations", "kind", "format", "markdown",
-          "preview_content_type", "result_content_type", "warnings", "error")
+          "preview_content_type", "result_content_type", "library", "warnings", "error")
 
 
 @lru_cache

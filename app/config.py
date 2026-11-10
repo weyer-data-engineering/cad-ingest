@@ -53,7 +53,7 @@ class Settings:
     symbol_libraries: str = "/libraries"
     # Installed libraries (comma-separated ids) used when a job names none; earlier ones win on equal block names.
     default_symbol_libraries: str = "din-10628,floor-plan,iec-60617,building-symbols"
-    # Largest library a job may bring along (library_urls), per library.
+    # Largest library a job may bring along (library_urls), per library, or have checked (check_library).
     max_library_size_bytes: int = 52_428_800
     # Pages of a PDF or TIFF scan converted per job at most (each takes 5 to 60 seconds).
     max_scan_pages: int = 20

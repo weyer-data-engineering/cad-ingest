@@ -49,7 +49,7 @@ file = "symbols.dxf"
 
 Every field is optional. Without one, `id` comes from the folder or file name, `name` is the id, `format` is 1,
 `drawing` is `["pid"]`, `size` is `printed`, `text_height` is 2.0 and `file` is `symbols.dxf`. Unknown fields are
-ignored, and `cad-ingest library check` points them out.
+ignored, and `cad-ingest library check` points them out. The file may be at most 64 KB.
 
 **Lettering.** A sheet lettered clearly smaller or larger than a printed-size library's `text_height` is taken as
 printed at that size, and the library's symbols are looked for that much smaller or larger: an A1 P&ID printed on A3
@@ -181,11 +181,18 @@ Time per sheet: scan 9.5 s, photo 18.7 s, of which symbol recognition 2.9 s and 
 
 A library for floor plans is tested on floor plan sheets, a real-size library at 1:50 (`--scale 100` for 1:100).
 `--out folder` writes the review overlay of every sheet, with the symbols that were found in teal. `--no-self-test`
-only checks the format, which takes a second; the self-test takes about half a minute per sheet. The command exits
-with 1 if the library cannot be read.
+only checks the format, which takes a second. The self-test takes about half a minute per sheet for a small library,
+and longer the more symbols the library has, since every sheet is read with the whole library: minutes per sheet for
+a library of a few hundred symbols. The command exits with 1 if the library cannot be read.
 
 The output above is the starter library. A symbol missed in one pose, as a flow arrow on the scan here, is worth a
 look at its overlay: the strokes it was not found on are drawn in the colours of plain linework.
+
+**Through the job API.** A service that takes libraries from its users can check each one the same way before it
+uses it: the job operation `check_library` reads the library in a work-horse, under the limits of a job, and returns
+the library, its symbols and the notes as JSON, and the self-test only when the job asks for it and as far as it gets
+within the job's time limit (see [Job API](api.md#checking-a-library)). The JSON is cut to size: texts to 300
+characters, at most 1000 symbols and 100 notes. A library that cannot be read fails the job with the reason.
 
 ## Using libraries
 
@@ -208,7 +215,8 @@ more libraries (a ZIP or a DXF) with the job, for example a library that each te
 storage. They come first, then the installed ones the job names. The default libraries are only used when the job
 names no library at all, so add `"libraries": ["din-10628", "floor-plan", "iec-60617", "building-symbols"]` to keep
 the starter symbols. A library a job brings along is read in its work-horse under the same limits as the file, and
-never stored.
+never stored. Check a new library once with `check_library` (see above) before jobs bring it along: a broken one
+fails every job that brings it.
 
 The `report.json` of every result lists the libraries that were used for the kind of drawing, with their versions,
 and for every symbol the library it came from. Linework that looks like a symbol but was recognised as none of the
