@@ -21,17 +21,23 @@ from matplotlib.textpath import TextPath
 from matplotlib.transforms import Affine2D
 
 from .markup import HIGHLIGHT_LAYER, LAYER, READING_LAYER
-from .model import Drawing
-from .render import CAP, DASH, FONT, GAP, dashes, render, text_length
+from .model import Drawing, Polygon, line_type
+from .render import CAP, DASH, FONT, GAP, PATTERNS, dashes, render, text_length
+from .titleblock import LAYER as TITLE_LAYER
+from .unclassified import LAYER as UNCLASSIFIED
 
 LAYERS = {"P2C-LINE": 7, "P2C-DASH": 5, "P2C-CURVE": 3, "P2C-FILL": 8, "P2C-TEXT": 1, "P2C-UNDERLAY": 9,
           "P2C-WALL": 150, "P2C-DOOR": 30, "P2C-PIPE": 150, "P2C-EQUIPMENT": 94, "P2C-SIGNAL": 5, "P2C-FRAME": 8,
-          "P2C-TEXT-CHECK": 6, "P2C-SYMBOL": 4, "P2C-SYMBOL-CHECK": 6, LAYER: 1, HIGHLIGHT_LAYER: 3, READING_LAYER: 1}
+          "P2C-TEXT-CHECK": 6, "P2C-SYMBOL": 4, "P2C-SYMBOL-CHECK": 6, "P2C-DIMENSION": 2, "P2C-DIMENSION-CHECK": 6,
+          UNCLASSIFIED: 40, LAYER: 1, HIGHLIGHT_LAYER: 3, READING_LAYER: 1, TITLE_LAYER: 8}
 KIND_LAYERS = {"wall": "P2C-WALL", "door": "P2C-DOOR", "pipe": "P2C-PIPE", "equipment": "P2C-EQUIPMENT",
                "signal": "P2C-SIGNAL", "frame": "P2C-FRAME"}
 LINEWEIGHTS = (13, 18, 25, 35, 50, 70, 100, 140, 200)  # ISO pen widths in 1/100 mm
+TERMINATORS = {"dot": "DOT", "open": "OPEN", "arrow": ""}  # DXF arrow blocks; "" is a closed filled arrow
 DXF_LINEWEIGHTS = (0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211)
 PT_PER_MM = 72 / 25.4
+DXF_LINETYPES = {"dashed": ("DASHED", "Dashed __ __ __"), "dashdot": ("DASHDOT", "Dash dot __ . __ . __"),
+                 "dotted": ("DOT", "Dotted . . . . .")}
 
 
 def lineweight(width_mm: float, exact: bool = False) -> int:
@@ -52,6 +58,9 @@ def to_dxf(d: Drawing, underlay: tuple[str, tuple[int, int]] | None = None) -> e
     doc.header["$LWDISPLAY"] = 1
     dash = d.scale or 1  # the pattern as drawn
     doc.linetypes.add("P2C_DASH", [(DASH + GAP) * dash, DASH * dash, -GAP * dash], description="Dashed __ __ __")
+    for kind, (name, description) in DXF_LINETYPES.items():  # each line scales them to its measured pattern
+        elements = [e * dash for e in PATTERNS[kind]]
+        doc.linetypes.add(name, [sum(map(abs, elements))] + elements, description=description)
     for name, color in LAYERS.items():
         doc.layers.add(name, color=color)
     msp = doc.modelspace()
@@ -71,15 +80,25 @@ def to_dxf(d: Drawing, underlay: tuple[str, tuple[int, int]] | None = None) -> e
     def pen(layer: str, item) -> dict:
         return on(layer, item) | {"lineweight": lineweight(item.width / d.printed, d.exact)}
 
+    def styled(layer: str, item) -> dict:
+        """The pen of a line or polyline and, where it is not continuous, its linetype, scaled from the pattern of
+        the linetype as drawn to the pattern measured on it. A dashed line whose line type was never measured (the
+        step linetypes off) is drawn as before, with P2C_DASH."""
+        attribs = pen(layer, item)
+        if item.dashed:
+            attribs["linetype"] = DXF_LINETYPES[line_type(item)][0] if item.linetype else "P2C_DASH"
+            if item.pattern:
+                attribs["ltscale"] = item.pattern / d.printed / sum(map(abs, PATTERNS[line_type(item)]))
+        return attribs
+
     for ln in d.lines:
-        attribs = pen("P2C-DASH" if ln.dashed else "P2C-LINE", ln)
-        if ln.dashed:
-            attribs["linetype"] = "P2C_DASH"
-        msp.add_line(pt(ln.x1, ln.y1), pt(ln.x2, ln.y2), dxfattribs=attribs)
+        msp.add_line(pt(ln.x1, ln.y1), pt(ln.x2, ln.y2), dxfattribs=styled("P2C-DASH" if ln.dashed else "P2C-LINE", ln))
     for pl in d.polylines:  # y points up in DXF: an arc turning clockwise on screen has a negative bulge
-        attribs = pen(KIND_LAYERS.get(pl.kind) or ("P2C-DASH" if pl.dashed else "P2C-LINE"), pl)
-        if pl.dashed:
-            attribs["linetype"] = "P2C_DASH"
+        attribs = styled(KIND_LAYERS.get(pl.kind) or ("P2C-DASH" if pl.dashed else "P2C-CURVE" if pl.smooth
+                                                      else "P2C-LINE"), pl)
+        if pl.smooth:  # a free curve: a spline through its points
+            msp.add_spline([pt(x, y) for x, y in pl.points + pl.points[:1] * pl.closed], dxfattribs=attribs)
+            continue
         e = msp.add_lwpolyline([(*pt(x, y), -b) for (x, y), b in zip(pl.points, pl.bulges + [0.0])], format="xyb",
                                close=pl.closed, dxfattribs=attribs)
         e.dxf.flags |= 128  # dash pattern runs on around corners
@@ -102,6 +121,7 @@ def to_dxf(d: Drawing, underlay: tuple[str, tuple[int, int]] | None = None) -> e
             attribs["oblique"] = t.oblique
         _place(msp.add_text(t.text, height=t.height * s, rotation=t.angle, dxfattribs=attribs), t, pt)
     _symbols(doc, d, pt, s)
+    _dimensions(doc, d, pt, s)
     if underlay:
         name, size = underlay
         image_def = doc.add_image_def(filename=name, size_in_pixel=size)
@@ -132,6 +152,39 @@ def _symbols(doc: ezdxf.document.Drawing, d: Drawing, pt, s: float) -> None:
         for tag, t in sym.attributes.items():
             _place(ref.add_attrib(tag, t.text, dxfattribs={"height": t.height * s, "layer": "P2C-TEXT",
                                                            "rotation": t.angle}), t, pt)
+
+
+def _dimensions(doc: ezdxf.document.Drawing, d: Drawing, pt, s: float) -> None:
+    """Dimensions as linear DXF dimensions, turned to their dimension line, in a dimension style whose sizes are those
+    on the sheet (DIMSCALE is the drawing scale). Their text is the value as read: the length CAD measures depends on
+    the scale. An extension line that a dimension shares with one before it in its chain, or that it has none of
+    (where it ends on the drawing's linework), is left out (DIMSE1, DIMSE2), so each is drawn once. Where its measured
+    points lie on the objects it dimensions, its extension lines start its offset from them (DIMEXO), as printed."""
+    if not d.dimensions:
+        return
+    doc.dimstyles.add("P2C", dxfattribs={"dimscale": s, "dimexo": 0.0, "dimgap": 0.0, "dimtad": 0, "dimtmove": 2,
+                                         "dimtih": 0, "dimtoh": 0})
+    msp, drawn = doc.modelspace(), set()
+    heights = [m.text.height for m in d.dimensions if m.text]
+    for m in d.dimensions:
+        ends = ((m.x1, m.y1), (m.x2, m.y2))
+        lines = [tuple(round(v, 2) for v in (*p, *end)) for p, end in zip((m.p1, m.p2), ends)]  # extension lines
+        alone = [math.dist(line[:2], line[2:]) < 0.01 or line in drawn for line in lines]
+        drawn.update(lines)
+        override = {"dimtxt": m.text.height if m.text else float(np.median(heights)) if heights else 2.5,
+                    "dimexe": m.extension, "dimexo": m.offset, "dimse1": int(alone[0]), "dimse2": int(alone[1])}
+        if m.terminator == "tick":  # CAD draws a tick twice DIMTSZ along the line
+            override |= {"dimtsz": m.size / 2}
+        else:
+            open_ = m.terminator == "arrow" and not any(isinstance(q, Polygon) for q in m.parts)
+            override |= {"dimtsz": 0.0, "dimasz": m.size, "dimblk": TERMINATORS["open" if open_ else m.terminator]}
+        t = m.text
+        dim = msp.add_linear_dim(base=pt(m.x1, m.y1), p1=pt(*m.p1), p2=pt(*m.p2), location=t and pt(t.x, t.y),
+                                 text=m.value or " ", angle=math.degrees(math.atan2(m.y1 - m.y2, m.x2 - m.x1)),
+                                 text_rotation=t and t.angle, dimstyle="P2C", override=override, dxfattribs={
+                                     "layer": "P2C-DIMENSION-CHECK" if m.doubt else "P2C-DIMENSION",
+                                     "lineweight": lineweight(m.width / d.printed, d.exact)})
+        dim.render()
 
 
 def _place(text, t, pt) -> None:
@@ -194,14 +247,16 @@ def _rgb(color) -> tuple[float, float, float]:
 
 OVERLAY_COLORS = {"lines": (40, 40, 220), "dashed": (200, 90, 0), "curves": (0, 150, 0),
                   "polygons": (180, 0, 180), "texts": (0, 120, 255), "unsure": (200, 0, 200), "symbols": (150, 110, 0),
-                  "doubtful": (200, 0, 200)}
+                  "dimensions": (0, 140, 140), "doubtful": (200, 0, 200)}
 
 
 def overlay(gray: np.ndarray, d: Drawing, ppm: float, max_side: int = 4000) -> np.ndarray:
     """Faded rectified photo with the recognised vectors drawn on top in colour (BGR)."""
     symbols = Drawing(d.width, d.height, symbols=[s for s in d.symbols if not s.doubt]).flat()
-    doubtful = Drawing(d.width, d.height, symbols=[s for s in d.symbols if s.doubt]).flat()
-    d = replace(d, symbols=[]).flat()
+    dimensions = Drawing(d.width, d.height, dimensions=[m for m in d.dimensions if not m.doubt]).flat()
+    doubtful = Drawing(d.width, d.height, symbols=[s for s in d.symbols if s.doubt],
+                       dimensions=[m for m in d.dimensions if m.doubt]).flat()
+    d = replace(d, symbols=[], dimensions=[]).flat()
     marked = (LAYER, HIGHLIGHT_LAYER, READING_LAYER)
     marks = Drawing(d.width, d.height, [ln for ln in d.lines if ln.layer in marked],
                     polygons=[g for g in d.polygons if g.layer in marked],
@@ -227,6 +282,7 @@ def overlay(gray: np.ndarray, d: Drawing, ppm: float, max_side: int = 4000) -> n
         "texts": Drawing(d.width, d.height, texts=[t for t in d.texts if not t.uncertain]),
         "unsure": Drawing(d.width, d.height, texts=[t for t in d.texts if t.uncertain]),
         "symbols": symbols,
+        "dimensions": dimensions,
         "doubtful": doubtful,  # in the colour of the uncertain texts: to check
     }
     for key, part in parts.items():

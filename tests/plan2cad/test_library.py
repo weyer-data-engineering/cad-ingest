@@ -16,12 +16,15 @@ from .conftest import write_library, zipped
 
 def test_starter_libraries_are_built_in_and_the_default():
     starter, fixtures = library.installed()["din-10628"], library.installed()["floor-plan"]
-    circuits = library.installed()["iec-60617"]
-    assert starter.version == "1.0.0" and starter.licence == "Apache-2.0" and starter.drawing == ["pid"]
+    circuits, marks = library.installed()["iec-60617"], library.installed()["building-symbols"]
+    assert starter.version == "1.1.0" and starter.licence == "Apache-2.0" and starter.drawing == ["pid"]
     assert (fixtures.drawing, fixtures.size, len(fixtures.symbols)) == (["building"], "real", 7)
-    assert (circuits.drawing, circuits.size, len(circuits.symbols)) == (["electrical"], "printed", 6)
-    assert library.select() == [starter, fixtures, circuits] and len(starter.symbols) == 18 and not starter.warnings
-    assert not circuits.warnings
+    assert (circuits.drawing, circuits.size, len(circuits.symbols)) == (["electrical"], "printed", 11)
+    assert (marks.drawing, marks.size, marks.licence, len(marks.symbols)) == (["building", "site"], "printed",
+                                                                             "Apache-2.0", 3)
+    assert (marks.text_height, starter.text_height) == (2.5, None)  # lettered like building drawings, or TEXT
+    assert library.select() == [starter, fixtures, circuits, marks] and len(starter.symbols) == 18
+    assert not starter.warnings and not circuits.warnings and not marks.warnings
     assert {"name": "PUMP", "description": "Centrifugal pump"} in starter.summary()["symbols"]
     assert not fixtures.warnings and fixtures.summary()["size"] == "real"
 
@@ -34,7 +37,8 @@ def test_real_size_symbols_are_shrunk_by_the_drawing_scale():
     assert (bathtub.name, bathtub.unit) == ("BATHTUB", pytest.approx(1 / 50))
     xs = [v for q in bathtub.parts if hasattr(q, "x1") for v in (q.x1, q.x2)]
     assert max(xs) - min(xs) == pytest.approx(34)  # 1700 mm at 1:50
-    assert sorted(library.combine(both, "building"))[:2] == ["BATHTUB 1:100", "BATHTUB 1:50"]  # scale unknown
+    unknown = library.combine(both, "building")  # scale unknown: fixtures at both; marks at their printed size
+    assert {"BATHTUB 1:100", "BATHTUB 1:50", "NORTH_ARROW"} <= set(unknown) and "BATHTUB" not in unknown
 
     ref = to_dxf(Drawing(420, 297, symbols=[library.place(bathtub, 100, 50)], scale=50)).modelspace().query("INSERT")[0]
     assert ref.dxf.name == "BATHTUB" and ref.dxf.xscale == pytest.approx(1)  # the block at real size, unscaled
@@ -80,7 +84,8 @@ def test_installed_libraries_come_from_folders_and_must_have_distinct_ids(tmp_pa
     write_library(tmp_path / "libs" / "acme")
     (tmp_path / "libs" / "lost+found").mkdir()  # no library.toml: not a library
     folders = str(tmp_path / "libs")
-    assert list(library.installed(folders)) == ["din-10628", "floor-plan", "iec-60617", "acme-pid"]
+    assert list(library.installed(folders)) == ["building-symbols", "din-10628", "floor-plan", "iec-60617",
+                                                "acme-pid"]
     assert library.select(defaults="acme-pid, din-10628", folders=folders)[0].id == "acme-pid"
     with pytest.raises(LibraryError, match="'nope' is not installed"):
         library.select(["nope"], folders=folders)
@@ -97,6 +102,8 @@ def test_installed_libraries_come_from_folders_and_must_have_distinct_ids(tmp_pa
     ('size = "large"', "'size' must be one of printed, real"),
     ('file = "../symbols.dxf"', "'file' must be a DXF file inside the library"),
     ("version = 2.1", "'version' must be a string"),
+    ('text_height = "2.5"', "'text_height' must be a height in mm"),
+    ("text_height = 0", "'text_height' must be a height in mm"),
     ("id = ", "library.toml: "),  # not TOML
 ])
 def test_a_wrong_manifest_is_rejected_with_the_reason(tmp_path, manifest, reason):

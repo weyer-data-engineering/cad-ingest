@@ -1,0 +1,12 @@
+# The building drawing starter library of cad-ingest: the marks of floor plans, sections and site plans (north arrow,
+# axis, section marker), drawn at their printed size, written by bench/make_library.py. See docs/symbol-libraries.md
+# for the format.
+id = "building-symbols"
+name = "Marks of building drawings and site plans (starter library)"
+version = "1.0.0"
+format = 1
+licence = "Apache-2.0"
+drawing = ["building", "site"]
+size = "printed"
+text_height = 2.5
+file = "symbols.dxf"

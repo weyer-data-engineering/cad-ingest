@@ -20,10 +20,10 @@ service, no AutoCAD licence and no GPU.
 - **CAD previews.** DWG and DXF to PDF. STEP, IGES, IFC and meshes to binary glTF (GLB) for web viewers such as
   three.js or `<model-viewer>`.
 - **Photo or scan to CAD.** A phone photo or a scan of a paper drawing becomes a DXF in real-world millimetres. It
-  contains lines, arcs, circles, dashed lines, walls, doors, pipes, OCR text and the scale from the title block. P&ID
-  symbols such as valves, pumps and instruments and floor plan fixtures such as toilets, washbasins and bathtubs
-  become CAD blocks, from the starter libraries or from your own company library. Notes and highlighter added by hand
-  in colour stay apart from the drawing, on layers of their own.
+  contains lines, arcs, circles, dashed lines, walls, doors, pipes, OCR text, dimensions and the scale from the title
+  block. P&ID symbols such as valves, pumps and instruments and floor plan fixtures such as toilets, washbasins and
+  bathtubs become CAD blocks, from the starter libraries or from your own company library. Notes and highlighter added
+  by hand in colour stay apart from the drawing, on layers of their own.
 - **Ready for production.** An HTTP job API on Redis and RQ with queues, priorities, retries, callbacks and
   cancellation. Every file is converted in its own process with a time and memory limit. Release images for amd64
   and arm64 come with an SBOM and build provenance.
@@ -170,8 +170,9 @@ glare and traces the linework into lines, arcs, circles, dashed lines and filled
 are joined into walls, pipes and equipment outlines. Texts are found and read by a learned text spotter (PP-OCRv6,
 on the CPU) together with Tesseract OCR, and the scale is taken from the title block. Symbols are matched against
 DXF symbol libraries and placed as their blocks: valves, pumps and instruments on P&IDs, with their tags as
-attributes, and toilets, washbasins, bathtubs and other fixtures on floor plans. Two starter libraries are built in:
-18 P&ID symbols after DIN EN ISO 10628-2 and seven floor plan fixtures.
+attributes, and toilets, washbasins, bathtubs and other fixtures on floor plans. Four starter libraries are built in:
+18 P&ID symbols after DIN EN ISO 10628-2, seven floor plan fixtures, 11 circuit diagram symbols after IEC 60617 and
+the marks of building drawings and site plans (north arrow, axis and section marker).
 
 Your own symbols plug in as a library: a folder with your CAD blocks and a short `library.toml`. The DXF then holds
 your original blocks, with your layers and attribute names. Install libraries on the server, or let each job bring
@@ -185,7 +186,8 @@ texts, colours and pen widths, on the CAD layers of the PDF.
 Prints come back from site with notes on them. Pen strokes and highlighter in colour on a black and white print, such
 as a revision cloud with "removed" next to it or a struck-out pipe, are kept apart from the drawing, so they neither
 turn into stray lines nor garble the print under them. The DXF has them on layers of their own, and the report lists
-each one with the printed texts it covers, an attempt at reading the handwriting and an image of it.
+each one with the printed texts it covers and an image of it; the handwriting is read only on request, by Tesseract or
+by the job's reviewer model.
 
 The result is a ZIP with:
 
@@ -193,8 +195,8 @@ The result is a ZIP with:
 - `plan.pdf`: the drawing as vectors on its paper size;
 - `overlay.png`: the recognised vectors in colour on the faded photo, for checking;
 - `markup-k.png`: an image of each markup added by hand;
-- `report.json`: sheet, resolution, drawing type, scale, counts, all texts, the symbols with their library and ports,
-  the markups.
+- `report.json`: sheet, resolution, drawing type, scale, counts, all texts, the title block as a table, the symbols
+  with their library and ports, the dimensions, the markups.
 
 There is no DWG output. Every CAD program opens DXF, and the free ways to write DWG are either not licensed for
 commercial use or experimental. [Photos and scans](docs/photos-and-scans.md) explains each step, the symbol library
@@ -273,8 +275,9 @@ assistant.
 
 - Small text on photos and scans needs about 8 pixels per millimetre of paper. A single 12 MP photo of an A0 sheet has
   2.8, so use a 200 to 300 dpi scan for A0 and A1. Unread text is kept as a guess on its own layer for review.
-- Only symbols in the selected libraries are recognised. Everything else stays linework. Fixtures on floor plans are
-  found at 1:50 and 1:100, or at the scale a job names; at 1:100 about one in ten is placed wrongly.
+- Only symbols in the selected libraries are recognised. Everything else stays linework; what looks like a symbol goes
+  on a layer of its own and is listed as not classified. Fixtures on floor plans are found at 1:50 and 1:100, or at
+  the scale a job names; at 1:100 about one in ten is placed wrongly.
 - Paper that is not flat (waves, folds) shifts lines by up to a millimetre.
 - DWG is read through LibreDWG, which does not support every object of every AutoCAD version. Files that it cannot
   read fail with `unreadable` rather than producing a wrong preview.
@@ -346,6 +349,7 @@ The container image bundles third-party software under its own licences:
 | scikit-image, SciPy, RQ | BSD 3-clause / BSD 2-clause | libraries |
 | matplotlib | PSF-compatible (BSD-style) | PDF rendering |
 | ezdxf, trimesh, redis-py, httpx, FastAPI, uvicorn, numpy, lxml, networkx, pycollada | MIT / BSD | libraries |
+| Starter symbol libraries `din-10628`, `floor-plan`, `iec-60617`, `building-symbols` | Apache 2.0 | own work, written by `bench/make_library.py`; DXF blocks placed in the result |
 
 There are no AGPL dependencies.
 
