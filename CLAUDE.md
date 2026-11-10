@@ -17,6 +17,7 @@ Read `README.md` for what the service does and `docs/` for the job API, operatio
 - `bench/`: synthetic drawings with ground truth and the benchmark for `app/plan2cad`; the simulated scans and photos
   are in `app/plan2cad/simulate.py`, because `cad-ingest library check` uses them too.
 - `tests/`: pytest; the job tests run a real Redis and real worker processes.
+- `charts/cad-ingest`: the Helm chart, published with every release; its unit tests are in `charts/cad-ingest/tests`.
 
 ## Rules
 

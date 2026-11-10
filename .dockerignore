@@ -8,3 +8,4 @@ docs
 *.md
 Dockerfile
 docker-compose.yml
+charts

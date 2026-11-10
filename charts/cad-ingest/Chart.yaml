@@ -1,0 +1,17 @@
+apiVersion: v2
+name: cad-ingest
+description: Job service that turns CAD files into text and previews, and photos and scans of drawings into DXF
+type: application
+# CI publishes the chart with the version of the release tag, so chart and image versions match.
+version: 1.0.0
+appVersion: 1.0.0
+home: https://github.com/weyer-data-engineering/cad-ingest
+sources:
+  - https://github.com/weyer-data-engineering/cad-ingest
+keywords:
+  - cad
+  - dxf
+  - dwg
+  - step
+  - ifc
+  - ocr

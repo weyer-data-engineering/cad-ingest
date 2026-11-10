@@ -1,0 +1,13 @@
+{{- if and .Values.api.podDisruptionBudget.enabled (gt (int .Values.api.replicaCount) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cad-ingest.fullname" . }}
+  labels:
+    {{- include "cad-ingest.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.api.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "cad-ingest.selectorLabels" (dict "context" . "component" "api") | nindent 6 }}
+{{- end }}
