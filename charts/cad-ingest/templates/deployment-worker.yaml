@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cad-ingest.fullname" . }}-worker
+  labels:
+    {{- include "cad-ingest.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "cad-ingest.selectorLabels" (dict "context" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      {{- if or .Values.worker.profiles .Values.podAnnotations }}
+      annotations:
+        {{- with .Values.worker.profiles }}
+        # Restarts the workers when a profile changes
+        checksum/profiles: {{ toYaml . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      labels:
+        {{- include "cad-ingest.selectorLabels" (dict "context" . "component" "worker") | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "cad-ingest.podSpec" (dict "context" . "component" "worker") | trim | nindent 6 }}
+      # Killed conversions leave helper processes (Tesseract, dwg2dxf) behind; with a shared process namespace
+      # the pause container is PID 1 and reaps them.
+      shareProcessNamespace: true
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      containers:
+        - name: worker
+          image: {{ include "cad-ingest.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - worker
+          env:
+            {{- include "cad-ingest.commonEnv" . | nindent 12 }}
+            - name: MAX_CONCURRENT_CONVERSIONS
+              value: {{ .Values.worker.maxConcurrentConversions | int | quote }}
+            - name: CONVERSION_TIMEOUT_SECONDS
+              value: {{ .Values.worker.conversionTimeoutSeconds | int | quote }}
+            - name: RESULT_TTL_SECONDS
+              value: {{ .Values.worker.resultTtlSeconds | int | quote }}
+            - name: OCR_LANGUAGES
+              value: {{ .Values.worker.ocrLanguages | quote }}
+            {{- with .Values.worker.defaultSymbolLibraries }}
+            - name: DEFAULT_SYMBOL_LIBRARIES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.worker.memoryLimitMb }}
+            - name: MEMORY_LIMIT_MB
+              value: {{ . | int | quote }}
+            {{- end }}
+            {{- if .Values.worker.profiles }}
+            - name: PROFILES
+              value: /profiles
+            {{- end }}
+            {{- with .Values.worker.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            {{- include "cad-ingest.workerProbe" . | nindent 12 }}
+          livenessProbe:
+            {{- include "cad-ingest.workerProbe" . | nindent 12 }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.worker.profiles }}
+            - name: profiles
+              mountPath: /profiles
+              readOnly: true
+            {{- end }}
+            {{- with .Values.worker.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}

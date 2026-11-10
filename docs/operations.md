@@ -115,6 +115,40 @@ container is too small the kernel kills one horse (`out_of_memory`) and the othe
 `MAX_CONCURRENT_CONVERSIONS x MAX_FILE_SIZE_BYTES` in the worker's temp dir (plus the previews being sent). Redis holds
 a job's markdown for `RESULT_TTL_SECONDS`: up to `MAX_MARKDOWN_CHARS` per job.
 
+## Kubernetes
+
+A Helm chart is published with every release, with the version of the release and its image:
+
+```bash
+helm install cad-ingest oci://ghcr.io/weyer-data-engineering/charts/cad-ingest --version 1.2.3 \
+  --namespace cad --create-namespace \
+  --set redis.existingSecret=cad-ingest-redis
+```
+
+Clients in the cluster reach the job API at `http://cad-ingest.<namespace>.svc.cluster.local:8080`. The chart installs
+no Redis and no ingress: bring a Redis 6 or later, and keep the service internal. It runs two api pods, spread over
+zones and nodes with a pod disruption budget, and one worker pod. The pods run as user 10001 with a read-only root
+filesystem, write only to an `emptyDir` at `/tmp` and get no service account token. The worker shares its process
+namespace, so the helper processes of killed conversions are reaped.
+
+| Value | Default | Meaning |
+|---|---|---|
+| `redis.url` | | URL of a Redis without a password, e.g. `redis://redis-master:6379/3` |
+| `redis.existingSecret`, `redis.secretKey` | key `redis-url` | a Secret that holds the URL, for a URL with a password; takes precedence over `redis.url` |
+| `apiToken.existingSecret`, `apiToken.secretKey` | key `apiToken` | a Secret that holds the bearer token for `/jobs` (`API_TOKEN`); without it there is no authentication |
+| `image.tag`, `image.digest` | chart version | the image to run; set `digest` to pin it |
+| `maxFileSizeBytes` | `524288000` | `MAX_FILE_SIZE_BYTES` |
+| `api.replicaCount`, `api.maxQueuedJobs` | `2`, `10000` | api pods and `MAX_QUEUED_JOBS` |
+| `worker.replicaCount`, `worker.maxConcurrentConversions` | `1`, `2` | worker pods and conversions in parallel per pod |
+| `worker.resources` | 10 Gi memory limit | 85 % of the memory limit is each conversion's cap; `worker.memoryLimitMb` sets `MEMORY_LIMIT_MB` instead |
+| `worker.conversionTimeoutSeconds`, `worker.resultTtlSeconds`, `worker.ocrLanguages`, `worker.defaultSymbolLibraries` | as in the table above | the settings of the same names |
+| `worker.profiles` | `{}` | profiles of kinds of drawing, file name to TOML text; mounted at `/profiles` with `PROFILES` set |
+| `worker.extraVolumes`, `worker.extraVolumeMounts` | `[]` | further volumes, e.g. your own symbol libraries at `/libraries` |
+| `api.extraEnv`, `worker.extraEnv` | `[]` | any other setting of the table above |
+
+All values are in [`charts/cad-ingest/values.yaml`](../charts/cad-ingest/values.yaml). Scale with
+`worker.replicaCount`; give every worker the same symbol libraries and profiles.
+
 ## Isolation
 
 The C++ parsers read untrusted files. Every job runs in its own work-horse process (its own process group) with a hard
