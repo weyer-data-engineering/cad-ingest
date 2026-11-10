@@ -7,6 +7,9 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 
 ### Added
 
+- A Helm chart for Kubernetes (`charts/cad-ingest`), published with every release as
+  `oci://ghcr.io/weyer-data-engineering/charts/cad-ingest` in the version of the release and with its image. It runs
+  the api and the worker on a Redis you bring along (`docs/operations.md#kubernetes`).
 - Marks by hand in black or pencil (notes, revision clouds, freehand hatching) are kept apart from the drawing, on
   `P2C-MARKUP` and in `markups`, before lines and texts are read: told apart by their shape (neither straight nor
   an arc nor an ellipse between their corners, or turning too often for anything else; chains of arcs for clouds) and

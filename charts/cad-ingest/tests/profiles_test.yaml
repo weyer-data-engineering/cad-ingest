@@ -1,0 +1,149 @@
+suite: profiles
+templates:
+  - configmap-profiles.yaml
+  - deployment-worker.yaml
+  - deployment-api.yaml
+release:
+  name: cad-ingest
+set:
+  redis.existingSecret: cad-ingest-redis
+tests:
+  - it: adds nothing without profiles
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: configmap-profiles.yaml
+      - notExists:
+          path: spec.template.metadata.annotations
+        template: deployment-worker.yaml
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PROFILES
+          any: true
+        template: deployment-worker.yaml
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 1
+        template: deployment-worker.yaml
+
+  - it: mounts the profiles read-only in the worker and sets PROFILES
+    set:
+      worker.profiles:
+        acme-pid.toml: |
+          format = 1
+          id = "acme-pid"
+          drawing = "pid"
+    asserts:
+      - equal:
+          path: metadata.name
+          value: cad-ingest-profiles
+        template: configmap-profiles.yaml
+      - equal:
+          path: data["acme-pid.toml"]
+          value: |
+            format = 1
+            id = "acme-pid"
+            drawing = "pid"
+        template: configmap-profiles.yaml
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: profiles
+            configMap:
+              name: cad-ingest-profiles
+        template: deployment-worker.yaml
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: profiles
+            mountPath: /profiles
+            readOnly: true
+        template: deployment-worker.yaml
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PROFILES
+            value: /profiles
+        template: deployment-worker.yaml
+      - exists:
+          path: spec.template.metadata.annotations["checksum/profiles"]
+        template: deployment-worker.yaml
+
+  - it: keeps the profiles out of the API
+    template: deployment-api.yaml
+    set:
+      worker.profiles:
+        acme-pid.toml: format = 1
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 1
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PROFILES
+          any: true
+
+  - it: keeps the pod annotations without profiles
+    template: deployment-worker.yaml
+    set:
+      podAnnotations:
+        example.com/team: cad
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations
+          value:
+            example.com/team: cad
+
+  - it: keeps the pod annotations next to the profiles checksum
+    template: deployment-worker.yaml
+    set:
+      podAnnotations:
+        example.com/team: cad
+      worker.profiles:
+        acme-pid.toml: format = 1
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["example.com/team"]
+          value: cad
+      - exists:
+          path: spec.template.metadata.annotations["checksum/profiles"]
+
+  - it: fails for a file name cad-ingest does not read
+    template: configmap-profiles.yaml
+    set:
+      worker.profiles:
+        acme-pid.txt: format = 1
+    asserts:
+      - failedTemplate:
+          errorMessage: "worker.profiles: acme-pid.txt must be a file name ending in .toml (letters, digits, '.', '_', '-'; not starting with '.')"
+
+  - it: fails for a path instead of a file name
+    template: configmap-profiles.yaml
+    set:
+      worker.profiles:
+        ../acme-pid.toml: format = 1
+    asserts:
+      - failedTemplate:
+          errorMessage: "worker.profiles: ../acme-pid.toml must be a file name ending in .toml (letters, digits, '.', '_', '-'; not starting with '.')"
+
+  - it: fails for a file name starting with a dot
+    template: configmap-profiles.yaml
+    set:
+      worker.profiles:
+        .acme-pid.toml: format = 1
+    asserts:
+      - failedTemplate:
+          errorMessage: "worker.profiles: .acme-pid.toml must be a file name ending in .toml (letters, digits, '.', '_', '-'; not starting with '.')"
+
+  - it: fails for a profile that is not TOML text
+    template: configmap-profiles.yaml
+    set:
+      worker.profiles:
+        acme-pid.toml:
+          format: 1
+          id: acme-pid
+    asserts:
+      - failedTemplate:
+          errorMessage: "worker.profiles: acme-pid.toml must be TOML text as a string, for example a block after |"

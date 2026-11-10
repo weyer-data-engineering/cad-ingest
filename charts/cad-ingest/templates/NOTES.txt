@@ -1,0 +1,10 @@
+The cad-ingest job API is reachable inside the cluster at:
+
+  http://{{ include "cad-ingest.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+Submit jobs with POST /jobs; OpenAPI documentation is at /docs.
+{{- if .Values.apiToken.existingSecret }}
+Clients send the token as "Authorization: Bearer <token>".
+{{- else }}
+No API token is set: keep the service internal.
+{{- end }}
