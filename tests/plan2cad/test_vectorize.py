@@ -187,3 +187,32 @@ def test_a_thick_ring_is_a_wide_circle_and_keeps_its_letter_but_a_solid_area_is_
     assert len(polys) == 1 and len(rings) == 1
     assert (rings[0].cx, rings[0].cy, rings[0].r, rings[0].width) == pytest.approx((15, 15, 4, 2.5), abs=0.3)
     assert ink[140:160, 140:160].any() and not fill[140:160, 140:160].any()  # the letter stays ink
+
+
+def test_bridge_joins_a_tick_cut_by_its_dimension_line_but_not_two_strokes_without_a_line_between():
+    ppm = 10
+    norm = np.full((300, 400), 255, np.uint8)
+    norm[100, 20:380] = 60  # a dimension line, and a tick across it that its removal cut in two
+    cv2.line(norm, (90, 110), (110, 90), 60, 2)
+    cv2.line(norm, (290, 210), (310, 190), 60, 2)  # the same stroke where no line crosses it
+    dimension = Line(2, 10, 38, 10)
+    tick = [Line(9, 11, 9.7, 10.3), Line(10.3, 9.7, 11, 9)]
+    lone = [Line(29, 21, 29.7, 20.3), Line(30.3, 19.7, 31, 19)]
+    out = bridge([dimension] + tick + lone, [], norm, ppm, cut=True)
+    assert sorted((round(ln.x1, 1), round(ln.x2, 1)) for ln in out[1:]) == [(9.0, 11.0), (29.0, 29.7), (30.3, 31.0)]
+    off = bridge([Line(2, 10, 38, 10), Line(9, 11, 9.7, 10.3), Line(10.3, 9.7, 11, 9)], [], norm, ppm)  # as before
+    assert sorted((round(ln.x1, 1), round(ln.x2, 1)) for ln in off[1:]) == [(9.0, 9.7), (10.3, 11.0)]
+
+
+def test_bridge_leaves_two_pieces_of_a_curve_cut_by_a_line_apart():
+    ppm = 10
+    norm = np.full((300, 400), 255, np.uint8)
+    norm[100, 20:380] = 60  # a line across a curve: its two pieces face each other, but bend by 11 degrees
+    a, b = math.radians(-45), math.radians(-56)
+    p1 = np.array([20, 10]) - 0.42 * np.array([math.cos(a), math.sin(a)])
+    p0, q0 = p1 - 3 * np.array([math.cos(a), math.sin(a)]), p1 + 0.84 * np.array([math.cos(a), math.sin(a)])
+    q1 = q0 + 3 * np.array([math.cos(b), math.sin(b)])
+    cv2.polylines(norm, [np.round(np.array([p0, p1, q0, q1]) * ppm).astype(np.int32)], False, 60, 2)
+    pieces = [Line(*p0, *p1), Line(*q0, *q1)]
+    out = bridge([Line(2, 10, 38, 10)] + [Line(*p0, *p1), Line(*q0, *q1)], [], norm, ppm, cut=True)
+    assert out[1:] == pieces  # joined through their outer ends, they would leave the stroke

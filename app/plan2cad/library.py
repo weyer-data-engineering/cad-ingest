@@ -32,7 +32,7 @@ FORMAT = 1  # the library format this version reads
 DRAWINGS = ("pid", "building", "electrical", "site")  # the kinds of drawing symbols are recognised on (profiles.py)
 SIZES = ("printed", "real")  # blocks drawn at the size they have on the sheet, or at the size of the real object
 ASSUMED_SCALES = (50, 100)  # drawing scales tried for real-size symbols while the scale of a drawing is unknown
-DEFAULTS = "din-10628,floor-plan,iec-60617"  # the built-in libraries used when nothing else is chosen
+DEFAULTS = "din-10628,floor-plan,iec-60617,building-symbols"  # the built-in libraries used when nothing else is chosen
 ID = r"[a-z0-9][a-z0-9-]{0,63}"
 MANIFEST = "library.toml"
 BUILT_IN = Path(__file__).resolve().parents[2] / "libraries"  # shipped with cad-ingest, always installed
@@ -63,6 +63,7 @@ class Library:
     warnings: list[str] = field(default_factory=list, repr=False)  # what was ignored, for `cad-ingest library check`
     path: Path | None = None
     size: str = "printed"  # one of SIZES
+    text_height: float | None = None  # mm: the lettering its printed-size symbols go with (library.toml)
 
     def summary(self) -> dict:
         """What GET /libraries tells about the library."""
@@ -172,11 +173,12 @@ def resolve(value: str, folders: str = "") -> Library:
 
 
 def combine(libraries: list[Library], drawing: str = "pid", scale: int | None = None,
-            printed: float = 1.0) -> dict[str, Template]:
+            printed: float | dict[str, float] = 1.0) -> dict[str, Template]:
     """The symbols of the libraries for one drawing type, at their size on the sheet. Real-size symbols are shrunk by
     the drawing ``scale`` (the denominator); while it is unknown, by each of ASSUMED_SCALES. Printed-size symbols are
-    ``printed`` times their library size (a sheet printed smaller than drawn). Where two libraries define the same
-    block name the earlier one wins, so a company library can replace a symbol of a starter library on purpose."""
+    ``printed`` times their library size (a sheet printed smaller than drawn), or ``printed[library id]`` times. Where
+    two libraries define the same block name the earlier one wins, so a company library can replace a symbol of a
+    starter library on purpose."""
     out: dict[str, Template] = {}
     for lib in libraries:
         if drawing not in lib.drawing:
@@ -187,7 +189,8 @@ def combine(libraries: list[Library], drawing: str = "pid", scale: int | None = 
             if lib.size == "real":
                 out.update({f"{name} 1:{s}": scaled(t, 1 / s) for s in ([scale] if scale else ASSUMED_SCALES)})
             else:
-                out[name] = scaled(t, printed) if printed != 1 else t
+                f = printed.get(lib.id, 1.0) if isinstance(printed, dict) else printed
+                out[name] = scaled(t, f) if f != 1 else t
     return out
 
 
@@ -227,7 +230,7 @@ def _manifest(raw: bytes | None, default_id: str) -> dict:
     out = {"id": get("id", str, slug(default_id)), "format": get("format", int, FORMAT),
            "version": get("version", str, None), "licence": get("licence", str, m.get("license")),
            "drawing": get("drawing", list, ["pid"]), "size": get("size", str, "printed"),
-           "file": get("file", str, "symbols.dxf")}
+           "file": get("file", str, "symbols.dxf"), "text_height": m.get("text_height")}
     out["name"] = get("name", str, out["id"])
     if not re.fullmatch(ID, out["id"]):
         raise LibraryError(f"{MANIFEST}: 'id' must be lower-case letters, digits and hyphens: '{out['id']}'")
@@ -238,6 +241,9 @@ def _manifest(raw: bytes | None, default_id: str) -> dict:
         raise LibraryError(f"{MANIFEST}: 'drawing' must list drawing types out of {', '.join(DRAWINGS)} "
                            "(P&IDs and floor plans)")
     out["drawing"] = list(dict.fromkeys(out["drawing"]))  # each type once, in the order given
+    height = out["text_height"]
+    if height is not None and (type(height) not in (int, float) or not 0 < height <= 20):  # True is no height
+        raise LibraryError(f"{MANIFEST}: 'text_height' must be a height in mm, more than 0 and at most 20")
     if out["size"] not in SIZES:
         raise LibraryError(f"{MANIFEST}: 'size' must be one of {', '.join(SIZES)}: '{out['size']}'")
     file = PurePosixPath(out["file"])
@@ -287,7 +293,7 @@ def _library(manifest: dict, data: bytes, bare: bool = False) -> Library:
     unit = units.conversion_factor(doc.units, units.InsertUnits.Millimeters) if doc.units else 1.0
     lib = Library(manifest["id"], manifest["name"], manifest["version"], manifest["licence"], manifest["drawing"],
                   unit, doc, warnings=[f"{MANIFEST}: unknown key '{k}' is ignored" for k in manifest["unknown"]],
-                  size=manifest["size"])
+                  size=manifest["size"], text_height=manifest["text_height"])
     for block in doc.blocks:
         if block.name.startswith(("*", "_")):  # anonymous blocks (dimensions, ...) and arrowheads
             continue

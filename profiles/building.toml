@@ -12,3 +12,6 @@ scales = [20, 25, 50, 75, 100, 200]  # each counts SCALE when the drawing is at 
 [vocabulary]
 level = ['[±+-]\d+,\d\d']
 area = ['\d+,\d\d']
+
+[reading]
+framed = "any"  # the circles of the axes hold letters (A, B) and digits (1, 2) alike

@@ -3,11 +3,14 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import cv2
+import numpy as np
 import pytest
 
-from app import review
+from app import review, scan
+from app.plan2cad import markup
 from app.plan2cad.library import load, place
-from app.plan2cad.model import Drawing, Line, Text
+from app.plan2cad.model import Drawing, Line, Markup, Text
 from app.plan2cad.pipeline import Result
 from app.plan2cad.render import render
 
@@ -91,3 +94,58 @@ def test_nothing_is_asked_when_nothing_is_to_check(model):
     r = page()
     r.drawing.texts[0].uncertain, r.drawing.symbols[0].doubt = False, None
     assert review.check(r, model["reviewer"]) == ({}, []) and not model["requests"]
+
+
+def test_an_oblique_text_to_check_is_cut_out_along_it():
+    import cv2
+    import numpy as np
+
+    street = Text(60, 40, 3.0, "Lindenstraße", 45, confidence=60.0, uncertain=True)
+    sheet = render(Drawing(120, 80, texts=[street]), 8)
+    crop = cv2.imdecode(np.frombuffer(review._text_crop(street, Result(Drawing(120, 80), sheet, 8)), np.uint8),
+                        cv2.IMREAD_GRAYSCALE)
+    dark = np.argwhere(crop < 128)
+    assert crop.shape[1] > 3 * crop.shape[0]  # as long as the text and a little more, as high as a line
+    assert dark[:, 1].min() > 0.05 * crop.shape[1] and dark[:, 1].max() < 0.95 * crop.shape[1]  # whole, not clipped
+
+
+def noted() -> Result:
+    """A sheet with a note added by hand in red and its image, and a printed text that is read reliably."""
+    note = Markup("note", (40.0, 20.0, 80.0, 30.0), (205, 40, 40))
+    crop = np.full((120, 400, 3), 230, np.uint8)
+    cv2.putText(crop, "removed", (20, 80), cv2.FONT_HERSHEY_SCRIPT_SIMPLEX, 1.6, (40, 40, 205), 3)
+    d = Drawing(200, 100, texts=[Text(60, 60, 3, "P-101")], markups=[note])
+    return Result(d, np.full((800, 1600), 255, np.uint8), 8, crops=[crop])
+
+
+def test_the_reviewer_reads_a_handwritten_note_as_a_reading_to_check(model):
+    model["answers"] = [("handwriting", "removed")]
+    r = noted()
+    counts, warnings = review.check(r, model["reviewer"], handwriting=True)
+    assert counts == {"model": "m", "asked": 1, "confirmed": 0, "corrected": 0, "kept": 0, "unanswered": 0, "read": 1}
+    note = r.drawing.markups[0]
+    assert (note.reading, note.read_by) == ("removed", "reviewer") and not warnings
+    reading = next(t for t in r.drawing.texts if t.text == "removed")
+    assert reading.uncertain and reading.layer == markup.READING_LAYER and reading.color == note.color
+    assert "read by the reviewer model, to check" in scan._markup_line(note)
+    assert scan._report(r.drawing)["markups"][0]["read_by"] == "reviewer"
+
+
+def test_without_the_step_handwriting_is_not_sent_to_the_reviewer(model):
+    r = noted()
+    assert review.check(r, model["reviewer"]) == ({}, []) and not model["requests"]
+    assert r.drawing.markups[0].reading is None
+
+
+@pytest.mark.parametrize("answer", ["UNREADABLE", "Unreadable.", "UNREADABLE - the strokes are too faint"])
+def test_a_note_the_reviewer_cannot_read_keeps_no_reading(model, answer):
+    model["answers"] = [("handwriting", answer)]
+    r = noted()
+    counts, _ = review.check(r, model["reviewer"], handwriting=True)
+    assert counts["kept"] == 1 and r.drawing.markups[0].reading is None and len(r.drawing.texts) == 1
+
+
+def test_a_large_note_is_sent_shrunk_and_a_small_one_enlarged():
+    large, small = (cv2.imdecode(np.frombuffer(review._png(np.zeros(shape, np.uint8), review.NOTE_SIDE), np.uint8),
+                                 cv2.IMREAD_UNCHANGED).shape[:2] for shape in ((3000, 6000, 3), (60, 200, 3)))
+    assert max(large) == review.NOTE_SIDE and min(small) == review.SIDE

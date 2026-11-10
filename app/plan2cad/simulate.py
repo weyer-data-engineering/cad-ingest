@@ -39,11 +39,12 @@ def plot(d: Drawing, dpi: float = 300) -> np.ndarray:
     return img if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
 
-def scan(d: Drawing, seed: int, dpi: float = 300, blur: float = 0.5, poor: bool = False, skew: float = 0.8
-         ) -> np.ndarray:
+def scan(d: Drawing, seed: int, dpi: float = 300, blur: float = 0.5, poor: bool = False, skew: float = 0.8,
+         lid: float | None = None) -> np.ndarray:
     """Flatbed/large format scan: rotated by up to ``skew`` degrees, the paper edge visible against the scanner lid.
     A ``poor`` one is blurred, grey on grey with specks, as an old copy scanned in a hurry on an old copier with a dark
-    lid (on a lid about as grey as the copy the paper edge is not found: see docs/photos-and-scans.md)."""
+    lid. ``lid`` is the grey of the lid (0 to 255; the paper is 222 on a poor scan and 244 otherwise); about as grey
+    as the paper, colour does not tell the two apart (see sheet.on_lid)."""
     rng = np.random.default_rng(seed)
     ppm = dpi / 25.4
     page = sheet(d, ppm)
@@ -58,7 +59,7 @@ def scan(d: Drawing, seed: int, dpi: float = 300, blur: float = 0.5, poor: bool 
     if g.ndim == 3:
         paper = paper[..., None]
     ink, white = (95.0, 222.0) if poor else (38.0, 244.0)
-    img = np.where(paper, ink + (white - ink) * g / 255, 150.0 if poor else 205.0)
+    img = np.where(paper, ink + (white - ink) * g / 255, lid if lid is not None else 150.0 if poor else 205.0)
     if poor:  # specks of dirt and toner, and a greyer middle where the copy was pressed less
         specks = (rng.random(img.shape[:2]) < 2e-4).astype(np.uint8)
         dark = cv2.dilate(specks, np.ones((3, 3), np.uint8)).astype(bool)

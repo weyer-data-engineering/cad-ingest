@@ -2,7 +2,7 @@
 # bench/make_library.py. See docs/symbol-libraries.md for the format.
 id = "din-10628"
 name = "P&ID symbols after DIN EN ISO 10628-2 (starter library)"
-version = "1.0.0"
+version = "1.1.0"
 format = 1
 licence = "Apache-2.0"
 drawing = ["pid"]

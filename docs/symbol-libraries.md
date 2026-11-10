@@ -1,13 +1,21 @@
 # Symbol libraries
 
-When cad-ingest turns a photo or scan of a P&ID, a floor plan or a circuit diagram into DXF (`vectorize`), it replaces
-recognised symbols with blocks of a symbol library: a valve becomes a valve block with its tag as an attribute, a
-washbasin a washbasin block, not loose strokes. cad-ingest ships three starter libraries: `din-10628` with 18 P&ID
-symbols after DIN EN ISO 10628-2, `floor-plan` with seven fixtures of floor plans (toilet, washbasin, bathtub, shower
-tray, kitchen sink, hob, washing machine) and `iec-60617` with six symbols of circuit diagrams after IEC 60617
-(make and break contact, relay coil, fuse, resistor, lamp). You can add your own company libraries next to them, so
-that the DXF contains your blocks, with your layers, colours and attribute names. Which kind of drawing a sheet is,
-and so which libraries are used on it, the [profiles](profiles.md) recognise from its texts.
+When cad-ingest turns a photo or scan of a P&ID, a building drawing or a circuit diagram into DXF (`vectorize`), it
+replaces recognised symbols with blocks of a symbol library: a valve becomes a valve block with its tag as an
+attribute, a washbasin a washbasin block, not loose strokes. cad-ingest ships four starter libraries, all its own work
+under the Apache 2.0 licence:
+
+- `din-10628`: 18 P&ID symbols after DIN EN ISO 10628-2 (valves, pumps, instruments, an orifice plate, ...);
+- `floor-plan`: seven fixtures of floor plans (toilet, washbasin, bathtub, shower tray, kitchen sink, hob, washing
+  machine);
+- `iec-60617`: 11 symbols of circuit diagrams after IEC 60617 (make and break contact, relay coil, fuse, resistor,
+  lamp, terminal, circuit breaker, motor protection switch, push button, protective earth);
+- `building-symbols`: the marks of floor plans, sections and site plans (north arrow, axis, section marker), with
+  the axis and the section letter as attributes.
+
+You can add your own company libraries next to them, so that the DXF contains your blocks, with your layers, colours
+and attribute names. Which kind of drawing a sheet is, and so which libraries are used on it, the
+[profiles](profiles.md) recognise from its texts.
 
 A library is data, not code: nothing in a library is ever run. A library that a job brings along is read like the
 job's own file, in its work-horse under the same time and memory limits.
@@ -35,12 +43,19 @@ format = 1                               # the library format; this version of c
 licence = "LicenseRef-ACME-internal"     # SPDX identifier, e.g. CC-BY-4.0
 drawing = ["pid"]                        # the kinds of drawing it is for: "pid", "building", "electrical", "site"
 size = "printed"                         # blocks drawn at their size on the sheet ("printed") or of the object ("real")
+text_height = 2.0                        # mm: the lettering that printed-size symbols go with
 file = "symbols.dxf"
 ```
 
 Every field is optional. Without one, `id` comes from the folder or file name, `name` is the id, `format` is 1,
-`drawing` is `["pid"]`, `size` is `printed` and `file` is `symbols.dxf`. Unknown fields are ignored, and
-`cad-ingest library check` points them out. The file may be at most 64 KB.
+`drawing` is `["pid"]`, `size` is `printed`, `text_height` is 2.0 and `file` is `symbols.dxf`. Unknown fields are
+ignored, and `cad-ingest library check` points them out. The file may be at most 64 KB.
+
+**Lettering.** A sheet lettered clearly smaller or larger than a printed-size library's `text_height` is taken as
+printed at that size, and the library's symbols are looked for that much smaller or larger: an A1 P&ID printed on A3
+has its 2 mm tags at 1 mm. Give the text height that goes with your symbols on a sheet at full size. Building
+drawings are lettered larger than P&IDs, so `building-symbols` has `text_height = 2.5`. On a sheet lettered more than
+about one and a half times a library's `text_height`, its symbols drawn at their library size are missed.
 
 **P&ID symbols and floor plan fixtures.** A library is used on the kind of drawing it is for: a P&ID gets the
 libraries with `"pid"`, a floor plan those with `"building"`. P&ID symbols are drawn at the size they have on the
@@ -73,6 +88,17 @@ What makes a symbol easy to find:
 
 - **Ports.** Most P&ID symbols are found where pipe ends meet their ports. Put the insertion point of a P&ID symbol
   in the middle, not on a port: a port is recognised by its direction from the insertion point.
+- **Ports where the line stops.** Put a port where the line is seen to stop on the sheet. A lead that continues a
+  wire in a straight line looks like the wire itself, so a contact with leads is not found from the ends of its wires:
+  the contacts of `iec-60617` have their ports at the ends of the gap, and their wires run up to them.
+- **Symbols across a line.** A symbol across a line that runs on, such as a flange (two short bars across a pipe),
+  needs a `THROUGH` line and something along the line to hold its place: the bars alone fit anywhere along their
+  length, so put the piece of line between them into the block. Letters struck through by hand fit such a symbol
+  too, which is why `din-10628` has no flange yet.
+- **Free ends.** In a symbol with ports, a stroke that ends freely has to end on the sheet too. That keeps a small
+  shape out of hatching, whose lines run on, but not out of hatching whose lines end at the edge of its box. A symbol
+  on a line is tried along every line, at the line's angle, so a small triangle on a line, such as a level mark,
+  fits the hatching of a cut slab: `building-symbols` has no level mark yet.
 - **Rectangles.** Fixtures and furniture are found from a rectangle of their outline: the box of a washbasin, the
   cistern of a toilet. A side may be part of a longer line, such as the wall face behind a washbasin or the front edge
   of a counter, and two opposite sides are enough where OCR read the others as letters. Circles (pumps, instruments,
@@ -84,8 +110,13 @@ What makes a symbol easy to find:
 - **Fixtures with their back on the wall.** Put the insertion point of a fixture in the middle of its back, the side
   against the wall, as the `floor-plan` library does. When a fixture looks the same turned or mirrored (a hob, a
   shower tray), cad-ingest places it so that its insertion point lies on the wall.
-- **Distinct shapes.** Two symbols that differ only by a fill or a letter inside cannot be told apart yet. The
-  self-test of `cad-ingest library check` shows such mix-ups.
+- **Distinct shapes.** Two symbols that differ only by a fill or a letter inside cannot be told apart yet, nor two
+  that differ only in size, such as two short bars and two long bars across a pipe. The orifice plate of `din-10628`
+  is therefore a thin plate across the pipe; one drawn as two bars is not found. The self-test of
+  `cad-ingest library check` shows such mix-ups.
+- **Fills.** Symbols are matched on the centre lines of the ink. Those of a filled shape, such as a filled
+  arrowhead, run inside it, not along its edge, so a symbol that is mostly filled is not found yet. A hatch or solid
+  fill in a block stays in the DXF but is not looked for.
 - **Attributes where the text stands.** A text within about 4 mm of an attribute position becomes that attribute.
   For a symmetric symbol, such as a valve that looks the same turned half way, the attributes decide which way round
   it is placed.
@@ -140,9 +171,11 @@ Self-test: 18 symbols, each as drawn and turned and mirrored, on 1 A3 sheet, as 
   symbol              scan  photo  mistaken for
   GATE_VALVE          2/2   2/2
   ...
-  ORIFICE             0/2   0/2
+  ORIFICE             2/2   2/2
+  OFF_PAGE_CONNECTOR  2/2   2/2
+  FLOW_ARROW          1/2   1/2
 
-Found: scan 94% (34/36), photo 94% (34/36). Found where no symbol was drawn: scan 0, photo 0.
+Found: scan 94% (34/36), photo 97% (35/36). Found where no symbol was drawn: scan 0, photo 0.
 Time per sheet: scan 9.5 s, photo 18.7 s, of which symbol recognition 2.9 s and 2.7 s.
 ```
 
@@ -152,8 +185,8 @@ only checks the format, which takes a second. The self-test takes about half a m
 and longer the more symbols the library has, since every sheet is read with the whole library: minutes per sheet for
 a library of a few hundred symbols. The command exits with 1 if the library cannot be read.
 
-The output above is the starter library. It shows a known weakness: the orifice plate, two short bars across a pipe,
-is not found yet.
+The output above is the starter library. A symbol missed in one pose, as a flow arrow on the scan here, is worth a
+look at its overlay: the strokes it was not found on are drawn in the colours of plain linework.
 
 **Through the job API.** A service that takes libraries from its users can check each one the same way before it
 uses it: the job operation `check_library` reads the library in a work-horse, under the limits of a job, and returns
@@ -172,19 +205,24 @@ cad-ingest plan.jpg out/ --paper A1 --library ./acme-pid --library din-10628
 
 **Service, installed libraries.** Workers read the libraries in `SYMBOL_LIBRARIES` (default `/libraries`) when they
 start, in addition to the built-in starter libraries. Mount a folder there or build an image of your own (see
-[Operations](operations.md#symbol-libraries)). `DEFAULT_SYMBOL_LIBRARIES` (default `din-10628,floor-plan,iec-60617`) names the
-libraries a job gets when it names none. A job chooses others with `"options": {"libraries": ["acme-pid",
-"din-10628"]}`, and `GET /libraries` lists what is installed. Each library is used on the kind of drawing it is for.
+[Operations](operations.md#symbol-libraries)). `DEFAULT_SYMBOL_LIBRARIES` (default
+`din-10628,floor-plan,iec-60617,building-symbols`) names the libraries a job gets when it names none. A job chooses
+others with `"options": {"libraries": ["acme-pid", "din-10628"]}`, and `GET /libraries` lists what is installed.
+Each library is used on the kind of drawing it is for.
 
 **Service, libraries a job brings along.** `"library_urls": ["https://storage/acme-pid.zip?sig=..."]` downloads one or
 more libraries (a ZIP or a DXF) with the job, for example a library that each tenant of a platform keeps in its own
 storage. They come first, then the installed ones the job names. The default libraries are only used when the job
-names no library at all, so add `"libraries": ["din-10628", "floor-plan"]` to keep the starter symbols. A library a
-job brings along is read in its work-horse under the same limits as the file, and never stored. Check a new library
-once with `check_library` (see above) before jobs bring it along: a broken one fails every job that brings it.
+names no library at all, so add `"libraries": ["din-10628", "floor-plan", "iec-60617", "building-symbols"]` to keep
+the starter symbols. A library a job brings along is read in its work-horse under the same limits as the file, and
+never stored. Check a new library once with `check_library` (see above) before jobs bring it along: a broken one
+fails every job that brings it.
 
 The `report.json` of every result lists the libraries that were used for the kind of drawing, with their versions,
-and for every symbol the library it came from.
+and for every symbol the library it came from. Linework that looks like a symbol but was recognised as none of the
+libraries' is listed under `unclassified`, with its box, and is on the layer `P2C-SYMBOL-UNCLASSIFIED` of the DXF. Such
+a place is either a symbol your drawings use that the libraries lack, or one of theirs that recognition missed: check
+which before you add a block (see [Symbols not classified](photos-and-scans.md#symbols-not-classified)).
 
 ## Sharing a library
 

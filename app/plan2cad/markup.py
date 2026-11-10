@@ -9,6 +9,8 @@ transparent fills; handwriting is read only if asked (features.read_handwriting)
 
 from __future__ import annotations
 
+import math
+
 import cv2
 import numpy as np
 import pytesseract
@@ -26,13 +28,21 @@ READ = 50  # confidence (0-100) of Tesseract for a handwritten word to count
 WORD = 12.0  # mm: a handwritten word is at most this high (Tesseract reads clouds as letters too)
 HIGHLIGHT, PEN = 1, 2  # values of the markup map; pen colour k is PEN + k
 LAYER, HIGHLIGHT_LAYER, READING_LAYER = "P2C-MARKUP", "P2C-HIGHLIGHT", "P2C-MARKUP-TEXT"
+# What a phone camera adds in colour is no pen (features.colour_guard): a pen stroke has one hue along it (within
+# HUE degrees for most of it, measured over ACROSS mm around each pixel), its note is at least STROKE mm long, and it
+# is not a seam along dark print, as the fringes of a lens are (FRINGE of it within a pixel of print, and less than
+# SEAM of it more than two pixels wide, across print up to ACROSS mm wide). Colour within EDGE mm of the paper's edge,
+# or off the paper, is the paper's coloured shadow.
+HUE, STROKE, FRINGE, SEAM, EDGE, ACROSS = 30.0, 2.0, 0.6, 0.1, 2.0, 0.7
 
 
-def split(bgr: np.ndarray, ppm: float) -> tuple[np.ndarray, np.ndarray | None, dict[int, Color]]:
+def split(bgr: np.ndarray, ppm: float, guard: bool = False, paper: np.ndarray | None = None
+          ) -> tuple[np.ndarray, np.ndarray | None, dict[int, Color]]:
     """The grey image to recognise the drawing on, and on a black and white print with markups their map (HIGHLIGHT,
     PEN + k for pen colour k, 0 elsewhere) with the colour of each value. In the grey image lines in colour on a
     colour plot are as dark as black ones (their darkest channel), and markups are gone (their brightest channel:
-    a pen or a highlighter takes some colours away, black print all of them)."""
+    a pen or a highlighter takes some colours away, black print all of them). With ``guard``, colour that a camera
+    adds is not taken for pen strokes (_camera; ``paper`` the corners of the sheet in the image, if found)."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     b, g, r = cv2.split(bgr)
     darkest, brightest = cv2.min(cv2.min(b, g), r), cv2.max(cv2.max(b, g), r)
@@ -73,12 +83,62 @@ def split(bgr: np.ndarray, ppm: float) -> tuple[np.ndarray, np.ndarray | None, d
     n, lab, stats, _ = cv2.connectedComponentsWithStats(pen.astype(np.uint8), connectivity=8)
     big = np.flatnonzero(np.maximum(stats[:, 2], stats[:, 3]) >= SPECK * ppm)
     pen = np.isin(lab, big[big > 0])
+    if guard and pen.any():
+        pen &= ~_camera(pen, hue, (cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY) < 128) & ~coloured, ppm, paper)
     if pen.any():
         for k, (lo, hi) in enumerate(_hues(hue[pen])):
             here = pen & (((hue >= lo) & (hue < hi)) if lo < hi else ((hue >= lo) | (hue < hi)))
             marks[here] = PEN + k
             colours[PEN + k] = _colour(bgr[here])
     return gray, marks if marks.any() else None, colours
+
+
+def _camera(pen: np.ndarray, hue: np.ndarray, dark: np.ndarray, ppm: float, paper: np.ndarray | None) -> np.ndarray:
+    """The part of the ``pen`` mask that a camera added: strokes whose hue wanders (white balance noise, the red and
+    blue fringes of a lens on either side of a printed line), thin seams that run along ``dark`` print (fringes) and
+    colour on the paper's edge or off the paper (its coloured shadow); and what is left of a note shorter than STROKE
+    mm (specks). The hue is judged around each pixel, not over a whole stroke: where pens of two colours cross, each
+    keeps its own. A pen traced over a printed line shows as seams of its colour on both sides of the print: bridged
+    across it, they are as wide as the pen, while a fringe of a lens, on one side of the print or of another hue on
+    the other, stays a seam or does not agree in hue."""
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(pen.astype(np.uint8), connectivity=8)
+    at, span = lab[pen], _odd(ACROSS * ppm)
+    count = np.maximum(np.bincount(at, minlength=n), 1)
+    spread = np.bincount(at, _agreement(pen, hue, span), n) / count
+    along = np.bincount(at, (cv2.dilate(dark.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0)[pen], n) / count
+    shut = cv2.morphologyEx(pen.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((span, span), np.uint8)) > 0
+    bridged = (pen | (dark & shut)).astype(np.uint8)
+    wide = np.bincount(at, (cv2.morphologyEx(bridged, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)) > 0)[pen], n) / count
+    noise = (spread < math.cos(math.radians(HUE))) | ((along >= FRINGE) & (wide < SEAM))
+    if paper is not None:
+        sheet = np.zeros(pen.shape, np.uint8)
+        cv2.fillPoly(sheet, [np.round(paper).astype(np.int32)], 1)
+        inner = cv2.erode(sheet, np.ones((_odd(2 * EDGE * ppm),) * 2, np.uint8))
+        noise |= np.bincount(at, (inner > 0)[pen], n) / count < 0.5
+    noise[0] = True
+    camera = noise[lab] & pen
+    rest = (pen & ~camera).astype(np.uint8)
+    reach = _odd(NOTE * ppm)  # the strokes of a note: specks of colour alone are noise
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(cv2.dilate(rest, np.ones((reach, reach), np.uint8)))
+    short = np.flatnonzero(np.maximum(stats[:, 2], stats[:, 3]) - reach < STROKE * ppm)
+    return camera | (np.isin(lab, short[short > 0]) & (rest > 0))
+
+
+def _agreement(pen: np.ndarray, hue: np.ndarray, cell: int) -> np.ndarray:
+    """For each pixel of ``pen`` (in the order of its mask), how well the hues of the pen around it agree: the length
+    of their mean direction (1 for one hue), over the cells of ``cell`` pixels next to its own; summed per cell, so
+    that a photo's many pixels need no image of floats."""
+    ys, xs = np.nonzero(pen)
+    angle = hue[ys, xs].astype(np.float64) * np.pi / 90  # OpenCV hue is half the degrees
+    rows, cols = pen.shape[0] // cell + 1, pen.shape[1] // cell + 1
+    at = (ys // cell) * cols + xs // cell
+
+    def around(v: np.ndarray | None) -> np.ndarray:
+        cells = np.bincount(at, v, rows * cols).reshape(rows, cols).astype(np.float32)
+        return cv2.boxFilter(cells, -1, (3, 3), normalize=False, borderType=cv2.BORDER_CONSTANT)
+
+    agree = np.hypot(around(np.cos(angle)), around(np.sin(angle))) / np.maximum(around(None), 1)
+    return agree[ys // cell, xs // cell]
 
 
 def extract(marks: np.ndarray, colours: dict[int, Color], ppm: float, lang: str, texts: list[Text], read: bool = False
@@ -118,7 +178,7 @@ def extract(marks: np.ndarray, colours: dict[int, Color], ppm: float, lang: str,
                 readings.append(Text((x + tx + tw / 2) / ppm, (y + ty + th / 2) / ppm, max(th / ppm, 1.0) * 0.7,
                                      words, uncertain=True, color=colour, layer=READING_LAYER))
             markups.append(Markup("note", _box(x, y, w, h, ppm), colour, text[1] if text else None,
-                                  covers(_marked(strokes, ppm), x, y)))
+                                  covers(_marked(strokes, ppm), x, y), "tesseract" if text else None))
     return polylines, polygons, readings, markups
 
 
