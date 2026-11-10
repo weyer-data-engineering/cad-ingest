@@ -69,7 +69,15 @@ the guidance for coding agents. You are responsible for every change you submit,
 
 Every push to `main` publishes `ghcr.io/weyer-data-engineering/cad-ingest:main`. A Git tag `vX.Y.Z` publishes the
 tags `vX.Y.Z`, `X.Y.Z`, `X.Y` and `latest`, with build provenance and a CycloneDX SBOM attached to the image and to
-the GitHub release. Give the version its date in [CHANGELOG.md](CHANGELOG.md) before tagging.
+the GitHub release, and the Helm chart `oci://ghcr.io/weyer-data-engineering/charts/cad-ingest` in version `X.Y.Z`
+with that image. Give the version its date in [CHANGELOG.md](CHANGELOG.md) before tagging.
+
+The chart is in `charts/cad-ingest`. CI lints it and runs its unit tests:
+
+```bash
+helm lint charts/cad-ingest --set redis.url=redis://redis:6379/0
+helm unittest charts/cad-ingest   # needs the helm-unittest plugin
+```
 
 ## Licence
 

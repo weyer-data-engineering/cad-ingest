@@ -1,0 +1,136 @@
+image:
+  repository: ghcr.io/weyer-data-engineering/cad-ingest
+  # Defaults to the chart's appVersion.
+  tag: ""
+  # Pin an image digest (sha256:...) in addition to the tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Redis holds the queues and the job state (any Redis 6 or later; the chart does not install one). On a shared Redis
+# give cad-ingest a database index of its own, for example redis://redis-master:6379/3.
+redis:
+  # URL of a Redis without a password.
+  url: ""
+  # Name of an existing Secret that holds the URL, for a URL with a password
+  # (redis://:<password>@redis-master:6379/3). Takes precedence over url.
+  existingSecret: ""
+  # Key inside that Secret.
+  secretKey: redis-url
+
+# Optional bearer token for /jobs. With it, clients send "Authorization: Bearer <token>".
+apiToken:
+  # Name of an existing Secret that holds the token.
+  existingSecret: ""
+  # Key inside that Secret.
+  secretKey: apiToken
+
+# Sources larger than this are rejected (500 MB).
+maxFileSizeBytes: 524288000
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+# The job API: takes jobs and answers status requests. Stateless, any number of replicas.
+api:
+  replicaCount: 2
+  # Waiting jobs (both priorities) before POST /jobs answers 503.
+  maxQueuedJobs: 10000
+  # Additional environment variables for the container.
+  extraEnv: []
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+      ephemeral-storage: 256Mi
+    limits:
+      memory: 512Mi
+      ephemeral-storage: 512Mi
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  # Spread the pods over zones and nodes. Set to [] to turn off, or replace with your own constraints.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+
+# The workers run the conversions, each in a process of its own with a time and a memory limit.
+worker:
+  replicaCount: 1
+  # Conversions in parallel per pod.
+  maxConcurrentConversions: 2
+  # Hard limit per attempt (download, conversion and upload).
+  conversionTimeoutSeconds: 600
+  # How long a finished job can be read.
+  resultTtlSeconds: 86400
+  # Tesseract languages for the texts on photos and scans; the image has deu and eng.
+  ocrLanguages: deu+eng
+  # Installed symbol libraries (comma-separated ids) used when a job names none; the image's default when empty.
+  defaultSymbolLibraries: ""
+  # Address-space cap of each conversion in MB. Empty: 85 % of the memory limit. An A0 scan at 300 dpi needs
+  # 8 GB of address space (4 GB in use), a phone photo about 1.2 GB in use, most CAD files far less.
+  memoryLimitMb: ""
+  # Profiles of kinds of drawing added to the built-in ones: file name (letters, digits, '.', '_', '-', ending in
+  # .toml) to TOML text, in the format of docs/profiles.md. A profile with the id of a built-in one replaces it; one
+  # that cannot be read fails every conversion of photos and scans. Mounted read-only at /profiles (PROFILES); a
+  # change restarts the workers.
+  profiles: {}
+  #   acme-pid.toml: |
+  #     format = 1
+  #     id = "acme-pid"
+  #     name = "P&IDs of Example Corp"
+  #     drawing = "pid"
+  #     [evidence]
+  #     titles = ['P&ID']
+  #     [vocabulary]
+  #     tags = ['[A-Z]{2,4}-\d{3,5}']
+  # Additional environment variables for the container.
+  extraEnv: []
+  # Additional volumes and mounts, for example your own symbol libraries at /libraries (docs/symbol-libraries.md).
+  extraVolumes: []
+  extraVolumeMounts: []
+  # Running jobs get this long to finish; a stopped worker's jobs are run again by the next worker.
+  terminationGracePeriodSeconds: 60
+  resources:
+    requests:
+      cpu: "1"
+      memory: 3Gi
+      # Downloads (up to maxFileSizeBytes per conversion) and results are written to /tmp.
+      ephemeral-storage: 5Gi
+    limits:
+      cpu: "2"
+      # 85 % of it is each conversion's cap, enough for an A0 scan at 300 dpi.
+      memory: 10Gi
+      ephemeral-storage: 5Gi
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# cad-ingest writes only to /tmp, which is an emptyDir.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

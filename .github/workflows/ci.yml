@@ -211,3 +211,52 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: sbom/*.cdx.json
+
+  chart:
+    name: Chart
+    runs-on: ${{ vars.RUNNER_AMD64 || 'ubuntu-24.04' }}
+    env:
+      HELM_VERSION: v3.22.1
+      HELM_UNITTEST_VERSION: v1.2.1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Helm
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Install helm-unittest
+        run: >-
+          helm plugin install https://github.com/helm-unittest/helm-unittest
+          --version "$HELM_UNITTEST_VERSION"
+      - name: Lint the chart
+        run: helm lint charts/cad-ingest --set redis.url=redis://redis:6379/0
+      - name: Run the chart's unit tests
+        run: helm unittest charts/cad-ingest
+
+  # A tag v1.2.3 publishes the chart as version 1.2.3 with the image 1.2.3, so chart and image versions match.
+  chart-release:
+    name: Publish chart
+    if: github.ref_type == 'tag'
+    needs: [chart, publish]
+    runs-on: ${{ vars.RUNNER_AMD64 || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      HELM_VERSION: v3.22.1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Helm
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Package and push the chart
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          helm package charts/cad-ingest --version "$version" --app-version "$version"
+          helm push "cad-ingest-${version}.tgz" "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"

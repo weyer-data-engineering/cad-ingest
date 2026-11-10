@@ -1,0 +1,132 @@
+suite: worker
+templates:
+  - deployment-worker.yaml
+release:
+  name: cad-ingest
+set:
+  redis.existingSecret: cad-ingest-redis
+tests:
+  - it: runs the worker command with the conversion settings
+    asserts:
+      - equal:
+          path: metadata.name
+          value: cad-ingest-worker
+      - equal:
+          path: spec.template.spec.containers[0].command
+          value: [worker]
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_URL
+            valueFrom:
+              secretKeyRef:
+                name: cad-ingest-redis
+                key: redis-url
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MAX_CONCURRENT_CONVERSIONS
+            value: "2"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OCR_LANGUAGES
+            value: deu+eng
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MAX_FILE_SIZE_BYTES
+            value: "524288000"
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MEMORY_LIMIT_MB
+          any: true
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEFAULT_SYMBOL_LIBRARIES
+          any: true
+
+  - it: reaps the helpers of killed conversions and probes the Redis registration
+    asserts:
+      - equal:
+          path: spec.template.spec.shareProcessNamespace
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.exec.command
+          value: [worker, check]
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.exec.command
+          value: [worker, check]
+
+  - it: leaves room for an A0 scan at 300 dpi
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 10Gi
+
+  - it: passes overrides, the memory cap and extra settings
+    set:
+      worker.resultTtlSeconds: 3600
+      worker.memoryLimitMb: 8192
+      worker.ocrLanguages: deu
+      worker.defaultSymbolLibraries: acme-pid,din-10628
+      worker.extraEnv:
+        - name: MAX_ATTEMPTS
+          value: "2"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: RESULT_TTL_SECONDS
+            value: "3600"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MEMORY_LIMIT_MB
+            value: "8192"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OCR_LANGUAGES
+            value: deu
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DEFAULT_SYMBOL_LIBRARIES
+            value: acme-pid,din-10628
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MAX_ATTEMPTS
+            value: "2"
+
+  - it: mounts your own symbol libraries
+    set:
+      worker.extraVolumes:
+        - name: libraries
+          persistentVolumeClaim:
+            claimName: cad-libraries
+      worker.extraVolumeMounts:
+        - name: libraries
+          mountPath: /libraries
+          readOnly: true
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: libraries
+            persistentVolumeClaim:
+              claimName: cad-libraries
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: libraries
+            mountPath: /libraries
+            readOnly: true
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp

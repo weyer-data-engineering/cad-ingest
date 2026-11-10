@@ -1,0 +1,171 @@
+suite: api
+templates:
+  - deployment-api.yaml
+  - service.yaml
+  - pdb.yaml
+release:
+  name: cad-ingest
+set:
+  redis.existingSecret: cad-ingest-redis
+tests:
+  - it: fails without a Redis
+    template: deployment-api.yaml
+    set:
+      redis.existingSecret: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: "Set redis.url or redis.existingSecret: cad-ingest keeps its queues and job state in Redis."
+
+  - it: runs the API from the appVersion image with the Redis URL from the secret
+    template: deployment-api.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/weyer-data-engineering/cad-ingest:1.0.0
+      - equal:
+          path: spec.replicas
+          value: 2
+      - isNull:
+          path: spec.template.spec.containers[0].command
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_URL
+            valueFrom:
+              secretKeyRef:
+                name: cad-ingest-redis
+                key: redis-url
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: API_TOKEN
+          any: true
+
+  - it: takes a Redis without a password as a plain URL
+    template: deployment-api.yaml
+    set:
+      redis.existingSecret: ""
+      redis.url: redis://redis:6379/3
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_URL
+            value: redis://redis:6379/3
+
+  - it: prefers the secret over the plain URL
+    template: deployment-api.yaml
+    set:
+      redis.url: redis://redis:6379/3
+      redis.secretKey: url
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: REDIS_URL
+            valueFrom:
+              secretKeyRef:
+                name: cad-ingest-redis
+                key: url
+
+  - it: pins the image by tag and digest
+    template: deployment-api.yaml
+    set:
+      image.tag: 1.2.3
+      image.digest: sha256:0123456789abcdef
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/weyer-data-engineering/cad-ingest:1.2.3@sha256:0123456789abcdef
+      - equal:
+          path: metadata.labels["app.kubernetes.io/version"]
+          value: 1.2.3
+
+  - it: passes the API token from its secret when one is set
+    template: deployment-api.yaml
+    set:
+      apiToken.existingSecret: cad-ingest-api-token
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: cad-ingest-api-token
+                key: apiToken
+
+  - it: writes only to /tmp, as user 10001, without a service account token
+    template: deployment-api.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 10001
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: tmp
+            mountPath: /tmp
+
+  - it: spreads the API pods over zones and nodes
+    template: deployment-api.yaml
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.topologySpreadConstraints
+          count: 2
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0]
+          value:
+            maxSkew: 1
+            topologyKey: topology.kubernetes.io/zone
+            whenUnsatisfiable: ScheduleAnyway
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: cad-ingest
+                app.kubernetes.io/instance: cad-ingest
+                app.kubernetes.io/component: api
+
+  - it: leaves the spread out when it is turned off
+    template: deployment-api.yaml
+    set:
+      api.topologySpreadConstraints: []
+    asserts:
+      - notExists:
+          path: spec.template.spec.topologySpreadConstraints
+
+  - it: routes the service to the API pods only
+    template: service.yaml
+    asserts:
+      - equal:
+          path: metadata.name
+          value: cad-ingest
+      - equal:
+          path: spec.selector["app.kubernetes.io/component"]
+          value: api
+      - equal:
+          path: spec.ports[0].port
+          value: 8080
+
+  - it: keeps one API pod during disruptions
+    template: pdb.yaml
+    asserts:
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/component"]
+          value: api
+
+  - it: has no disruption budget with a single API pod
+    template: pdb.yaml
+    set:
+      api.replicaCount: 1
+    asserts:
+      - hasDocuments:
+          count: 0

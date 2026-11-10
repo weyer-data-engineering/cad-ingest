@@ -66,6 +66,16 @@ docker compose pull && docker compose up -d     # Redis, the job API on http://l
 curl http://localhost:8080/health
 ```
 
+On Kubernetes, install the Helm chart that is published with every release. It needs a Redis:
+
+```bash
+helm install cad-ingest oci://ghcr.io/weyer-data-engineering/charts/cad-ingest \
+  --set redis.url=redis://redis-master:6379/3
+```
+
+The chart runs two API pods and a worker and has no ingress on purpose. See
+[Operations](docs/operations.md#kubernetes) for its values.
+
 ### Submit a job
 
 The worker downloads the file from a URL and uploads the preview to a URL, so it works with any object storage that
