@@ -73,6 +73,15 @@ def test_the_reviewer_reads_the_text_and_confirms_the_symbol(model):
     assert images == [1, 2]  # the text's crop; the symbol's crop and its drawing in the library, nothing else
 
 
+def test_the_user_of_the_reviewer_goes_with_every_call_and_is_left_out_without_one(model):
+    model["answers"] = [("text recognition", "V-101"), ("Gate valve", "YES")]
+    review.check(page(), model["reviewer"])
+    assert all("user" not in body for _, _, body in model["requests"])
+    model["requests"].clear()
+    review.check(page(), model["reviewer"] | {"user": "tenant-1"})
+    assert [body["user"] for _, _, body in model["requests"]] == ["tenant-1", "tenant-1"]
+
+
 def test_answers_that_do_not_fit_leave_the_elements_to_check(model):
     model["answers"] = [("text recognition", "The text in the middle of the image reads V-101"), ("Gate valve", "NO")]
     r = page()

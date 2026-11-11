@@ -87,7 +87,8 @@ def _post(prompt: str, images: list[bytes], reviewer: dict) -> str | None:
     try:
         response = httpx.post(reviewer["base_url"].rstrip("/") + "/chat/completions", timeout=TIMEOUT, headers=headers,
                               json={"model": reviewer["model"], "temperature": 0, "max_tokens": 100,
-                                    "messages": [{"role": "user", "content": content}]})
+                                    "messages": [{"role": "user", "content": content}]}
+                              | ({"user": reviewer["user"]} if reviewer.get("user") else {}))
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"].strip()
     except (httpx.HTTPError, ValueError, LookupError, TypeError, AttributeError) as error:

@@ -7,6 +7,8 @@ and versions follow [Semantic Versioning](https://semver.org/): the job API stay
 
 ### Added
 
+- `reviewer.user` (optional): whom the calls to the reviewer model are made for. It is sent as the `user` of each
+  call, by which a LiteLLM proxy books and limits spend. A release without it ignores the field.
 - Job operation `check_library`: a client has a symbol library (a ZIP or a DXF) checked before it uses it. The worker
   downloads it (up to `MAX_LIBRARY_SIZE_BYTES`) and reads it in its work-horse, as a library in `library_urls`, and
   the job's new field `library` holds what `GET /libraries` lists for an installed library, the notes of `cad-ingest
