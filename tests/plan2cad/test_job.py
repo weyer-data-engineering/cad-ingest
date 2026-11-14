@@ -67,6 +67,14 @@ def test_the_reviewer_is_only_for_vectorize_and_its_key_is_never_shown(api, orig
     assert "sk-secret" not in api.get(f"/jobs/{response.json()['id']}").text
 
 
+def test_the_reviewer_may_name_whom_its_calls_are_for(api, origin):
+    reviewer = {"base_url": "https://llm.example.com/v1", "api_key": "sk-secret", "model": "vision"}
+    job = {"operations": ["vectorize"], "result_url": origin.url("/preview/r")}
+    assert submit(api, origin, "plan.jpg", reviewer=reviewer | {"user": "tenant-1"}, **job).status_code == 202
+    assert submit(api, origin, "plan.jpg", reviewer=reviewer | {"user": ""}, **job).status_code == 400
+    assert submit(api, origin, "plan.jpg", reviewer=reviewer | {"user": "u" * 257}, **job).status_code == 400
+
+
 @pytest.mark.parametrize("name, content", [("blank.png", cv2.imencode(".png", np.full((900, 1200), 255, np.uint8))[1]),
                                            ("broken.jpg", b"\xff\xd8 not a photo")])
 def test_photo_without_a_drawing_is_unreadable(name, content, tmp_path):

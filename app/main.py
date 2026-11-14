@@ -95,6 +95,8 @@ class Reviewer(BaseModel):
     # Further headers of each call, such as the customer a LiteLLM proxy books the call to
     headers: dict[HeaderName, Annotated[str, Field(max_length=1000)]] | None = Field(default=None, max_length=10,
                                                                                      repr=False)
+    # Whom the calls are made for, sent as the `user` of each: a LiteLLM proxy books and limits spend by it
+    user: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class JobRequest(BaseModel):
